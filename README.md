@@ -43,6 +43,8 @@ idempotency, and only then invokes that adapter.
 | `/stream/packet` | POST | paired signed `stream.packet` | submit a sequenced, checksummed data packet |
 | `/stream/pull` | POST | paired signed `stream.pull` | retrieve bounded retained packets |
 | `/stream/close` | POST | paired signed `stream.close` | close and safe-stop a stream |
+| `/fleet/reserve` | POST | paired signed `reservation.request` | request a bounded space-time route reservation |
+| `/fleet/release` | POST | paired signed `reservation.release` | release a robot’s unused reservation |
 | `/peers` | GET | local admin token | inspect pairing state |
 
 `/send` returns `receipt.delivered`; it does not falsely claim that a model has

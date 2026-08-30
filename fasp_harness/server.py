@@ -120,6 +120,10 @@ class FaspHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, self.server.harness.stream_pull(payload))
             elif route == "/stream/close":
                 self._json(HTTPStatus.OK, self.server.harness.stream_close(payload))
+            elif route == "/fleet/reserve":
+                self._json(HTTPStatus.OK, self.server.harness.reservation_request(payload))
+            elif route == "/fleet/release":
+                self._json(HTTPStatus.OK, self.server.harness.reservation_release(payload))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except FaspError as error:

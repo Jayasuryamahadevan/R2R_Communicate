@@ -190,7 +190,9 @@ class FaspHarness:
         # Local import avoids a circular dependency: stream frames use FASP
         # encoding helpers, while the harness owns stream authorization.
         from .streaming import StreamRegistry
+        from .robotics import ReservationBook
         self.streams = StreamRegistry(self.state)
+        self.reservations = ReservationBook(self.state)
         if not (state_dir / "admin_token").exists():
             token = secrets.token_urlsafe(32)
             (state_dir / "admin_token").write_text(token + "\n", encoding="utf-8")
@@ -390,3 +392,18 @@ class FaspHarness:
         if not isinstance(payload.get("stream_id"), str):
             raise FaspError("schema.invalid", "stream.close requires stream_id.")
         return self.streams.close(envelope["from"], payload["stream_id"], str(payload.get("reason", "closed")))
+
+    def reservation_request(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        peer = self._verify_envelope(envelope, "reservation.request")
+        if not any("fleet.reserve.v1".startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+            raise FaspError("auth.not_authorized", "Peer is not authorized for fleet reservations.")
+        return self.reservations.request(envelope["from"], envelope["payload"])
+
+    def reservation_release(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        peer = self._verify_envelope(envelope, "reservation.release")
+        if not any("fleet.reserve.v1".startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+            raise FaspError("auth.not_authorized", "Peer is not authorized for fleet reservations.")
+        reservation_id = envelope["payload"].get("reservation_id")
+        if not isinstance(reservation_id, str):
+            raise FaspError("schema.invalid", "reservation.release requires reservation_id.")
+        return self.reservations.release(envelope["from"], reservation_id)
