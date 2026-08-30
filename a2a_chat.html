@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Codex × OpenCode</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b141a; --panel:#202c33; --bar:#111b21; --me:#005c4b; --them:#202c33; --ink:#e9edef; --muted:#8696a0; --accent:#00a884; --tick:#53bdeb; }
+    * { box-sizing:border-box } body { margin:0; background:#0b141a; color:var(--ink); font:15px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+    .app { height:100dvh; max-width:980px; margin:auto; display:flex; flex-direction:column; background:radial-gradient(circle at 20% 5%,#172b32,transparent 45%),var(--bg); }
+    header { min-height:64px; display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--bar); border-bottom:1px solid #2a3942; }
+    .avatar { width:42px; height:42px; border-radius:50%; display:grid; place-items:center; font-size:19px; font-weight:700; background:linear-gradient(135deg,#00a884,#3d6bff); }
+    .title { flex:1; min-width:0 } h1 { font-size:16px; margin:0; } #presenceLine { color:var(--muted); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    button,select,input,textarea { font:inherit } button { border:0; color:var(--ink); cursor:pointer; } .icon { background:#23313a; padding:9px 11px; border-radius:10px; }
+    #setup { display:none; padding:18px; background:#18242b; border-bottom:1px solid #2a3942; } #setup.open { display:block; } .fields { display:grid; grid-template-columns:1fr 150px; gap:10px; } input,select,textarea { width:100%; border:1px solid #3b4a54; background:#111b21; color:var(--ink); border-radius:9px; padding:10px; } .hint { margin:9px 0 0; color:var(--muted); font-size:12px; }
+    #banner { display:none; padding:8px 14px; background:#7b2525; color:white; font-size:13px; } #banner.show { display:block; }
+    #messages { flex:1; overflow:auto; padding:18px max(14px,env(safe-area-inset-right)) 10px max(14px,env(safe-area-inset-left)); display:flex; flex-direction:column; gap:4px; }
+    .day { align-self:center; color:#d8e9ee; background:#182a33; border-radius:7px; padding:5px 10px; margin:6px 0 10px; font-size:11px; text-transform:uppercase; }
+    .row { display:flex; } .row.out { justify-content:flex-end; } .bubble { max-width:min(78%,630px); padding:7px 8px 5px; border-radius:8px; background:var(--them); box-shadow:0 1px 1px #0005; white-space:pre-wrap; overflow-wrap:anywhere; } .out .bubble { background:var(--me); border-top-right-radius:2px; } .in .bubble { border-top-left-radius:2px; }
+    .sender { color:#72d3b3; font-size:12px; font-weight:650; margin-bottom:2px; }.meta { display:flex; justify-content:flex-end; align-items:center; gap:5px; color:#b5c7c7; font-size:10px; margin-top:2px; }.ticks { letter-spacing:-2px; color:#a7c2bc; font-size:14px; }.ticks.read { color:var(--tick); }
+    #typing { min-height:24px; padding:2px 18px; color:#a4d7c8; font-size:13px; font-style:italic; }
+    footer { display:flex; gap:8px; align-items:flex-end; padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left)); background:var(--bar); } #message { min-height:43px; max-height:120px; resize:none; flex:1; border-radius:22px; padding:11px 15px; } #send { min-width:44px; height:43px; border-radius:50%; background:var(--accent); font-size:18px; }
+    .composer-options { display:flex; gap:6px; padding:7px 12px; background:#18242b; border-top:1px solid #2a3942; }.composer-options select { padding:6px 8px; font-size:12px; }
+    @media (max-width:600px) { .app { width:100%; } .fields { grid-template-columns:1fr; } .bubble { max-width:88%; } }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <div class="avatar">C×O</div>
+      <div class="title"><h1>Codex × OpenCode</h1><div id="presenceLine">Connecting to shared chat…</div></div>
+      <button class="icon" id="settings" title="Connection settings">⚙</button>
+    </header>
+    <section id="setup">
+      <div class="fields"><input id="url" aria-label="Bridge URL" placeholder="Bridge URL"><input id="token" type="password" aria-label="A2A token" placeholder="A2A token"></div>
+      <p class="hint">The token is stored only in this browser. Use the same laptop bridge URL and token on both devices.</p>
+      <button class="icon" id="save">Save & connect</button>
+    </section>
+    <div id="banner"></div>
+    <section id="messages" aria-live="polite"></section>
+    <div id="typing"></div>
+    <div class="composer-options"><select id="identity" aria-label="Sending as"><option value="human">You</option><option value="codex">Codex</option><option value="opencode">OpenCode</option></select><select id="recipient" aria-label="Send to"><option value="both">Both agents</option><option value="codex">Codex</option><option value="opencode">OpenCode</option></select></div>
+    <footer><textarea id="message" rows="1" placeholder="Write a message…"></textarea><button id="send" title="Send message">➤</button></footer>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    const defaults = { url: location.origin, token: "", identity: "human" };
+    const config = Object.assign(defaults, JSON.parse(localStorage.getItem("a2a-chat-config") || "{}"));
+    let messages = [], timer, typingTimer, lastTyping = 0;
+    $("url").value = config.url; $("token").value = config.token; $("identity").value = config.identity;
+    if (!config.token) $("setup").classList.add("open");
+    const api = async (path, options = {}) => {
+      if (!config.token) throw Error("Enter the A2A token in settings first.");
+      const response = await fetch(config.url.replace(/\/$/, "") + path, { ...options, headers: { "X-A2A-Token": config.token, "Content-Type":"application/json", ...(options.headers || {}) } });
+      const data = await response.json(); if (!response.ok) throw Error(data.error || "Bridge request failed"); return data;
+    };
+    const escape = value => String(value).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const showError = text => { $("banner").textContent = text; $("banner").classList.add("show"); };
+    const hideError = () => $("banner").classList.remove("show");
+    const time = stamp => new Date(stamp * 1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"});
+    function render() {
+      const host = $("messages"), atBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 100;
+      host.innerHTML = ""; let day = "";
+      messages.sort((a,b) => a.timestamp - b.timestamp).forEach(m => {
+        const label = new Date(m.timestamp * 1000).toLocaleDateString([], {weekday:"short",month:"short",day:"numeric"});
+        if (label !== day) { day = label; host.insertAdjacentHTML("beforeend", `<div class="day">${escape(label)}</div>`); }
+        const outgoing = m.from === $("identity").value;
+        const delivered = Boolean(m.delivery?.delivered?.[m.to]); const read = Boolean(m.delivery?.read?.[m.to]);
+        const ticks = outgoing ? `<span class="ticks ${read ? "read" : ""}" title="${read ? "Read" : delivered ? "Delivered" : "Sent"}">${delivered ? "✓✓" : "✓"}</span>` : "";
+        host.insertAdjacentHTML("beforeend", `<div class="row ${outgoing ? "out" : "in"}"><article class="bubble"><div class="sender">${escape(m.from)} → ${escape(m.to)}</div><div>${escape(m.text)}</div><div class="meta"><time>${time(m.timestamp)}</time>${ticks}</div></article></div>`);
+        if ($("identity").value === m.to && !read) api("/v1/receipts", {method:"POST",body:JSON.stringify({message_id:m.id,agent:m.to,status:"read"})}).catch(()=>{});
+      });
+      if (atBottom) host.scrollTop = host.scrollHeight;
+    }
+    async function poll() {
+      try { hideError(); const data = await api("/v1/transcript?after=0"); messages = data.messages; render(); const p = await api("/v1/presence"); renderPresence(p.presence); }
+      catch (error) { showError(error.message); }
+    }
+    function renderPresence(presence) {
+      const entries = Object.entries(presence).filter(([name]) => name !== "human");
+      $("presenceLine").textContent = entries.length ? entries.map(([name,v]) => `${name} is ${v.status}`).join(" · ") : "Agents connected through the LAN bridge";
+      const typing = entries.filter(([,v]) => v.status === "typing").map(([name]) => name);
+      $("typing").textContent = typing.length ? `${typing.join(" and ")} ${typing.length === 1 ? "is" : "are"} typing…` : "";
+    }
+    async function presence(status="online") { if (config.token) await api("/v1/presence", {method:"POST",body:JSON.stringify({agent:$("identity").value,status})}); }
+    async function send() {
+      const text = $("message").value.trim(); if (!text) return;
+      const recipients = $("recipient").value === "both" ? ["codex","opencode"] : [$("recipient").value];
+      try { for (const to of recipients) await api("/v1/messages", {method:"POST",body:JSON.stringify({from:$("identity").value,to,text})}); $("message").value=""; await presence("online"); await poll(); }
+      catch (error) { showError(error.message); }
+    }
+    $("settings").onclick = () => $("setup").classList.toggle("open");
+    $("save").onclick = () => { config.url=$("url").value.trim(); config.token=$("token").value.trim(); config.identity=$("identity").value; localStorage.setItem("a2a-chat-config",JSON.stringify(config)); $("setup").classList.remove("open"); poll(); };
+    $("identity").onchange = () => { config.identity=$("identity").value; localStorage.setItem("a2a-chat-config",JSON.stringify(config)); presence(); render(); };
+    $("send").onclick = send; $("message").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+    $("message").addEventListener("input", () => { const now=Date.now(); if(now-lastTyping>1200){lastTyping=now; presence("typing").catch(()=>{});} clearTimeout(typingTimer); typingTimer=setTimeout(()=>presence("online").catch(()=>{}),1500); });
+    poll(); timer=setInterval(poll, 2000); setInterval(()=>presence().catch(()=>{}), 10000);
+  </script>
+</body>
+</html>
