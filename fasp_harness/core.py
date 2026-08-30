@@ -24,6 +24,8 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+from .platforms import runtime_profile
+
 
 PROTOCOL = "fasp/1.0"
 MAX_INLINE_BYTES = 64 * 1024
@@ -185,6 +187,10 @@ class FaspHarness:
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
+        # Local import avoids a circular dependency: stream frames use FASP
+        # encoding helpers, while the harness owns stream authorization.
+        from .streaming import StreamRegistry
+        self.streams = StreamRegistry(self.state)
         if not (state_dir / "admin_token").exists():
             token = secrets.token_urlsafe(32)
             (state_dir / "admin_token").write_text(token + "\n", encoding="utf-8")
@@ -200,6 +206,7 @@ class FaspHarness:
             "type": "id_card",
             "system_id": self.identity.system_id,
             "display_name": self.display_name,
+            "runtime": runtime_profile(),
             "public_key": self.identity.public_b64,
             "endpoints": {
                 "hello": self.base_url + "/hello",
@@ -354,3 +361,32 @@ class FaspHarness:
         receipts[payload["message_id"]] = {"from": envelope["from"], "processed_at": stamp()}
         self.state.put("receipts.json", receipts)
         return {"ok": True}
+
+    def _stream_authorize(self, envelope: dict[str, Any], kind: str) -> dict[str, Any]:
+        peer = self._verify_envelope(envelope, kind)
+        capability = envelope["payload"].get("capability", "observe.stream.v1")
+        if not isinstance(capability, str) or not any(capability.startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+            raise FaspError("auth.not_authorized", "Paired peer is not authorized for this stream capability.")
+        return peer
+
+    def stream_open(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        self._stream_authorize(envelope, "stream.open")
+        return self.streams.open(envelope["from"], envelope["payload"])
+
+    def stream_packet(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        self._stream_authorize(envelope, "stream.packet")
+        return self.streams.packet(envelope["from"], envelope["payload"])
+
+    def stream_pull(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        self._stream_authorize(envelope, "stream.pull")
+        payload = envelope["payload"]
+        if not isinstance(payload.get("stream_id"), str):
+            raise FaspError("schema.invalid", "stream.pull requires stream_id.")
+        return self.streams.pull(envelope["from"], payload["stream_id"], int(payload.get("after_sequence", -1)))
+
+    def stream_close(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        self._stream_authorize(envelope, "stream.close")
+        payload = envelope["payload"]
+        if not isinstance(payload.get("stream_id"), str):
+            raise FaspError("schema.invalid", "stream.close requires stream_id.")
+        return self.streams.close(envelope["from"], payload["stream_id"], str(payload.get("reason", "closed")))

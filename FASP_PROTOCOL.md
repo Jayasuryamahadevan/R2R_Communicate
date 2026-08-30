@@ -487,3 +487,13 @@ Build in this order:
 
 Do not deploy physical actuation or continuous sensing before steps 1–4 are
 independently tested.
+
+## 19. Reference harness profiles
+
+The companion `fasp_harness` implementation provides a portable HTTP baseline,
+signed ID-card discovery, explicit pairing, durable task handling, and bounded
+stream packets. Its cross-platform deployment constraints are specified in
+[FASP Runtime Profiles](FASP_RUNTIME_PROFILES.md); packet, realtime-transport,
+and live-data requirements are specified in [FASP Messaging and Live Streaming
+Profile](FASP_MESSAGING_STREAMING.md). These profiles are normative companions
+for the reference harness and do not weaken the local-safety requirements above.

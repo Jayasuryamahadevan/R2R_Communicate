@@ -20,6 +20,10 @@ idempotency, and only then invokes that adapter.
   processed receipts
 - capability-prefix policy and safe default adapter
 - bounded, opt-in model adapter interface
+- portable runtime profiles for Windows, Linux, macOS, Raspberry Pi, Android
+  gateways, RTX-3050-class local inference, ROS 1, and ROS 2
+- generic live-stream packet management with reliable/latest modes, sequence
+  windows, fragmentation, integrity checks, acknowledgements, and backpressure
 
 ## Standard HTTP endpoints
 
@@ -35,6 +39,10 @@ idempotency, and only then invokes that adapter.
 | `/task` | POST | paired signed envelope | deliver an `intent.propose` envelope |
 | `/inbox` | POST | paired signed `inbox.pull` | retrieve durable inbox entries |
 | `/receipt` | POST | paired signed `receipt.processed` | confirm application processing |
+| `/stream/open` | POST | paired signed `stream.open` | negotiate a bounded live stream |
+| `/stream/packet` | POST | paired signed `stream.packet` | submit a sequenced, checksummed data packet |
+| `/stream/pull` | POST | paired signed `stream.pull` | retrieve bounded retained packets |
+| `/stream/close` | POST | paired signed `stream.close` | close and safe-stop a stream |
 | `/peers` | GET | local admin token | inspect pairing state |
 
 `/send` returns `receipt.delivered`; it does not falsely claim that a model has
@@ -50,7 +58,7 @@ python3 -m unittest discover -s tests -v
 python3 -m fasp_harness serve \
   --host 0.0.0.0 --port 8766 \
   --public-url http://192.168.0.22:8766 \
-  --name laptop-agent --state-dir .fasp/laptop
+  --name laptop-agent --state-dir .fasp/laptop --insecure-http
 ```
 
 The server prints its system ID, public ID-card URL, and the path to its private
@@ -137,3 +145,6 @@ every language, hardware-backed keys where available, a real authorization
 issuer and revocation service, encrypted artifact storage, rate limiting at the
 reverse proxy, and local safety controllers/emergency stops for every physical
 actuator. See [FASP_PROTOCOL.md](FASP_PROTOCOL.md) for the complete protocol.
+See [FASP_RUNTIME_PROFILES.md](FASP_RUNTIME_PROFILES.md) for cross-platform
+deployment profiles and [FASP_MESSAGING_STREAMING.md](FASP_MESSAGING_STREAMING.md)
+for the packet-management and live-streaming profile.

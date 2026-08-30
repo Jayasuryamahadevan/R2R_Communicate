@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import ssl
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -111,6 +112,14 @@ class FaspHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, self.server.harness.pull_inbox(payload))
             elif route == "/receipt":
                 self._json(HTTPStatus.OK, self.server.harness.receipt(payload))
+            elif route == "/stream/open":
+                self._json(HTTPStatus.OK, self.server.harness.stream_open(payload))
+            elif route == "/stream/packet":
+                self._json(HTTPStatus.OK, self.server.harness.stream_packet(payload))
+            elif route == "/stream/pull":
+                self._json(HTTPStatus.OK, self.server.harness.stream_pull(payload))
+            elif route == "/stream/close":
+                self._json(HTTPStatus.OK, self.server.harness.stream_close(payload))
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except FaspError as error:
@@ -126,10 +135,25 @@ def main() -> None:
     parser.add_argument("--state-dir", type=Path, default=Path(".fasp"))
     parser.add_argument("--public-url", help="Advertised HTTPS/HTTP base URL; required for a reachable LAN peer.")
     parser.add_argument("--adapter", help="Optional local model adapter: module:object or module:factory")
+    parser.add_argument("--tls-cert", type=Path, help="PEM certificate for production HTTPS.")
+    parser.add_argument("--tls-key", type=Path, help="PEM private key for production HTTPS.")
+    parser.add_argument("--insecure-http", action="store_true", help="Allow plain HTTP for isolated development LANs only.")
     args = parser.parse_args()
-    base_url = args.public_url or f"http://{args.host}:{args.port}"
+    secure = bool(args.tls_cert or args.tls_key)
+    if bool(args.tls_cert) != bool(args.tls_key):
+        raise SystemExit("--tls-cert and --tls-key must be supplied together.")
+    if not secure and args.host not in {"127.0.0.1", "localhost", "::1"} and not args.insecure_http:
+        raise SystemExit("Refusing plain HTTP on a non-loopback interface. Use TLS or explicitly pass --insecure-http for an isolated development LAN.")
+    base_url = args.public_url or f"{'https' if secure else 'http'}://{args.host}:{args.port}"
+    if secure and not base_url.startswith("https://"):
+        raise SystemExit("A TLS listener requires an https:// --public-url.")
     harness = FaspHarness(args.state_dir, args.name, base_url, load_adapter(args.adapter))
     server = FaspHTTPServer((args.host, args.port), harness)
+    if secure:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_3
+        context.load_cert_chain(args.tls_cert, args.tls_key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
     print(f"FASP harness for {harness.identity.system_id}")
     print(f"ID card: {base_url}/id_card")
     print(f"Admin token file: {args.state_dir / 'admin_token'} (keep private)")
