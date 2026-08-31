@@ -1,3 +1,6 @@
 .a2a_bridge/
 .fasp/
 __pycache__/
+.venv/
+*.egg-info/
+

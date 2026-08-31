@@ -7,7 +7,10 @@ name = "fasp-harness"
 version = "0.1.0"
 description = "Reference harness for secure federated autonomous systems"
 requires-python = ">=3.11"
-dependencies = ["cryptography>=42"]
+dependencies = ["cryptography>=42", "starlette>=0.37", "uvicorn>=0.30"]
+
+[project.optional-dependencies]
+test = ["hypothesis>=6.100", "httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 include = ["fasp_harness*"]
