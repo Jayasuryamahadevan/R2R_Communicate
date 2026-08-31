@@ -12,15 +12,19 @@ import json
 import os
 import secrets
 import threading
-import time
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
 from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
 from .platforms import runtime_profile
+from .storage.db import Database
+from .storage.inbox_repo import InboxRepo
+from .storage.peers_repo import PeersRepo
+from .storage.tasks_repo import TasksRepo
+from .timestamps import now, parse_stamp, stamp
 
 __all__ = [
     "FaspError",
@@ -45,18 +49,6 @@ __all__ = [
 PROTOCOL = "fasp/1.0"
 MAX_INLINE_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 60
-
-
-def now() -> datetime:
-    return datetime.now(UTC)
-
-
-def stamp(value: datetime | None = None) -> str:
-    return (value or now()).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def parse_stamp(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def _plain_json(value: Any) -> bytes:
@@ -142,7 +134,13 @@ class FaspHarness:
     """Durable FASP state machine behind the HTTP server."""
 
     def __init__(self, state_dir: Path, display_name: str, base_url: str, adapter: SafeAdapter | None = None) -> None:
+        # JsonState still backs streaming/robotics/receipts until Phase 7
+        # migrates them onto the same SQLite database as everything else.
         self.state = JsonState(state_dir)
+        self.db = Database(state_dir / "fasp.db")
+        self.peers = PeersRepo(self.db)
+        self.inbox = InboxRepo(self.db)
+        self.tasks = TasksRepo(self.db)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
@@ -202,33 +200,18 @@ class FaspHarness:
         self.verify_id_card(card)
         if card["system_id"] == self.identity.system_id:
             raise FaspError("auth.self_pairing", "A system cannot pair with itself.")
-        peers = self.state.get("peers.json", {})
         fingerprint = b64(hashlib.sha256("|".join(sorted([self.identity.system_id, card["system_id"]])).encode()).digest())[:12]
-        peers[card["system_id"]] = {
-            "card": card,
-            "state": peers.get(card["system_id"], {}).get("state", "pending"),
-            "pair_code": fingerprint,
-            "seen_at": stamp(),
-            "allowed_capability_prefixes": peers.get(card["system_id"], {}).get("allowed_capability_prefixes", ["observe.", "coordinate."]),
-        }
-        self.state.put("peers.json", peers)
-        return sign({"fasp": PROTOCOL, "type": "hello.ready", "system_id": self.identity.system_id, "id_card": self.id_card(), "pair_code": fingerprint, "pairing_required": peers[card["system_id"]]["state"] != "paired", "issued_at": stamp()}, self.identity.private, self.identity.kid)
+        peer = self.peers.upsert_pending_or_seen(card["system_id"], card, fingerprint, stamp(), ["observe.", "coordinate."])
+        return sign({"fasp": PROTOCOL, "type": "hello.ready", "system_id": self.identity.system_id, "id_card": self.id_card(), "pair_code": fingerprint, "pairing_required": peer["state"] != "paired", "issued_at": stamp()}, self.identity.private, self.identity.kid)
 
     def confirm_peer(self, peer_id: str, pair_code: str, prefixes: list[str] | None = None) -> dict[str, Any]:
-        peers = self.state.get("peers.json", {})
-        peer = peers.get(peer_id)
-        if not peer or not secrets.compare_digest(peer.get("pair_code", ""), pair_code):
+        peer = self.peers.confirm(peer_id, pair_code, stamp(), prefixes)
+        if peer is None:
             raise FaspError("auth.pairing_not_found", "Peer or pair code is invalid.")
-        peer["state"] = "paired"
-        peer["paired_at"] = stamp()
-        if prefixes is not None:
-            peer["allowed_capability_prefixes"] = prefixes
-        peers[peer_id] = peer
-        self.state.put("peers.json", peers)
         return {"ok": True, "peer_id": peer_id, "state": "paired", "allowed_capability_prefixes": peer["allowed_capability_prefixes"]}
 
     def _peer(self, peer_id: str) -> dict[str, Any]:
-        peer = self.state.get("peers.json", {}).get(peer_id)
+        peer = self.peers.get(peer_id)
         if not peer or peer.get("state") != "paired":
             raise FaspError("auth.not_paired", "Peer is not paired and authorized.")
         return peer
@@ -272,15 +255,12 @@ class FaspHarness:
 
     def accept(self, envelope: dict[str, Any], expected_kind: str | None = None) -> tuple[bool, dict[str, Any] | None]:
         peer = self._verify_envelope(envelope, expected_kind)
-        seen = self.state.get("seen.json", {})
-        if envelope["message_id"] in seen:
-            return True, seen[envelope["message_id"]].get("response")
-        self.state.append_jsonl("inbox.jsonl", envelope)
+        if not self.inbox.insert_if_new(envelope, stamp()):
+            return True, self.inbox.get_response(envelope["message_id"])
         response: dict[str, Any] | None = None
         if envelope["kind"] == "intent.propose":
             response = self._handle_intent(envelope, peer)
-        seen[envelope["message_id"]] = {"processed_at": stamp(), "response": response}
-        self.state.put("seen.json", dict(list(seen.items())[-5000:]))
+        self.inbox.set_response(envelope["message_id"], response)
         return False, response
 
     def _handle_intent(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
@@ -296,22 +276,24 @@ class FaspHarness:
             raise FaspError("capability.unavailable", "Capability is unavailable at this runtime.")
         if intent.get("risk", capabilities[capability]["risk"]) not in {"observe", "reversible"}:
             raise FaspError("policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
-        journal = self.state.get("tasks.json", {})
-        if key in journal:
-            return journal[key]["result"]
+        existing = self.tasks.get_result(key)
+        if existing is not None:
+            return existing
         try:
             output = self.adapter.handle(intent)
             result = {"type": "task.result", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "completed", "output": output, "completed_at": stamp()}
         except FaspError as error:
             result = {"type": "task.fail", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "failed", "error": {"code": error.code, "detail": error.detail}, "completed_at": stamp()}
-        journal[key] = {"result": result, "from": envelope["from"]}
-        self.state.put("tasks.json", journal)
+        if not self.tasks.record_if_new(key, intent.get("intent_id"), capability, envelope["from"], result, stamp()):
+            # A concurrent duplicate raced in and recorded a result first;
+            # use that one so the effect is never counted/reported twice.
+            result = self.tasks.get_result(key) or result
         return result
 
     def pull_inbox(self, envelope: dict[str, Any]) -> dict[str, Any]:
         self._verify_envelope(envelope, "inbox.pull")
         cursor = float(envelope["payload"].get("cursor", 0))
-        messages = [item for item in self.state.read_jsonl("inbox.jsonl") if parse_stamp(item["issued_at"]).timestamp() > cursor]
+        messages = self.inbox.pull_since(envelope["from"], cursor)
         return {"messages": messages, "cursor": now().timestamp()}
 
     def receipt(self, envelope: dict[str, Any]) -> dict[str, Any]:

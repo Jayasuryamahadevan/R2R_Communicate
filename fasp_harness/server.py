@@ -90,7 +90,7 @@ class FaspHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"ok": True, "fasp": "fasp/1.0", "system_id": self.server.harness.identity.system_id})
             elif route == "/peers":
                 self._admin()
-                self._json(HTTPStatus.OK, self.server.harness.state.get("peers.json", {}))
+                self._json(HTTPStatus.OK, self.server.harness.peers.all())
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
         except FaspError as error:
