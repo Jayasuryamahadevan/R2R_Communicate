@@ -30,6 +30,17 @@ idempotency, and only then invokes that adapter.
   `core.py` + `storage/tasks_repo.py`), with real cancellation racing and a
   startup sweep that resolves any task stuck `RUNNING` by a prior crash to a
   safe terminal state instead of replaying it.
+- **Bounded work queue**: `adapter.handle()` runs on a fixed-size
+  `ThreadPoolExecutor`, not inline per request -- a real wall-clock timeout on
+  the capability's own `max_runtime_s`, a hard concurrency bound, and durable
+  backpressure (`resource.exhausted` once `max_inflight_tasks` -- backed by
+  the `tasks` table itself, not an in-memory counter -- is reached).
+- **Live channel**: an optional `/fasp/v1/channel` websocket
+  (`fasp_harness/transport/http_app.py`, `fasp_harness/channels.py`) carries
+  the identical signed-envelope protocol over a persistent connection, used
+  to push a late task result or a subscribed stream's new packets the moment
+  they're ready -- always a latency optimization on top of the durable state,
+  never a replacement for `task.status`/`stream.pull` polling.
 - **Audit**: a tamper-evident, hash-chained append-only log
   (`fasp_harness/audit/chain.py`) of every grant/task/revocation/pairing
   decision, verifiable end to end with `AuditChain.verify()`.
@@ -49,15 +60,24 @@ idempotency, and only then invokes that adapter.
 - pending -> human-confirmed pairing with an expiry, plus explicit peer
   revocation and re-pairing; scanning never grants authority
 - signed pairing, task, inbox, receipt, artifact, streaming, fleet-reservation,
-  and safety/incident/heartbeat workflows over one generic envelope ingress
+  and safety/incident/heartbeat workflows over one generic envelope ingress,
+  with universal message_id replay dedup across every kind, not only tasks
 - durable (SQLite) inbox/replay cache, full task-lifecycle state machine,
   content-addressed artifacts, and a hash-chained audit log
+- a bounded adapter work queue: intent.propose runs on a fixed-size worker
+  pool with a real wall-clock timeout and durable backpressure
+  (`resource.exhausted` once too many tasks are in flight), plus `task.status`
+  to poll an intent whose synchronous wait already timed out
+- an optional `/fasp/v1/channel` websocket carrying the identical
+  signed-envelope protocol over a persistent connection, so a completed task
+  or a live stream packet can be pushed to a connected peer instead of polled
 - capability-prefix policy, optional scoped grants, and a safe default adapter
 - bounded, opt-in model adapter interface, with optional `cancel()` hook
 - portable runtime profiles for Windows, Linux, macOS, Raspberry Pi, Android
   gateways, RTX-3050-class local inference, ROS 1, and ROS 2
 - generic live-stream packet management with reliable/latest modes, sequence
-  windows, fragmentation, integrity checks, acknowledgements, and backpressure
+  windows, fragmentation, integrity checks, acknowledgements, backpressure,
+  and an opt-in `stream.subscribe` push channel on top of durable `stream.pull`
 - mutual TLS, per-IP and per-peer rate limiting, and an artifact storage cap
 
 ## HTTP endpoints
@@ -75,17 +95,25 @@ idempotency, and only then invokes that adapter.
 | `/grants/revoke` | POST | local admin token | revoke a previously issued grant |
 | `/fasp/v1/envelopes` | POST | paired signed envelope | generic ingress; dispatches on the envelope's `kind` |
 | `/fasp/v1/receipts` | POST | paired signed `receipt.processed` | alias into the same dispatch, per FASP_PROTOCOL.md ss13 |
+| `/fasp/v1/channel` | WS | paired signed envelope, per frame | the same dispatch over a persistent connection, plus push delivery |
 
 `/fasp/v1/envelopes` dispatches `intent.propose`/`task.cancel`/`artifact.fetch`
 through the idempotent task pipeline (response wrapped in `receipt.delivered`),
-and `inbox.pull`, `receipt.processed`, `stream.open/packet/pull/close`,
+and `task.status`, `inbox.pull`, `receipt.processed`,
+`stream.open/packet/pull/subscribe/unsubscribe/close`,
 `reservation.request/release`, `safety.halt/status`, `incident.report`, and
 `heartbeat` through their own dedicated handlers, returning each one's own
 response shape directly. An unrecognized `kind` is rejected with
-`protocol.unsupported_kind`, never silently accepted.
+`protocol.unsupported_kind`, never silently accepted. Every kind shares one
+message_id replay-dedup gate: a retried envelope (same `message_id`) always
+returns its original recorded response rather than being processed again.
 
 `intent.propose` never falsely claims a model has understood or completed the
 requested work: the delivery receipt and the task result are always distinct.
+A slow capability's synchronous wait is capped at its own declared
+`max_runtime_s`; past that, the caller gets `task.progress` immediately and
+either polls `task.status` or -- if connected over `/fasp/v1/channel` -- is
+pushed the eventual `task.push` result the moment it completes.
 
 ## Quick start
 

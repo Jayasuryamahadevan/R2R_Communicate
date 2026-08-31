@@ -138,9 +138,17 @@ out-of-window, expired, checksum-failed, or stale-epoch frames are rejected.
 | `mqtt-dds-bridge` | IoT/ROS 2 environments | topic ACLs plus end-to-end FASP identity and capability checks |
 | `serial-cbor` | microcontrollers and robots | CBOR/COSE frames, fixed windows, local watchdog |
 
-The included harness implements `http-baseline`. Realtime transports MUST bind
-their session to the paired FASP identities, stream ID, epoch, capability grant,
-and expiry. A relay/broker is never an authorization authority.
+The included harness implements `http-baseline`, plus an optional live-push
+layer on top of it: a paired peer may open `/fasp/v1/channel` (a websocket
+carrying the identical signed-envelope protocol, frame for frame, as the HTTP
+baseline) and send `stream.subscribe` for a stream_id to receive that stream's
+future packets pushed the moment they arrive, instead of polling `stream.pull`.
+This is push for latency only -- `stream.pull` by sequence number remains the
+durable, resumable source of truth, since a subscription is live-session state
+that does not survive a reconnect (the subscriber simply re-subscribes and, if
+it needs anything sent while disconnected, pulls it). Realtime transports MUST
+bind their session to the paired FASP identities, stream ID, epoch, capability
+grant, and expiry. A relay/broker is never an authorization authority.
 
 ## 7. Data classes and safety
 
@@ -163,17 +171,24 @@ aggregate result or `unknown`, not continuous raw sensor data.
 
 ## 8. HTTP baseline endpoints
 
-| Endpoint | Signed envelope kind | Result |
-|---|---|---|
-| `POST /stream/open` | `stream.open` | accepted stream configuration |
-| `POST /stream/packet` | `stream.packet` | `stream.ack` or backpressure/error |
-| `POST /stream/pull` | `stream.pull` | bounded retained packet set |
-| `POST /stream/close` | `stream.close` | terminal `stream.closed` |
+The reference harness carries every kind below through one generic signed-
+envelope ingress (`POST /fasp/v1/envelopes`, dispatching on `kind`) rather than
+a bespoke route per verb; the table names the envelope kind, not a literal path.
 
-All endpoints require a paired peer and authorized capability prefix. HTTP is
-appropriate for low/medium-rate data and correctness testing. Use TLS 1.3 in
-production. The server refuses non-loopback plain HTTP unless the operator
-explicitly passes `--insecure-http` for an isolated development LAN.
+| Signed envelope kind | Result |
+|---|---|
+| `stream.open` | accepted stream configuration |
+| `stream.packet` | `stream.ack` or backpressure/error |
+| `stream.pull` | bounded retained packet set, by sequence |
+| `stream.subscribe` | `stream.subscribed`; opts in to live push over an open channel |
+| `stream.unsubscribe` | `stream.unsubscribed` |
+| `stream.close` | terminal `stream.closed`; also clears its subscribers |
+
+All kinds require a paired peer and authorized capability prefix. HTTP is
+appropriate for low/medium-rate data and correctness testing; the websocket
+channel (ss6) adds live push for lower latency without changing any of this.
+Use TLS 1.3 in production. The server refuses non-loopback plain HTTP unless
+the operator explicitly passes `--insecure-http` for an isolated development LAN.
 
 ## 9. Failure semantics
 
