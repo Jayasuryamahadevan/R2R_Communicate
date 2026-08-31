@@ -49,7 +49,7 @@ which of those three paths a new host's thin adapter takes.
 | `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why) |
 | `harness.ts` | Ties identity, the append-only log, self-managed state, and log-driven reconciliation together |
 | `state.ts` | This agent's own self-editable configuration: MCP servers to stay connected to or auto-connect to, and FASP peers paired with |
-| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers -- see "Self-knowledge" below |
+| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, and for sending it a real signed intent once paired -- see "Self-knowledge" below |
 | `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only -- available to import, not wired to a command by either bridge today |
 | `timestamps.ts` | The one timestamp format used everywhere here |
 | `fsjson.ts` | The one atomic-JSON-file read/write every piece of persisted state above goes through |
@@ -83,3 +83,15 @@ both sides -- list every other peer already paired with it, live. This
 was verified against a real, running Python `fasp_harness` instance
 while writing it (a real `hello` -> `pair/confirm` -> `/peers` round
 trip over HTTP, not asserted from the two protocols' schemas alone).
+
+Pairing alone only establishes trust; `AgentHarness.faspPropose()` is
+what actually uses it -- a real, signed `intent.propose` envelope sent
+to a paired peer for one of the capability prefixes it granted at
+pairing time (`observe.`/`coordinate.` by default), with that peer's
+real response returned. Verified end to end across two entirely
+separate OS processes -- one FASP harness, one bridge_core-based agent
+running under a genuinely kernel-enforced memory cgroup limit (not a
+simulated one: a deliberately-oversized allocation under the same kind
+of limit was confirmed to actually get OOM-killed) -- hello, confirm,
+and a `coordinate.chat.v1` intent whose response echoed back exactly
+what was sent.

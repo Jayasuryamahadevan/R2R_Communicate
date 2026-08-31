@@ -528,6 +528,41 @@ export class AgentHarness {
 			return this.fasp.listPeers(options.baseUrl, options.adminToken);
 		return this.state.faspPeers;
 	}
+
+	/** Actually use a completed FASP pairing: propose an intent to
+	 * `toSystemId` at `baseUrl` for one of the capabilities it granted at
+	 * pairing time. `connectFaspPeer` only establishes that two agents
+	 * trust each other; this is the real, signed request-response
+	 * exchange that trust was for. Logged either way, success or not. */
+	async faspPropose(
+		baseUrl: string,
+		toSystemId: string,
+		capability: string,
+		objective: string,
+	): Promise<Record<string, unknown>> {
+		try {
+			const response = await this.fasp.proposeIntent(
+				baseUrl,
+				toSystemId,
+				capability,
+				objective,
+			);
+			this.log.append("fasp.intent_proposed", {
+				base_url: baseUrl,
+				to: toSystemId,
+				capability,
+			});
+			return response;
+		} catch (error) {
+			this.log.append("fasp.intent_propose_failed", {
+				base_url: baseUrl,
+				to: toSystemId,
+				capability,
+				error: (error as Error).message,
+			});
+			throw error;
+		}
+	}
 }
 
 function resignForNextEpoch(

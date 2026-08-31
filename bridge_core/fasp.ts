@@ -18,7 +18,7 @@
  * is intentionally scoped to AIC's own schemas.
  */
 
-import { createHash, sign as nodeSign } from "node:crypto";
+import { createHash, sign as nodeSign, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
 	type AgentIdentity,
@@ -34,6 +34,7 @@ import { stamp } from "./timestamps.js";
 
 const PROTOCOL = "fasp/1.0";
 const CARD_VALIDITY_MS = 30 * 24 * 60 * 60 * 1000;
+const ENVELOPE_VALIDITY_MS = 5 * 60 * 1000;
 
 interface StoredFaspIdentity {
 	system_id: string;
@@ -208,5 +209,38 @@ export class FaspClient {
 			);
 		}
 		return (await response.json()) as Record<string, unknown>;
+	}
+
+	/** Actually use a completed pairing: propose an intent (`kind:
+	 * "intent.propose"`) to `toSystemId` at `baseUrl` for one of the
+	 * capabilities that peer granted at pairing time (default
+	 * `observe.`/`coordinate.` prefixes -- see fasp_harness's `hello()`).
+	 * Pairing alone only establishes trust; this is what turns that trust
+	 * into a real, signed request-response exchange between two agents. */
+	async proposeIntent(
+		baseUrl: string,
+		toSystemId: string,
+		capability: string,
+		objective: string,
+	): Promise<Record<string, unknown>> {
+		const { identity, kid, systemId } = this.loadOrCreateIdentity();
+		const issuedAt = stamp();
+		const envelope = {
+			fasp: PROTOCOL,
+			kind: "intent.propose",
+			message_id: `msg-${b64(randomBytes(12))}`,
+			from: systemId,
+			to: toSystemId,
+			issued_at: issuedAt,
+			expires_at: stamp(new Date(Date.parse(issuedAt) + ENVELOPE_VALIDITY_MS)),
+			nonce: b64(randomBytes(16)),
+			payload: {
+				idempotency_key: `idem-${b64(randomBytes(12))}`,
+				capability,
+				objective,
+			},
+		};
+		const signed = faspSign(envelope, identity, kid);
+		return postJson(`${baseUrl.replace(/\/$/, "")}/fasp/v1/envelopes`, signed);
 	}
 }
