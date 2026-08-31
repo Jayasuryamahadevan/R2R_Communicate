@@ -203,6 +203,61 @@ async function withNetworkRetry<T>(attempt: () => Promise<T>): Promise<T> {
 	throw lastError;
 }
 
+/** Every real FASP response this client expects is a handful of KB (an
+ * id_card, a hello result, a peer roster) -- generous enough to cover a
+ * large fleet's `/peers` listing, but bounded, because nothing here
+ * should ever have to trust a peer's `Content-Length` (a hostile or
+ * merely broken peer can lie about it or omit it entirely) to know how
+ * much it's about to buffer into memory.
+ *
+ * A real, confirmed gap this closes: without it, a peer answering 200 OK
+ * with an unbounded body made `response.json()`/`response.text()` buffer
+ * the entire thing before this client saw a single byte -- proved by a
+ * server that kept streaming past the point this process's RSS crossed
+ * 3 GiB (a real OOM-kill on any normally-provisioned host), with no
+ * timeout or size check anywhere in the unpatched path to stop it. */
+const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+async function readBoundedText(
+	response: Response,
+	url: string,
+): Promise<string> {
+	const body = response.body;
+	if (!body) return "";
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let total = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		total += value.byteLength;
+		if (total > MAX_RESPONSE_BYTES) {
+			await reader.cancel().catch(() => {});
+			throw new NonRetryableError(
+				`Response from ${url} exceeded ${MAX_RESPONSE_BYTES} bytes -- refusing to buffer further. A real FASP response is a few KB; this means either a hostile peer or a serious bug on the other end, not something a retry would fix.`,
+			);
+		}
+		chunks.push(value);
+	}
+	return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString(
+		"utf-8",
+	);
+}
+
+async function readBoundedJson(
+	response: Response,
+	url: string,
+): Promise<Record<string, unknown>> {
+	const text = await readBoundedText(response, url);
+	try {
+		return JSON.parse(text) as Record<string, unknown>;
+	} catch (error) {
+		throw new NonRetryableError(
+			`Response from ${url} was not valid JSON (${(error as Error).message}).`,
+		);
+	}
+}
+
 async function postJson(
 	url: string,
 	body: Record<string, unknown>,
@@ -215,11 +270,11 @@ async function postJson(
 			body: JSON.stringify(body),
 		});
 		if (!response.ok) {
-			const detail = `POST ${url} failed: HTTP ${response.status} ${await response.text()}`;
+			const detail = `POST ${url} failed: HTTP ${response.status} ${await readBoundedText(response, url)}`;
 			if (response.status >= 500) throw new Error(detail);
 			throw new NonRetryableError(detail);
 		}
-		return (await response.json()) as Record<string, unknown>;
+		return readBoundedJson(response, url);
 	});
 }
 
@@ -354,7 +409,7 @@ export class FaspClient {
 				if (response.status >= 500) throw new Error(detail);
 				throw new NonRetryableError(detail);
 			}
-			return (await response.json()) as Record<string, unknown>;
+			return readBoundedJson(response, baseUrl);
 		});
 	}
 
@@ -441,40 +496,157 @@ export class FaspClient {
 	 * else pushed to this agent's system_id independently of a request it
 	 * made (fasp_harness/core.py also pushes stream messages the same
 	 * way). Node's built-in global `WebSocket` -- no dependency, matching
-	 * the rest of this file. */
+	 * the rest of this file.
+	 *
+	 * Reconnects on its own, with backoff, if the connection drops after
+	 * being established -- a real, confirmed gap this closes: without it,
+	 * killing and restarting the harness mid-session (a redeploy, a
+	 * network blip, anything short of the caller itself calling
+	 * `close()`) left this channel silently, permanently dead. Proved by
+	 * doing exactly that against a real running harness: the socket
+	 * closed, nothing reconnected, and 20+ seconds of heartbeats sent
+	 * afterward -- including well after the harness was healthy and
+	 * answering `/health` again -- produced zero further messages. A
+	 * demo or a long-running agent that opens a channel once and expects
+	 * it to just keep working cannot tolerate that.
+	 *
+	 * `onStatusChange`, if given, fires `"open"` on every successful
+	 * (re)connect and `"reconnecting"` the instant an established
+	 * connection drops -- purely informational, since reconnection itself
+	 * is automatic; a caller that doesn't care can omit it entirely. */
 	async openChannel(
 		baseUrl: string,
 		onMessage: (message: Record<string, unknown>) => void,
+		onStatusChange?: (status: "open" | "reconnecting" | "closed") => void,
 	): Promise<FaspChannel> {
+		const { systemId } = this.loadOrCreateIdentity();
 		const wsUrl = `${baseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/fasp/v1/channel`;
-		const socket = new WebSocket(wsUrl);
-		await new Promise<void>((resolve, reject) => {
-			socket.addEventListener("open", () => resolve(), { once: true });
-			socket.addEventListener(
-				"error",
-				() => reject(new Error(`Could not open FASP channel at ${wsUrl}`)),
-				{ once: true },
+		let socket: WebSocket;
+		let closedByCaller = false;
+		let reconnectAttempt = 0;
+		// Outgoing frames sent while reconnecting are held, not dropped or
+		// thrown away silently -- flushed the moment the next connection
+		// lands. Bounded because a harness that stays down for a long time
+		// must not turn a slow reconnect loop into unbounded memory growth
+		// (the same reasoning as `MAX_RESPONSE_BYTES` above, just for the
+		// outbound side of this same client).
+		const pending: string[] = [];
+		const MAX_QUEUED = 50;
+
+		const connectOnce = (): Promise<WebSocket> =>
+			new Promise((resolve, reject) => {
+				const attempt = new WebSocket(wsUrl);
+				attempt.addEventListener("open", () => resolve(attempt), {
+					once: true,
+				});
+				attempt.addEventListener(
+					"error",
+					() => reject(new Error(`Could not open FASP channel at ${wsUrl}`)),
+					{ once: true },
+				);
+			});
+
+		const scheduleReconnect = (): void => {
+			reconnectAttempt += 1;
+			const backoff = Math.min(
+				RECONNECT_MAX_DELAY_MS,
+				RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempt - 1),
 			);
-		});
-		socket.addEventListener("message", (event) => {
-			try {
-				onMessage(JSON.parse(event.data as string));
-			} catch {
-				// A malformed frame is dropped, not fatal to the channel --
-				// this is a best-effort optimization layer by design (see
-				// channels.py), never the only path to a result.
+			const jitter = Math.random() * backoff * 0.5;
+			setTimeout(async () => {
+				if (closedByCaller) return;
+				try {
+					socket = await connectOnce();
+					reconnectAttempt = 0;
+					onStatusChange?.("open");
+					attachHandlers();
+					// The server registers a new socket for push delivery off
+					// the `from` of the FIRST frame it sees on it (see
+					// channel_endpoint in http_app.py) -- flushing whatever was
+					// actually queued does that; if nothing was queued, an
+					// explicit heartbeat still re-registers this connection so
+					// the caller doesn't have to know reconnection happened at
+					// all to keep receiving pushes.
+					if (pending.length > 0) {
+						flushPending();
+					} else {
+						socket.send(
+							JSON.stringify(this.buildEnvelope("heartbeat", systemId, {})),
+						);
+					}
+				} catch {
+					scheduleReconnect();
+				}
+			}, backoff + jitter);
+		};
+
+		const flushPending = (): void => {
+			while (pending.length > 0 && socket.readyState === WebSocket.OPEN) {
+				socket.send(pending.shift() as string);
 			}
-		});
+		};
+
+		const attachHandlers = (): void => {
+			socket.addEventListener("message", (event) => {
+				try {
+					onMessage(JSON.parse(event.data as string));
+				} catch {
+					// A malformed frame is dropped, not fatal to the channel --
+					// this is a best-effort optimization layer by design (see
+					// channels.py), never the only path to a result.
+				}
+			});
+			socket.addEventListener("close", () => {
+				if (closedByCaller) {
+					onStatusChange?.("closed");
+					return;
+				}
+				onStatusChange?.("reconnecting");
+				scheduleReconnect();
+			});
+		};
+
+		socket = await connectOnce();
+		attachHandlers();
+
 		return {
-			send: (envelope) => socket.send(JSON.stringify(envelope)),
-			close: () => socket.close(),
+			send: (envelope) => {
+				const line = JSON.stringify(envelope);
+				if (socket.readyState === WebSocket.OPEN) {
+					socket.send(line);
+					return;
+				}
+				if (pending.length >= MAX_QUEUED) {
+					throw new AICError(
+						"channel.queue_full",
+						`FASP channel to ${baseUrl} has been reconnecting long enough that ${MAX_QUEUED} queued outgoing envelopes is the limit -- this one was dropped rather than buffered forever.`,
+					);
+				}
+				pending.push(line);
+			},
+			close: () => {
+				closedByCaller = true;
+				socket.close();
+			},
 		};
 	}
 }
 
+/** A short base delay and a low cap on purpose: this is a long-lived
+ * background connection a caller opens once and expects to "just keep
+ * working" (see `openChannel`'s own doc comment) -- a brief network
+ * blip or a harness restart during a live demo has to recover in
+ * single-digit seconds, not tens of seconds, for that promise to hold.
+ * Still exponential + jittered so a harness that's down for a while
+ * doesn't get hammered every 300ms forever. */
+const RECONNECT_BASE_DELAY_MS = 300;
+const RECONNECT_MAX_DELAY_MS = 5_000;
+
 export interface FaspChannel {
 	/** Send an already-built, already-signed envelope (see
-	 * `buildEnvelope()`) as a raw frame on this channel. */
+	 * `buildEnvelope()`) as a raw frame on this channel. Queued (bounded)
+	 * rather than lost if the channel is mid-reconnect when this is
+	 * called. */
 	send(envelope: Record<string, unknown>): void;
 	close(): void;
 }

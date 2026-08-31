@@ -49,7 +49,7 @@ which of those three paths a new host's thin adapter takes.
 | `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why); accelerator detection checks NVIDIA, AMD/ROCm, and Apple Silicon in turn, and CPU architecture (arm64/x64/...) is always recorded |
 | `harness.ts` | Ties identity, the append-only log, self-managed state, and log-driven reconciliation together |
 | `state.ts` | This agent's own self-editable configuration: MCP servers to stay connected to or auto-connect to, and FASP peers paired with |
-| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, sending it a real signed intent once paired, and holding a persistent channel open for autonomous push delivery -- see "Self-knowledge" and "Autonomous communication" below |
+| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, sending it a real signed intent once paired, and holding a persistent, self-reconnecting channel open for autonomous push delivery -- see "Self-knowledge" and "Autonomous communication" below |
 | `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only -- available to import, not wired to a command by either bridge today |
 | `timestamps.ts` | The one timestamp format used everywhere here |
 | `fsjson.ts` | The one atomic-JSON-file read/write every piece of persisted state above goes through -- a corrupted file fails with a clear, actionable error, not a raw `SyntaxError` |
@@ -115,6 +115,15 @@ containers and comparing: a plain `fetch()` had a measurable failure
 rate at 40-60% loss, this bridge's retrying client had none. A 4xx is
 never retried -- that's a real rejection, not a transient failure.
 
+Every response these calls read back is size-bounded (4 MiB) rather
+than buffered without limit -- a real, confirmed gap this closes: a
+peer answering 200 OK with an unbounded body (hostile, or just broken)
+made `response.json()`/`response.text()` buffer the whole thing before
+this client saw a single byte, proved by a fake server that kept this
+process's RSS climbing past 3 GiB with no cap anywhere to stop it. The
+patched client aborts and throws once a response crosses the limit
+instead.
+
 ## Autonomous communication: no polling, no "did you get my message"
 
 `FaspClient.openChannel()` is what makes two agents genuinely
@@ -135,3 +144,21 @@ separate runs: an immediate `task.progress` acknowledgement at ~1.0s,
 then the real result arriving, unprompted, at ~3.0s -- the client never
 polled once in between, it just listened on the channel it opened at
 the start.
+
+The channel reconnects on its own, with backoff, if it drops after
+being established -- a real, confirmed gap this closes: killing and
+restarting a real running harness mid-session left the unpatched
+channel silently, permanently dead (proved by running a client against
+a real harness, killing the harness's process outright, and watching
+20+ seconds of heartbeats sent afterward -- well past the point the
+harness was healthy and answering `/health` again -- produce zero
+further messages). The patched version detects the drop, retries with
+short, jittered, capped backoff (single-digit seconds, not tens -- a
+live demo or a long-running agent can't tolerate a slow recovery any
+more than no recovery), and re-registers itself the moment it's back:
+verified against the same kill/restart, reconnecting in ~5s and
+resuming push delivery with nothing but a log line -- no restart, no
+re-pairing, no code on the caller's side. Anything sent while the
+channel is down is queued (bounded, so a harness that stays down for a
+long time can't turn this into unbounded memory growth) and flushed
+the instant the reconnect lands, rather than silently lost.
