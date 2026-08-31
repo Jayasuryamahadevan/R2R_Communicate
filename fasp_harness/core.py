@@ -7,7 +7,6 @@ local capability and risk policy.
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -15,30 +14,37 @@ import secrets
 import threading
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-
+from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
+from .crypto.identity import Identity
 from .platforms import runtime_profile
 
+__all__ = [
+    "FaspError",
+    "Identity",
+    "JsonState",
+    "DefaultSafeAdapter",
+    "FaspHarness",
+    "SafeAdapter",
+    "b64",
+    "unb64",
+    "sign",
+    "verify",
+    "unsigned",
+    "now",
+    "stamp",
+    "parse_stamp",
+    "PROTOCOL",
+    "MAX_INLINE_BYTES",
+    "MAX_CLOCK_SKEW_SECONDS",
+]
 
 PROTOCOL = "fasp/1.0"
 MAX_INLINE_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 60
-
-
-class FaspError(Exception):
-    """A protocol failure that is safe to return to a remote peer."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
 
 
 def now() -> datetime:
@@ -53,70 +59,24 @@ def parse_stamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def b64(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+def _plain_json(value: Any) -> bytes:
+    """Deterministic-enough local bookkeeping serialization.
 
-
-def unb64(value: str) -> bytes:
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
-def canonical(value: Any) -> bytes:
-    """Deterministic JSON subset used by this reference profile.
-
-    Production systems needing cross-language signing MUST implement RFC 8785.
-    This subset rejects ambiguous JSON structures before signing.
+    Deliberately NOT the RFC 8785 canonicalizer in `.crypto.canonical`: that
+    canonicalizer enforces the IEEE 754 safe-integer domain (+-2**53-1),
+    which is correct for anything that gets signed but wrong for purely
+    local state such as `time.monotonic_ns()` bookkeeping fields, which
+    routinely exceed it. Nothing written through `JsonState` is signed --
+    signed records are canonicalized once, explicitly, by `sign()`/`verify()`
+    before they ever reach here.
     """
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-
-
-def unsigned(value: dict[str, Any]) -> dict[str, Any]:
-    return {key: item for key, item in value.items() if key != "signature"}
-
-
-def sign(value: dict[str, Any], key: Ed25519PrivateKey, kid: str) -> dict[str, Any]:
-    signed = dict(value)
-    signed["signature"] = {"alg": "Ed25519", "kid": kid, "value": b64(key.sign(canonical(unsigned(signed))))}
-    return signed
-
-
-def verify(value: dict[str, Any], public_b64: str) -> None:
-    signature = value.get("signature", {})
-    if signature.get("alg") != "Ed25519" or not isinstance(signature.get("value"), str):
-        raise FaspError("auth.invalid_signature", "Envelope has no supported Ed25519 signature.")
-    try:
-        Ed25519PublicKey.from_public_bytes(unb64(public_b64)).verify(unb64(signature["value"]), canonical(unsigned(value)))
-    except (InvalidSignature, ValueError, TypeError) as exc:
-        raise FaspError("auth.invalid_signature", "Signature verification failed.") from exc
-
-
-@dataclass(frozen=True)
-class Identity:
-    private: Ed25519PrivateKey
-    public_b64: str
-    system_id: str
-    kid: str
-
-    @classmethod
-    def load_or_create(cls, path: Path) -> "Identity":
-        if path.exists():
-            record = json.loads(path.read_text(encoding="utf-8"))
-            private = Ed25519PrivateKey.from_private_bytes(unb64(record["private_key"]))
-            public = b64(private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
-            return cls(private, public, record["system_id"], record["kid"])
-        private = Ed25519PrivateKey.generate()
-        public_raw = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        public = b64(public_raw)
-        system_id = "fasp:system:" + b64(hashlib.sha256(public_raw).digest())
-        identity = cls(private, public, system_id, "ed25519-" + secrets.token_hex(4))
-        atomic_json(path, {"private_key": b64(private.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())), "system_id": system_id, "kid": identity.kid})
-        return identity
 
 
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(canonical(value) + b"\n")
+    temporary.write_bytes(_plain_json(value) + b"\n")
     os.replace(temporary, path)
     os.chmod(path, 0o600)
 
@@ -141,7 +101,7 @@ class JsonState:
     def append_jsonl(self, name: str, value: dict[str, Any]) -> None:
         path = self.directory / name
         with self.lock, path.open("a", encoding="utf-8") as output:
-            output.write(canonical(value).decode() + "\n")
+            output.write(_plain_json(value).decode() + "\n")
         os.chmod(path, 0o600)
 
     def read_jsonl(self, name: str) -> list[dict[str, Any]]:
@@ -304,7 +264,7 @@ class FaspHarness:
             raise FaspError("schema.invalid", "Envelope timestamps are invalid.") from exc
         if expires <= now() or issued > now() + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS):
             raise FaspError("auth.envelope_expired", "Envelope is expired or issued too far in the future.")
-        if len(canonical(envelope)) > MAX_INLINE_BYTES:
+        if len(_plain_json(envelope)) > MAX_INLINE_BYTES:
             raise FaspError("resource.too_large", "Inline envelope exceeds 64 KiB.")
         peer = self._peer(envelope["from"])
         verify(envelope, peer["card"]["public_key"])

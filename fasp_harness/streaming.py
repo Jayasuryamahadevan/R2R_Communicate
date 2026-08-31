@@ -33,13 +33,18 @@ def packetize(stream_id: str, epoch: int, sequence_start: int, data: bytes, cont
         raise ValueError("max_payload_bytes must be within the FASP packet bound")
     frame_id = str(uuid.uuid4())
     chunks = [data[index:index + max_payload_bytes] for index in range(0, len(data), max_payload_bytes)] or [b""]
-    sent_ns = time.monotonic_ns()
+    # Milliseconds, not time.monotonic_ns(): this field rides inside a signed
+    # envelope payload, which RFC 8785 canonicalization (fasp_harness.crypto.
+    # canonical) restricts to the IEEE 754 safe-integer domain (+-2**53-1).
+    # Nanosecond-since-boot values cross that after ~104 days of uptime;
+    # milliseconds stay safe for roughly 285,000 years.
+    sent_ms = time.monotonic_ns() // 1_000_000
     for index, chunk in enumerate(chunks):
         yield {
             "stream_id": stream_id,
             "epoch": epoch,
             "sequence": sequence_start + index,
-            "sent_monotonic_ns": sent_ns,
+            "sent_monotonic_ms": sent_ms,
             "content_type": content_type,
             "frame_id": frame_id,
             "fragment_index": index,
