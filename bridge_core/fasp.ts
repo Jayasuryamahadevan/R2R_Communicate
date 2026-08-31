@@ -82,22 +82,66 @@ function faspSign(
 	return { ...unsigned, signature: { alg: "Ed25519", kid, value } };
 }
 
+const MAX_NETWORK_RETRIES = 3;
+const RETRY_BASE_DELAY_MS = 200;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** A rejection this agent should never retry blindly: a real answer
+ * from a peer that IS reachable (bad auth, bad schema, not authorized)
+ * -- retrying changes nothing and just delays surfacing it. Everything
+ * else thrown inside `withNetworkRetry` (fetch itself throwing --
+ * connection refused/reset/timed out -- or a 5xx from a transiently
+ * overloaded peer) is treated as retryable. */
+class NonRetryableError extends Error {}
+
+/** A dropped connection (packet loss severe enough to time out or reset
+ * the TCP stream, not the odd lost segment TCP already retransmits on
+ * its own) surfaces here as `fetch` throwing; a 5xx is a peer that's
+ * transiently overloaded. Both get retried with exponential backoff +
+ * jitter. This is safe to retry blindly because every caller sends its
+ * own idempotency_key (envelopes) or is naturally idempotent
+ * (hello/confirm/peers) -- fasp_harness's own `inbox.insert_if_new`
+ * (core.py) is the other half of this: a retried request that DID land,
+ * whose response just got lost on the way back, replays the original
+ * recorded outcome instead of re-running it. */
+async function withNetworkRetry<T>(attempt: () => Promise<T>): Promise<T> {
+	let lastError: unknown;
+	for (let retry = 0; retry <= MAX_NETWORK_RETRIES; retry++) {
+		try {
+			return await attempt();
+		} catch (error) {
+			if (error instanceof NonRetryableError) throw error;
+			lastError = error;
+			if (retry === MAX_NETWORK_RETRIES) break;
+			const backoff = RETRY_BASE_DELAY_MS * 2 ** retry;
+			const jitter = Math.random() * backoff * 0.5;
+			await sleep(backoff + jitter);
+		}
+	}
+	throw lastError;
+}
+
 async function postJson(
 	url: string,
 	body: Record<string, unknown>,
 	extraHeaders: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
-	const response = await fetch(url, {
-		method: "POST",
-		headers: { "content-type": "application/json", ...extraHeaders },
-		body: JSON.stringify(body),
+	return withNetworkRetry(async () => {
+		const response = await fetch(url, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...extraHeaders },
+			body: JSON.stringify(body),
+		});
+		if (!response.ok) {
+			const detail = `POST ${url} failed: HTTP ${response.status} ${await response.text()}`;
+			if (response.status >= 500) throw new Error(detail);
+			throw new NonRetryableError(detail);
+		}
+		return (await response.json()) as Record<string, unknown>;
 	});
-	if (!response.ok) {
-		throw new Error(
-			`POST ${url} failed: HTTP ${response.status} ${await response.text()}`,
-		);
-	}
-	return (await response.json()) as Record<string, unknown>;
 }
 
 export class FaspClient {
@@ -200,15 +244,17 @@ export class FaspClient {
 		baseUrl: string,
 		adminToken: string,
 	): Promise<Record<string, unknown>> {
-		const response = await fetch(`${baseUrl.replace(/\/$/, "")}/peers`, {
-			headers: { "X-FASP-Admin-Token": adminToken },
+		return withNetworkRetry(async () => {
+			const response = await fetch(`${baseUrl.replace(/\/$/, "")}/peers`, {
+				headers: { "X-FASP-Admin-Token": adminToken },
+			});
+			if (!response.ok) {
+				const detail = `GET /peers at ${baseUrl} failed: HTTP ${response.status}`;
+				if (response.status >= 500) throw new Error(detail);
+				throw new NonRetryableError(detail);
+			}
+			return (await response.json()) as Record<string, unknown>;
 		});
-		if (!response.ok) {
-			throw new Error(
-				`GET /peers at ${baseUrl} failed: HTTP ${response.status}`,
-			);
-		}
-		return (await response.json()) as Record<string, unknown>;
 	}
 
 	/** Actually use a completed pairing: propose an intent (`kind:
@@ -230,22 +276,37 @@ export class FaspClient {
 		capability: string,
 		payload: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
+		return this.sendEnvelope(baseUrl, "intent.propose", toSystemId, {
+			idempotency_key: `idem-${b64(randomBytes(12))}`,
+			capability,
+			...payload,
+		});
+	}
+
+	/** The general case `proposeIntent` is one instance of: build, sign,
+	 * and POST any FASP envelope `kind` (`reservation.request`,
+	 * `reservation.release`, `heartbeat`, ...), not just `intent.propose`.
+	 * This method owns exactly the fields every envelope needs regardless
+	 * of kind (from/to/timestamps/nonce/signature); `payload` is entirely
+	 * that kind's own concern, unvalidated here. */
+	async sendEnvelope(
+		baseUrl: string,
+		kind: string,
+		toSystemId: string,
+		payload: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
 		const { identity, kid, systemId } = this.loadOrCreateIdentity();
 		const issuedAt = stamp();
 		const envelope = {
 			fasp: PROTOCOL,
-			kind: "intent.propose",
+			kind,
 			message_id: `msg-${b64(randomBytes(12))}`,
 			from: systemId,
 			to: toSystemId,
 			issued_at: issuedAt,
 			expires_at: stamp(new Date(Date.parse(issuedAt) + ENVELOPE_VALIDITY_MS)),
 			nonce: b64(randomBytes(16)),
-			payload: {
-				idempotency_key: `idem-${b64(randomBytes(12))}`,
-				capability,
-				...payload,
-			},
+			payload,
 		};
 		const signed = faspSign(envelope, identity, kid);
 		return postJson(`${baseUrl.replace(/\/$/, "")}/fasp/v1/envelopes`, signed);

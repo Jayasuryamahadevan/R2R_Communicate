@@ -23,26 +23,56 @@ class ReservationsRepo:
             return None
         return self._with_segments(row)
 
-    def find_conflict(self, segments: list[dict[str, Any]], now_ms: int) -> dict[str, Any] | None:
-        """Return the first currently-held segment overlapping any of
-        `segments`, or None. One indexed range query per proposed segment."""
-        for proposed in segments:
-            row = self.db.read_one(
-                "SELECT reservation_segments.* FROM reservation_segments "
-                "JOIN reservations ON reservations.reservation_id = reservation_segments.reservation_id "
-                "WHERE reservations.state = 'granted' AND reservations.lease_until_ms > ? "
-                "AND reservation_segments.cell = ? AND reservation_segments.start_ms < ? AND reservation_segments.end_ms > ? "
-                "LIMIT 1",
-                (now_ms, proposed["cell"], proposed["end_ms"], proposed["start_ms"]),
-            )
-            if row is not None:
-                return {"cell": row["cell"], "start_ms": row["start_ms"], "end_ms": row["end_ms"]}
-        return None
+    def request_atomic(
+        self,
+        reservation_id: str,
+        owner: str,
+        segments: list[dict[str, Any]],
+        lease_until_ms: int,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        """Check for a conflict (an existing reservation under this ID, or
+        an overlapping segment held by someone else) and grant if there is
+        none -- all inside ONE `db.write()` transaction.
 
-    def grant(self, reservation_id: str, owner: str, segments: list[dict[str, Any]], lease_until_ms: int) -> None:
-        """Grant (or renew, if `reservation_id` previously existed but is
-        no longer active) a reservation. Renewal replaces its segments."""
+        This used to be two separate calls (`find_conflict()` then
+        `grant()`), each acquiring and releasing `Database`'s lock on its
+        own -- exactly the TOCTOU window `db.write()`'s own docstring
+        says it exists to close ("lets a repo do a check-then-insert
+        without a TOCTOU window"), just not actually used that way here.
+        Two genuinely concurrent requests for the same overlapping
+        segment could each pass the conflict check before either
+        committed its grant, and both would be granted -- confirmed by
+        running exactly that scenario for real (three concurrent
+        requests contending for one cell) before this fix existed.
+
+        Returns None on success (granted). Otherwise a dict describing
+        why not: `{"kind": "existing", "owner": ...}` if `reservation_id`
+        is already active (for a DIFFERENT owner than that -- `request()`
+        decides what that means), or `{"kind": "conflict", "cell":
+        ..., "start_ms": ..., "end_ms": ...}` for an overlapping segment
+        held by someone else.
+        """
         with self.db.write() as conn:
+            existing = conn.execute(
+                "SELECT * FROM reservations WHERE reservation_id = ? AND state = 'granted' AND lease_until_ms > ?",
+                (reservation_id, now_ms),
+            ).fetchone()
+            if existing is not None:
+                return {"kind": "existing", "owner": existing["owner"]}
+
+            for proposed in segments:
+                conflict_row = conn.execute(
+                    "SELECT reservation_segments.* FROM reservation_segments "
+                    "JOIN reservations ON reservations.reservation_id = reservation_segments.reservation_id "
+                    "WHERE reservations.state = 'granted' AND reservations.lease_until_ms > ? "
+                    "AND reservation_segments.cell = ? AND reservation_segments.start_ms < ? AND reservation_segments.end_ms > ? "
+                    "LIMIT 1",
+                    (now_ms, proposed["cell"], proposed["end_ms"], proposed["start_ms"]),
+                ).fetchone()
+                if conflict_row is not None:
+                    return {"kind": "conflict", "cell": conflict_row["cell"], "start_ms": conflict_row["start_ms"], "end_ms": conflict_row["end_ms"]}
+
             conn.execute(
                 "INSERT INTO reservations (reservation_id, owner, state, lease_until_ms) VALUES (?, ?, 'granted', ?) "
                 "ON CONFLICT(reservation_id) DO UPDATE SET owner = excluded.owner, state = 'granted', lease_until_ms = excluded.lease_until_ms",
@@ -54,6 +84,7 @@ class ReservationsRepo:
                     "INSERT INTO reservation_segments (reservation_id, cell, start_ms, end_ms) VALUES (?, ?, ?, ?)",
                     (reservation_id, segment["cell"], segment["start_ms"], segment["end_ms"]),
                 )
+            return None
 
     def release(self, owner: str, reservation_id: str, now_ms: int) -> bool:
         with self.db.write() as conn:

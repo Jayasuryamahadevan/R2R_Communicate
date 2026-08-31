@@ -48,19 +48,19 @@ class ReservationBook:
             raise FaspError("schema.invalid", "Reservation lease must be 1-120 seconds.")
         segments = self._validate_segments(payload.get("segments"), now_ms)
 
-        existing = self.repo.get_active(reservation_id, now_ms)
-        if existing is not None:
-            if existing["owner"] == owner:
+        lease_until_ms = min(now_ms + lease_ms, max(segment["end_ms"] for segment in segments) + 2_000)
+
+        # One atomic check-then-grant (see request_atomic()'s own
+        # docstring for why this must not be two separate calls).
+        outcome = self.repo.request_atomic(reservation_id, owner, segments, lease_until_ms, now_ms)
+        if outcome is None:
+            return {"type": "reservation.grant", "reservation_id": reservation_id, "owner": owner, "state": "granted", "segments": segments, "lease_until_ms": lease_until_ms}
+        if outcome["kind"] == "existing":
+            if outcome["owner"] == owner:
+                existing = self.repo.get_active(reservation_id, now_ms)
                 return {"type": "reservation.grant", **existing}
             raise FaspError("fleet.reservation_conflict", "Reservation ID belongs to another robot.")
-
-        conflict = self.repo.find_conflict(segments, now_ms)
-        if conflict is not None:
-            return {"type": "reservation.reject", "reservation_id": reservation_id, "status": "conflict", "retry_after_ms": max(now_ms + 250, conflict["end_ms"]), "reason": "space_time_conflict"}
-
-        lease_until_ms = min(now_ms + lease_ms, max(segment["end_ms"] for segment in segments) + 2_000)
-        self.repo.grant(reservation_id, owner, segments, lease_until_ms)
-        return {"type": "reservation.grant", "reservation_id": reservation_id, "owner": owner, "state": "granted", "segments": segments, "lease_until_ms": lease_until_ms}
+        return {"type": "reservation.reject", "reservation_id": reservation_id, "status": "conflict", "retry_after_ms": max(now_ms + 250, outcome["end_ms"]), "reason": "space_time_conflict"}
 
     def release(self, owner: str, reservation_id: str) -> dict[str, Any]:
         now_ms = int(time.time() * 1000)

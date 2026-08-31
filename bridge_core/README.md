@@ -95,3 +95,13 @@ simulated one: a deliberately-oversized allocation under the same kind
 of limit was confirmed to actually get OOM-killed) -- hello, confirm,
 and a `coordinate.chat.v1` intent whose response echoed back exactly
 what was sent.
+
+`sendEnvelope()` is the general case `proposeIntent()` is one instance
+of: any FASP envelope kind (`reservation.request`, `heartbeat`, ...),
+not just `intent.propose`. Every network call in `fasp.ts` (`hello`,
+`confirmSelf`, `listPeers`, and both of the above) retries a dropped
+connection or a 5xx with exponential backoff + jitter -- a real gap
+found by actually injecting packet loss (`tc netem`) between two
+containers and comparing: a plain `fetch()` had a measurable failure
+rate at 40-60% loss, this bridge's retrying client had none. A 4xx is
+never retried -- that's a real rejection, not a transient failure.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -40,6 +41,45 @@ class RoboticsTests(unittest.TestCase):
         })
         rejected = self.coordinator.reservation_request(request)
         self.assertEqual(rejected["status"], "conflict")
+
+    def test_concurrent_overlapping_reservations_never_both_grant(self) -> None:
+        """Regression test for a real race: find_conflict() and grant()
+        used to be two separate Database lock acquisitions, leaving a
+        genuine window for two truly concurrent requesters to both pass
+        the conflict check before either committed its grant -- caught by
+        actually running real concurrent HTTP requests against a live
+        harness (not exercised by the sequential property test above,
+        which can't catch a race that only exists between threads).
+        Reproduced here at the thread level, in-process, so it runs fast
+        and never needs a real server."""
+        start = int(time.time() * 1000) + 1_000
+        robots = [FaspHarness(Path(self.temp.name) / f"robot-{i}", f"robot-{i}", f"http://robot-{i}:8766") for i in range(8)]
+        for robot in robots:
+            hello = self.coordinator.hello(robot.id_card())
+            self.coordinator.confirm_peer(robot.identity.system_id, hello["pair_code"], ["fleet."])
+
+        results: list[dict] = [None] * len(robots)  # type: ignore[list-item]
+        barrier = threading.Barrier(len(robots))
+
+        def contend(index: int, robot: FaspHarness) -> None:
+            envelope = robot.make_envelope(
+                "reservation.request",
+                self.coordinator.identity.system_id,
+                {"reservation_id": f"race-{index}", "lease_ms": 30_000, "segments": [{"cell": "aisle-9/cell-1", "start_ms": start, "end_ms": start + 5_000}]},
+            )
+            barrier.wait()  # maximize the chance every thread is mid-request at once
+            results[index] = self.coordinator.reservation_request(envelope)
+
+        threads = [threading.Thread(target=contend, args=(i, robot)) for i, robot in enumerate(robots)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        grants = [r for r in results if r["type"] == "reservation.grant"]
+        rejects = [r for r in results if r["type"] == "reservation.reject"]
+        self.assertEqual(len(grants), 1, f"expected exactly one grant among {len(robots)} concurrent contenders, got {len(grants)}: {results}")
+        self.assertEqual(len(rejects), len(robots) - 1)
 
     def test_local_safety_gate_cannot_be_bypassed(self) -> None:
         gate = LocalSafetyGate(maximum_speed_mps=0.8)
