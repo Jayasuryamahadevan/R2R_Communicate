@@ -91,8 +91,9 @@ requested work: the delivery receipt and the task result are always distinct.
 
 ```bash
 uv venv .venv && source .venv/bin/activate
-uv pip install -e ".[test]"
+uv pip install -e ".[test,dev]"
 
+ruff check fasp_harness tests
 python3 -m unittest discover -s tests -v
 python3 -m fasp_harness serve \
   --host 0.0.0.0 --port 8766 \
@@ -102,6 +103,15 @@ python3 -m fasp_harness serve \
 
 (Any PEP 517-compatible installer works; `uv` is just fast. The runtime
 dependencies are `cryptography`, `starlette`, `uvicorn`, and `rfc8785`.)
+`.github/workflows/ci.yml` runs the same lint and test suite on every
+push and pull request, across Python 3.11-3.13.
+
+Or run it in a container:
+
+```bash
+docker build -t fasp-harness .
+docker run -p 8766:8766 -v fasp-state:/home/fasp/.fasp fasp-harness
+```
 
 The server prints its system ID, public profile URL, and the path to its
 private admin token. Do not expose the admin token or identity private key.
@@ -232,3 +242,7 @@ can only ever be *requested* over the network, never used to clear one. See
 See [FASP_RUNTIME_PROFILES.md](FASP_RUNTIME_PROFILES.md) for cross-platform
 deployment profiles and [FASP_MESSAGING_STREAMING.md](FASP_MESSAGING_STREAMING.md)
 for the packet-management and live-streaming profile.
+
+## License
+
+Apache License 2.0 -- see [LICENSE](LICENSE).
