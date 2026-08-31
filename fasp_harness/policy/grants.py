@@ -8,8 +8,6 @@ valid, expiring authorization on top of it.
 
 from __future__ import annotations
 
-from typing import Any
-
 from ..protocol.errors import FaspError
 from ..storage.grants_repo import GrantsRepo
 from ..timestamps import now, parse_stamp
