@@ -2,7 +2,7 @@
 recipient processing, and terminal completion in the API.
 
 No schema change was needed for this: the existing design already keeps
-these four signals separate --
+these signals separate --
   - `receipt.delivered` (server.py wraps every accept() response in this):
     the transport-level confirmation that this system received the envelope.
   - `duplicate` / `response` returned alongside it: whether this exact
@@ -10,8 +10,9 @@ these four signals separate --
   - `task.result` / `task.fail`: the terminal completion signal for a
     proposed intent specifically.
   - `receipt.processed`: a separate, explicit application-level
-    acknowledgement the RECEIVING peer can send back about a non-intent
-    message it has finished handling.
+    acknowledgement one peer can send the other about a message it has
+    finished handling, verified through its own dedicated path rather than
+    accept()'s intent-shaped dispatch.
 This test only pins that distinction down so a future change can't quietly
 collapse it.
 """
@@ -50,17 +51,13 @@ class ReceiptsConformanceTests(unittest.TestCase):
         self.assertEqual(response["type"], "task.result")
         self.assertEqual(response["status"], "completed")
 
-    def test_non_intent_delivery_carries_no_task_response(self) -> None:
-        chat = self.alice.make_envelope("coordinate.chat.v1", self.bob.identity.system_id, {"note": "hello"})
-        duplicate, response = self.bob.accept(chat)
-        self.assertFalse(duplicate)
-        self.assertIsNone(response)
-
     def test_receipt_processed_is_a_distinct_application_level_acknowledgement(self) -> None:
-        chat = self.alice.make_envelope("coordinate.chat.v1", self.bob.identity.system_id, {"note": "hello"})
-        self.bob.accept(chat)
+        original = self.alice.make_envelope("intent.propose", self.bob.identity.system_id, {
+            "intent_id": "chat-1", "idempotency_key": "chat-1", "capability": "coordinate.chat.v1", "objective": "hello", "risk": "observe",
+        })
+        self.bob.accept(original)
 
-        receipt_envelope = self.bob.make_envelope("receipt.processed", self.alice.identity.system_id, {"message_id": chat["message_id"]})
+        receipt_envelope = self.bob.make_envelope("receipt.processed", self.alice.identity.system_id, {"message_id": original["message_id"]})
         result = self.alice.receipt(receipt_envelope)
         self.assertEqual(result, {"ok": True})
 

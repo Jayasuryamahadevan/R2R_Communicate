@@ -21,15 +21,23 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from ..protocol.errors import FaspError
 from ..storage.db import Database
 from ..timestamps import parse_stamp, stamp
 
+DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
+
 
 class ArtifactStore:
-    def __init__(self, db: Database, state_dir: Path) -> None:
+    def __init__(self, db: Database, state_dir: Path, max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES) -> None:
         self.db = db
         self.directory = state_dir / "artifacts"
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.max_total_bytes = max_total_bytes
+
+    def total_bytes(self) -> int:
+        row = self.db.read_one("SELECT COALESCE(SUM(size_bytes), 0) AS total FROM artifacts")
+        return int(row["total"])
 
     def put(self, data: bytes, media_type: str, created_by: str, at: str, retention: timedelta | None = None) -> dict[str, Any]:
         """Store `data`, returning its artifact record. Storing the same
@@ -38,6 +46,9 @@ class ArtifactStore:
         existing = self.db.read_one("SELECT * FROM artifacts WHERE digest = ?", (digest,))
         if existing is not None:
             return _row_to_artifact(existing)
+
+        if self.total_bytes() + len(data) > self.max_total_bytes:
+            raise FaspError("resource.exhausted", "Artifact storage limit reached; cannot store a new artifact.")
 
         artifact_id = "artifact-" + secrets.token_urlsafe(12)
         hex_digest = digest.split(":", 1)[1]

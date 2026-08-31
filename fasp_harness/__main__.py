@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import sys
 
-from . import discovery, server
+from . import discovery
+from .transport import asgi_server
 
 
 if len(sys.argv) > 1 and sys.argv[1] == "discover":
@@ -13,4 +14,4 @@ if len(sys.argv) > 1 and sys.argv[1] == "discover":
 else:
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         sys.argv.pop(1)
-    server.main()
+    asgi_server.main()

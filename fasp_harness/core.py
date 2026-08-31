@@ -24,6 +24,7 @@ from .crypto.identity import Identity
 from .platforms import runtime_profile
 from .policy import capability as capability_policy
 from .policy.grants import validate_grant_if_required
+from .policy.ratelimit import TokenBucketLimiter
 from .storage.db import Database
 from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
@@ -36,6 +37,7 @@ PEER_PAIRING_VALIDITY = timedelta(days=90)
 DEFAULT_TASK_LEASE = timedelta(seconds=30)
 ARTIFACT_INLINE_THRESHOLD_BYTES = 8 * 1024
 ARTIFACT_RETENTION = timedelta(days=7)
+ACCEPT_KINDS = frozenset({"intent.propose", "task.cancel", "artifact.fetch"})
 
 __all__ = [
     "FaspError",
@@ -169,7 +171,15 @@ class DefaultSafeAdapter:
 class FaspHarness:
     """Durable FASP state machine behind the HTTP server."""
 
-    def __init__(self, state_dir: Path, display_name: str, base_url: str, adapter: SafeAdapter | None = None) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        display_name: str,
+        base_url: str,
+        adapter: SafeAdapter | None = None,
+        rate_limit_per_second: float = 10.0,
+        rate_limit_burst: int = 20,
+    ) -> None:
         # JsonState still backs streaming/robotics/receipts until Phase 7
         # migrates them onto the same SQLite database as everything else.
         self.state = JsonState(state_dir)
@@ -182,6 +192,7 @@ class FaspHarness:
         self.grants = GrantsRepo(self.db, self.audit)
         self.revocations = RevocationsRepo(self.db, self.audit)
         self.artifacts = ArtifactStore(self.db, state_dir)
+        self.rate_limiter = TokenBucketLimiter(rate_limit_per_second, rate_limit_burst)
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
@@ -344,10 +355,17 @@ class FaspHarness:
             raise FaspError("resource.too_large", "Inline envelope exceeds 64 KiB.")
         peer = self._peer(envelope["from"])
         verify(envelope, peer["card"]["public_key"])
+        # Rate-limited by authenticated peer_id, after signature verification
+        # -- an unauthenticated flood is the transport layer's job (ss10);
+        # this is the per-relationship budget once we know who is asking.
+        if not self.rate_limiter.allow(envelope["from"]):
+            raise FaspError("resource.exhausted", "Peer exceeded its request rate limit.")
         return peer
 
     def accept(self, envelope: dict[str, Any], expected_kind: str | None = None) -> tuple[bool, dict[str, Any] | None]:
         peer = self._verify_envelope(envelope, expected_kind)
+        if expected_kind is None and envelope["kind"] not in ACCEPT_KINDS:
+            raise FaspError("protocol.unsupported_kind", f"Unsupported envelope kind: {envelope['kind']!r}.")
         if not self.inbox.insert_if_new(envelope, stamp()):
             return True, self.inbox.get_response(envelope["message_id"])
         response: dict[str, Any] | None = None
