@@ -21,6 +21,7 @@ call from blocking every other connection's I/O.
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from datetime import timedelta
 from http import HTTPStatus
@@ -29,10 +30,13 @@ from typing import Any, Awaitable, Callable
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route
 
 from ..core import PROTOCOL, FaspError, FaspHarness
+from ..observability.logging import configure, log
+
+logger = configure()
 
 MAX_BODY_BYTES = 64 * 1024
 
@@ -49,6 +53,10 @@ DIRECT_HANDLERS: dict[str, str] = {
     "stream.close": "stream_close",
     "reservation.request": "reservation_request",
     "reservation.release": "reservation_release",
+    "safety.halt": "safety_halt",
+    "safety.status": "safety_status",
+    "incident.report": "report_incident",
+    "heartbeat": "heartbeat",
 }
 
 
@@ -74,14 +82,22 @@ def _json_ok(payload: Any) -> JSONResponse:
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
-def _catching(handler: Callable[[Request], Awaitable[JSONResponse]]) -> Callable[[Request], Awaitable[JSONResponse]]:
-    async def wrapped(request: Request) -> JSONResponse:
-        try:
-            return await handler(request)
-        except FaspError as error:
-            return _error_response(error)
+def _catching(harness: FaspHarness) -> Callable[[Callable[[Request], Awaitable[JSONResponse]]], Callable[[Request], Awaitable[JSONResponse]]]:
+    """Decorator factory: catch FaspError, count it, log it, and translate
+    it to the matching HTTP response -- never a raw payload or traceback."""
 
-    return wrapped
+    def decorator(handler: Callable[[Request], Awaitable[JSONResponse]]) -> Callable[[Request], Awaitable[JSONResponse]]:
+        async def wrapped(request: Request) -> JSONResponse:
+            try:
+                return await handler(request)
+            except FaspError as error:
+                harness.metrics.increment("fasp_auth_failures_total", code=error.code)
+                log(logger, logging.WARNING, "request.rejected", code=error.code, path=request.url.path)
+                return _error_response(error)
+
+        return wrapped
+
+    return decorator
 
 
 async def _read_json_body(request: Request) -> dict[str, Any]:
@@ -97,6 +113,20 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
     return payload
 
 
+def _live_gauges(harness: FaspHarness) -> dict[str, int]:
+    """Point-in-time counts queried straight from the database, rather than
+    tracked incrementally -- these change on their own (a lease expiring,
+    a stream closing) independent of any request coming through here."""
+    gauges: dict[str, int] = {}
+    for row in harness.db.read("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state"):
+        gauges[f'fasp_tasks{{state="{row["state"]}"}}'] = row["n"]
+    active_streams = harness.db.read_one("SELECT COUNT(*) AS n FROM streams WHERE state = 'open'")
+    gauges["fasp_active_streams"] = active_streams["n"] if active_streams else 0
+    active_reservations = harness.db.read_one("SELECT COUNT(*) AS n FROM reservations WHERE state = 'granted'")
+    gauges["fasp_active_reservations"] = active_reservations["n"] if active_reservations else 0
+    return gauges
+
+
 def _require_admin(request: Request, harness: FaspHarness) -> None:
     presented = request.headers.get("X-FASP-Admin-Token", "")
     # Timing-safe: the prior hand-rolled server used a plain `!=` here,
@@ -108,26 +138,34 @@ def _require_admin(request: Request, harness: FaspHarness) -> None:
 
 
 def create_app(harness: FaspHarness) -> Starlette:
-    @_catching
+    catching = _catching(harness)
+
+    @catching
     async def get_profile(request: Request) -> JSONResponse:
         return _json_ok(await run_in_threadpool(harness.id_card))
 
-    @_catching
+    @catching
     async def get_health(request: Request) -> JSONResponse:
         return _json_ok({"ok": True, "fasp": PROTOCOL, "system_id": harness.identity.system_id})
 
-    @_catching
+    @catching
     async def get_peers(request: Request) -> JSONResponse:
         _require_admin(request, harness)
         return _json_ok(await run_in_threadpool(harness.peers.all))
 
-    @_catching
+    @catching
+    async def get_metrics(request: Request) -> PlainTextResponse:
+        _require_admin(request, harness)
+        gauges = await run_in_threadpool(_live_gauges, harness)
+        return PlainTextResponse(harness.metrics.render(gauges), headers={"Cache-Control": "no-store"})
+
+    @catching
     async def post_pair_hello(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
         result = await run_in_threadpool(harness.hello, payload.get("id_card", {}))
         return _json_ok(result)
 
-    @_catching
+    @catching
     async def post_pair_confirm(request: Request) -> JSONResponse:
         _require_admin(request, harness)
         payload = await _read_json_body(request)
@@ -136,7 +174,7 @@ def create_app(harness: FaspHarness) -> Starlette:
         )
         return _json_ok(result)
 
-    @_catching
+    @catching
     async def post_pair_revoke(request: Request) -> JSONResponse:
         _require_admin(request, harness)
         payload = await _read_json_body(request)
@@ -145,7 +183,7 @@ def create_app(harness: FaspHarness) -> Starlette:
         )
         return _json_ok(result)
 
-    @_catching
+    @catching
     async def post_grants_issue(request: Request) -> JSONResponse:
         _require_admin(request, harness)
         payload = await _read_json_body(request)
@@ -155,14 +193,14 @@ def create_app(harness: FaspHarness) -> Starlette:
         )
         return _json_ok(result)
 
-    @_catching
+    @catching
     async def post_grants_revoke(request: Request) -> JSONResponse:
         _require_admin(request, harness)
         payload = await _read_json_body(request)
         result = await run_in_threadpool(harness.revoke_grant, payload.get("grant_id", ""))
         return _json_ok(result)
 
-    @_catching
+    @catching
     async def post_envelopes(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
         kind = payload.get("kind")
@@ -172,14 +210,19 @@ def create_app(harness: FaspHarness) -> Starlette:
         handler_name = DIRECT_HANDLERS.get(kind)
         if handler_name is None:
             raise FaspError("protocol.unsupported_kind", f"Unsupported envelope kind: {kind!r}.")
+        # accept()'s intent/task/artifact kinds count themselves (core.py);
+        # count everything dispatched through DIRECT_HANDLERS here so
+        # fasp_envelopes_total covers every kind, not just those three.
+        harness.metrics.increment("fasp_envelopes_total", kind=kind)
         result = await run_in_threadpool(getattr(harness, handler_name), payload)
         return _json_ok(result)
 
-    @_catching
+    @catching
     async def post_receipts(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
         if payload.get("kind") != "receipt.processed":
             raise FaspError("protocol.unsupported_kind", "POST /fasp/v1/receipts only accepts receipt.processed.")
+        harness.metrics.increment("fasp_envelopes_total", kind="receipt.processed")
         result = await run_in_threadpool(harness.receipt, payload)
         return _json_ok(result)
 
@@ -189,6 +232,7 @@ def create_app(harness: FaspHarness) -> Starlette:
             Route("/.well-known/fasp/id-card.json", get_profile, methods=["GET"]),
             Route("/health", get_health, methods=["GET"]),
             Route("/peers", get_peers, methods=["GET"]),
+            Route("/metrics", get_metrics, methods=["GET"]),
             Route("/pair/hello", post_pair_hello, methods=["POST"]),
             Route("/pair/confirm", post_pair_confirm, methods=["POST"]),
             Route("/pair/revoke", post_pair_revoke, methods=["POST"]),

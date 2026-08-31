@@ -21,11 +21,12 @@ from .artifacts.store import ArtifactStore
 from .audit.chain import AuditChain
 from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
+from .observability.metrics import MetricsRegistry
 from .platforms import runtime_profile
 from .policy import capability as capability_policy
 from .policy.grants import validate_grant_if_required
 from .policy.ratelimit import TokenBucketLimiter
-from .robotics import ReservationBook
+from .robotics import LocalSafetyGate, ReservationBook
 from .storage.db import Database
 from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
@@ -183,6 +184,7 @@ class FaspHarness:
         adapter: SafeAdapter | None = None,
         rate_limit_per_second: float = 10.0,
         rate_limit_burst: int = 20,
+        safety_gate: LocalSafetyGate | None = None,
     ) -> None:
         # JsonState still backs receipts.json and the admin_token file --
         # everything else (peers, tasks, grants, streams, reservations,
@@ -198,11 +200,13 @@ class FaspHarness:
         self.revocations = RevocationsRepo(self.db, self.audit)
         self.artifacts = ArtifactStore(self.db, state_dir)
         self.rate_limiter = TokenBucketLimiter(rate_limit_per_second, rate_limit_burst)
+        self.metrics = MetricsRegistry()
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
         self.streams = StreamRegistry(StreamsRepo(self.db))
         self.reservations = ReservationBook(ReservationsRepo(self.db))
+        self.safety_gate = safety_gate
         if not (state_dir / "admin_token").exists():
             token = secrets.token_urlsafe(32)
             (state_dir / "admin_token").write_text(token + "\n", encoding="utf-8")
@@ -225,13 +229,10 @@ class FaspHarness:
             "runtime": runtime_profile(),
             "public_key": self.identity.public_b64,
             "endpoints": {
-                "hello": self.base_url + "/hello",
-                "send": self.base_url + "/send",
-                "task": self.base_url + "/task",
-                "inbox": self.base_url + "/inbox",
-                "receipt": self.base_url + "/receipt",
-                "capabilities": self.base_url + "/capabilities",
-                "id_card": self.base_url + "/id_card",
+                "profile": self.base_url + "/profile",
+                "pair_hello": self.base_url + "/pair/hello",
+                "envelopes": self.base_url + "/fasp/v1/envelopes",
+                "receipts": self.base_url + "/fasp/v1/receipts",
             },
             "capabilities": self.adapter.capabilities(),
             "issued_at": stamp(),
@@ -360,6 +361,7 @@ class FaspHarness:
         # -- an unauthenticated flood is the transport layer's job (ss10);
         # this is the per-relationship budget once we know who is asking.
         if not self.rate_limiter.allow(envelope["from"]):
+            self.metrics.increment("fasp_rate_limited_total")
             raise FaspError("resource.exhausted", "Peer exceeded its request rate limit.")
         return peer
 
@@ -367,6 +369,7 @@ class FaspHarness:
         peer = self._verify_envelope(envelope, expected_kind)
         if expected_kind is None and envelope["kind"] not in ACCEPT_KINDS:
             raise FaspError("protocol.unsupported_kind", f"Unsupported envelope kind: {envelope['kind']!r}.")
+        self.metrics.increment("fasp_envelopes_total", kind=envelope["kind"])
         if not self.inbox.insert_if_new(envelope, stamp()):
             return True, self.inbox.get_response(envelope["message_id"])
         response: dict[str, Any] | None = None
@@ -564,3 +567,40 @@ class FaspHarness:
         if not isinstance(reservation_id, str):
             raise FaspError("schema.invalid", "reservation.release requires reservation_id.")
         return self.reservations.release(envelope["from"], reservation_id)
+
+    def safety_halt(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        """A paired peer may REQUEST an emergency stop, never clear one (ss9.1).
+
+        Honoring a halt request is always safe to do immediately; only
+        local code (never a network handler) can call
+        LocalSafetyGate.clear_halt().
+        """
+        self._verify_envelope(envelope, "safety.halt")
+        if self.safety_gate is None:
+            raise FaspError("capability.unavailable", "This system has no local safety-gated actuation to halt.")
+        reason = str(envelope["payload"].get("reason", "halt requested by peer"))[:200]
+        self.safety_gate.request_halt(reason)
+        with self.db.write() as conn:
+            self.audit.append(conn, "safety.halt_requested", envelope["from"], {"reason": reason}, stamp())
+        return {"type": "safety.status", **self.safety_gate.status()}
+
+    def safety_status(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        self._verify_envelope(envelope, "safety.status")
+        if self.safety_gate is None:
+            raise FaspError("capability.unavailable", "This system has no local safety gate to report on.")
+        return {"type": "safety.status", **self.safety_gate.status()}
+
+    def report_incident(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        """Durably record an incident report (ss11); this harness does not
+        interpret or act on it beyond that -- response is local operator work."""
+        self._verify_envelope(envelope, "incident.report")
+        summary = str(envelope["payload"].get("summary", ""))[:500]
+        with self.db.write() as conn:
+            self.audit.append(conn, "incident.reported", envelope["from"], {"summary": summary}, stamp())
+        return {"ok": True}
+
+    def heartbeat(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        """Advisory liveness only (ss7.3) -- never task state, authorization,
+        or safety evidence."""
+        self._verify_envelope(envelope, "heartbeat")
+        return {"type": "heartbeat", "server_time": stamp()}

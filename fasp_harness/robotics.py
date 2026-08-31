@@ -71,12 +71,42 @@ class ReservationBook:
 
 
 class LocalSafetyGate:
-    """A local-only precondition gate that cannot be opened by a network peer."""
+    """A local precondition gate. Its ONE network-writable operation is
+    request_halt() -- asking a machine to stop is always safe to honor
+    immediately. Nothing reachable from a network peer can clear a halt or
+    loosen any other precondition; only local code calling clear_halt()
+    can (FASP_PROTOCOL.md ss9.1: "an out-of-band physical emergency stop
+    MUST remain effective if the network, relay, model, or FASP peer
+    fails")."""
 
     def __init__(self, maximum_speed_mps: float) -> None:
         self.maximum_speed_mps = maximum_speed_mps
+        self._halt_requested = False
+        self._halt_reason: str | None = None
+        self._last_check: dict[str, Any] | None = None
+
+    def request_halt(self, reason: str) -> None:
+        self._halt_requested = True
+        self._halt_reason = reason
+
+    def clear_halt(self) -> None:
+        """Local-only: never call this from a network-facing handler."""
+        self._halt_requested = False
+        self._halt_reason = None
+
+    def status(self) -> dict[str, Any]:
+        return {"halt_requested": self._halt_requested, "halt_reason": self._halt_reason, "last_check": self._last_check}
 
     def validate(self, requested_speed_mps: float, estop_clear: bool, obstacle_clear: bool, localization_healthy: bool, reservation_active: bool) -> None:
+        self._last_check = {
+            "estop_clear": estop_clear,
+            "obstacle_clear": obstacle_clear,
+            "localization_healthy": localization_healthy,
+            "reservation_active": reservation_active,
+            "requested_speed_mps": requested_speed_mps,
+        }
+        if self._halt_requested:
+            raise FaspError("safety.estop_active", f"Halt requested: {self._halt_reason or 'no reason given'}.")
         if not estop_clear:
             raise FaspError("safety.estop_active", "Local emergency stop is active.")
         if not obstacle_clear or not localization_healthy:

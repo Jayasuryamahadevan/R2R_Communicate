@@ -37,6 +37,17 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(alias.status_code, 200)
         self.assertEqual(alias.json()["system_id"], self.bob.identity.system_id)
 
+    def test_advertised_endpoints_are_actually_routed(self) -> None:
+        """The profile's own `endpoints` map must name real routes -- a stale
+        entry here would silently advertise a dead URL to every peer."""
+        endpoints = self.bob.id_card()["endpoints"]
+        self.assertEqual(self.client.get(endpoints["profile"].replace(self.bob.base_url, "")).status_code, 200)
+        self.assertEqual(self.client.post(endpoints["pair_hello"].replace(self.bob.base_url, ""), json={"id_card": self.alice.id_card()}).status_code, 200)
+        # An empty body has no `kind` at all -- protocol.unsupported_kind (404),
+        # not a routing 404 -- which still proves the route itself exists.
+        self.assertEqual(self.client.post(endpoints["envelopes"].replace(self.bob.base_url, ""), json={}).json()["error"]["code"], "protocol.unsupported_kind")
+        self.assertEqual(self.client.post(endpoints["receipts"].replace(self.bob.base_url, ""), json={}).json()["error"]["code"], "protocol.unsupported_kind")
+
     def test_peers_requires_admin_token(self) -> None:
         unauthenticated = self.client.get("/peers")
         self.assertEqual(unauthenticated.status_code, 401)
@@ -88,6 +99,28 @@ class TransportTests(unittest.TestCase):
         posted = self.client.post("/fasp/v1/envelopes", content=b"x" * (70 * 1024), headers={"Content-Type": "application/json"})
         self.assertEqual(posted.status_code, 400)
         self.assertEqual(posted.json()["error"]["code"], "schema.invalid")
+
+    def test_metrics_requires_admin_token_and_reports_envelope_counts(self) -> None:
+        unauthenticated = self.client.get("/metrics")
+        self.assertEqual(unauthenticated.status_code, 401)
+
+        hello = self.client.post("/pair/hello", json={"id_card": self.alice.id_card()})
+        self.client.post(
+            "/pair/confirm",
+            json={"peer_id": self.alice.identity.system_id, "pair_code": hello.json()["pair_code"]},
+            headers={"X-FASP-Admin-Token": self.bob.admin_token},
+        )
+        envelope = self.alice.make_envelope("intent.propose", self.bob.identity.system_id, {
+            "intent_id": "metrics-1", "idempotency_key": "metrics-1", "capability": "observe.system.status.v1", "risk": "observe",
+        })
+        self.client.post("/fasp/v1/envelopes", json=envelope)
+
+        authenticated = self.client.get("/metrics", headers={"X-FASP-Admin-Token": self.bob.admin_token})
+        self.assertEqual(authenticated.status_code, 200)
+        body = authenticated.text
+        self.assertIn('fasp_envelopes_total{kind="intent.propose"} 1', body)
+        self.assertIn('fasp_tasks{state="COMPLETED"} 1', body)
+        self.assertIn("fasp_active_streams 0", body)
 
 
 if __name__ == "__main__":
