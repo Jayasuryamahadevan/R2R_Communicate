@@ -3,4 +3,6 @@
 __pycache__/
 .venv/
 *.egg-info/
+pi_bridge/extension/node_modules/
+pi_bridge/extension/.aic/
 

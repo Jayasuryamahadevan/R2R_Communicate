@@ -1,0 +1,9 @@
+{
+	"name": "pi-bridge-agent-id-card",
+	"private": true,
+	"type": "module",
+	"description": "pi extension: Agent ID Card identity + generic MCP + webhook bridge, for the R2R_Communicate FASP harness project.",
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.30.0"
+	}
+}
