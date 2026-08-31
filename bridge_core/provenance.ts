@@ -30,6 +30,14 @@ function safeRun(command: string, args: string[]): string | null {
 	}
 }
 
+/** Checked in order, each degrading silently to the next: NVIDIA (any
+ * platform with the proprietary driver), AMD/ROCm (Linux), then Apple's
+ * own GPU on Apple Silicon Macs -- covers the accelerators actually
+ * common on the devices this harness runs on (a dev workstation, a Mac,
+ * a Linux server) without pretending to enumerate every possible one
+ * (an edge TPU, an FPGA, ...). None of these three commands existing is
+ * not an error -- it just means "cpu-only", reported as honestly as
+ * finding one. */
 function detectAccelerator(): {
 	accelerator: string;
 	accelerator_driver_version: string;
@@ -45,6 +53,26 @@ function detectAccelerator(): {
 			accelerator_driver_version: driver?.trim() || UNKNOWN,
 		};
 	}
+
+	const rocm = safeRun("rocm-smi", ["--showproductname"]);
+	// Wording varies by rocm-smi version ("Card series:" vs "Card Series:",
+	// with or without a leading "GPU[0] :") -- match the field name
+	// itself rather than anchoring to one exact layout.
+	const rocmName = rocm?.match(/card\s*series\s*:\s*(.+)/i)?.[1]?.trim();
+	if (rocmName) {
+		return { accelerator: rocmName, accelerator_driver_version: UNKNOWN };
+	}
+
+	if (process.platform === "darwin") {
+		const displays = safeRun("system_profiler", ["SPDisplaysDataType"]);
+		const chipset = displays?.match(/Chipset Model:\s*(.+)/)?.[1]?.trim();
+		if (chipset) {
+			// Apple doesn't expose a separate GPU driver version to query --
+			// it's bundled with the OS build, already captured in os_version.
+			return { accelerator: chipset, accelerator_driver_version: "n/a" };
+		}
+	}
+
 	return { accelerator: "cpu-only", accelerator_driver_version: "n/a" };
 }
 
@@ -53,6 +81,10 @@ export function discoverHardware(): Record<string, unknown> {
 	return {
 		cpu: cpuList[0]?.model ?? UNKNOWN,
 		cpu_count: cpuList.length || UNKNOWN,
+		// arm64, x64, ... -- process.arch, not os.arch(): they agree except
+		// under Rosetta/32-on-64 emulation, where process.arch is the one
+		// that reflects what this actual Node process is running as.
+		cpu_architecture: process.arch,
 		os: platform(),
 		os_version: release(),
 		// An integer count of MB, not a rounded GB float: this data flows

@@ -46,7 +46,7 @@ which of those three paths a new host's thin adapter takes.
 | `tiers.ts` | Tier 2 (detailed) / Tier 3 (sensitive) content, digest-committed by the epoch |
 | `renewal.ts` | The liveness heartbeat |
 | `log.ts` | The generic append-only, hash-chained JSON Lines log |
-| `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why) |
+| `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why); accelerator detection checks NVIDIA, AMD/ROCm, and Apple Silicon in turn, and CPU architecture (arm64/x64/...) is always recorded |
 | `harness.ts` | Ties identity, the append-only log, self-managed state, and log-driven reconciliation together |
 | `state.ts` | This agent's own self-editable configuration: MCP servers to stay connected to or auto-connect to, and FASP peers paired with |
 | `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, and for sending it a real signed intent once paired -- see "Self-knowledge" below |

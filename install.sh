@@ -14,10 +14,17 @@
 # venv, OpenCode itself -- is what this script automates.
 #
 # Safe to re-run: every step checks whether it's already satisfied before
-# doing anything. Nothing here touches system package sources (no apt
+# doing anything. Nothing here touches system package sources (no apt/dnf
 # repo additions) -- it tells you the one command to run yourself if a
-# prerequisite is missing, rather than reconfiguring your package
-# manager on your behalf.
+# prerequisite is missing, rather than reconfiguring your package manager
+# on your behalf. Detects whichever of apt/dnf/yum/pacman/apk/zypper/brew
+# is actually present rather than assuming Debian -- this is meant to
+# work unmodified on a Raspberry Pi, a Fedora box, an Arch box, or a Mac,
+# not just the one distro it happened to be written on.
+#
+# Windows: run this under WSL (a real Linux userspace) -- there's no
+# native Windows code path here, and there won't be; make it right for
+# one non-Linux, non-Debian case (macOS) rather than half-support two.
 #
 # Usage: ./install.sh [-y]
 #   -y   don't pause for confirmation before each optional install step
@@ -46,6 +53,45 @@ confirm() {
 	[[ "$reply" =~ ^[Yy]$ ]]
 }
 
+# Which package manager this device actually has -- checked in a fixed
+# order so a system with more than one (e.g. brew installed alongside
+# apt in some WSL setups) gets a deterministic, sensible answer.
+package_manager() {
+	for pm in apt dnf yum pacman apk zypper brew; do
+		if command -v "$pm" >/dev/null 2>&1; then
+			echo "$pm"
+			return 0
+		fi
+	done
+	echo "unknown"
+}
+
+python_install_hint() {
+	case "$(package_manager)" in
+	apt) echo "sudo apt update && sudo apt install -y python3 python3-venv python3-pip" ;;
+	dnf) echo "sudo dnf install -y python3 python3-pip" ;;
+	yum) echo "sudo yum install -y python3 python3-pip" ;;
+	pacman) echo "sudo pacman -S --noconfirm python python-pip" ;;
+	apk) echo "sudo apk add python3 py3-pip" ;;
+	zypper) echo "sudo zypper install -y python3 python3-pip" ;;
+	brew) echo "brew install python@3.12" ;;
+	*) echo "install Python 3.11+ using whatever this system's package manager is" ;;
+	esac
+}
+
+node_install_hint() {
+	case "$(package_manager)" in
+	apt) printf '%s\n  %s' "curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -" "sudo apt install -y nodejs" ;;
+	dnf) printf '%s\n  %s' "curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo -E bash -" "sudo dnf install -y nodejs" ;;
+	yum) printf '%s\n  %s' "curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo -E bash -" "sudo yum install -y nodejs" ;;
+	pacman) echo "sudo pacman -S --noconfirm nodejs npm" ;;
+	apk) echo "sudo apk add nodejs npm" ;;
+	zypper) echo "sudo zypper install -y nodejs22" ;;
+	brew) echo "brew install node@22" ;;
+	*) echo "install Node.js 20+ using whatever this system's package manager is, or from https://nodejs.org" ;;
+	esac
+}
+
 bold "R2R_Communicate install"
 info "repo root: $REPO_ROOT"
 info "platform: $(uname -s) $(uname -m)"
@@ -68,23 +114,37 @@ done
 if [[ -z "$PYTHON_BIN" ]]; then
 	warn "No Python 3.11+ found."
 	info "Install it yourself first, then re-run this script:"
-	info "  Debian/Ubuntu/Raspberry Pi OS: sudo apt update && sudo apt install -y python3 python3-venv python3-pip"
-	info "  macOS (Homebrew):              brew install python@3.12"
+	info "  $(python_install_hint)"
 	exit 1
 fi
 ok "found $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
-if [[ ! -d .venv ]]; then
-	info "creating .venv..."
-	"$PYTHON_BIN" -m venv .venv
+if command -v uv >/dev/null 2>&1; then
+	# uv-managed venvs deliberately don't ship a `pip` binary inside them
+	# (uv installs packages itself) -- if `uv` is on this device, prefer
+	# it end to end rather than assuming plain venv+pip, which would fail
+	# against exactly that kind of venv.
+	info "uv found -- using it for the venv and the install"
+	if [[ ! -d .venv ]]; then
+		uv venv --python "$PYTHON_BIN" .venv --quiet
+	fi
+	uv pip install --python .venv/bin/python --quiet -e .
+elif [[ -d .venv && ! -x .venv/bin/pip ]]; then
+	warn ".venv exists but has no pip (likely uv-managed, and uv isn't on PATH anymore)."
+	info "Either install uv (https://docs.astral.sh/uv/) or remove .venv and re-run this script to get a plain venv instead."
+	exit 1
+else
+	if [[ ! -d .venv ]]; then
+		info "creating .venv..."
+		"$PYTHON_BIN" -m venv .venv
+	fi
+	# shellcheck source=/dev/null
+	source .venv/bin/activate
+	pip install --quiet --upgrade pip
+	pip install --quiet -e .
+	deactivate
 fi
-# shellcheck source=/dev/null
-source .venv/bin/activate
-info "installing fasp_harness (editable) into .venv..."
-pip install --quiet --upgrade pip
-pip install --quiet -e .
 ok "fasp_harness installed -- try: .venv/bin/python -m fasp_harness.discovery --help"
-deactivate
 echo
 
 # --- Node 20+ for bridge_core / the bridges ---------------------------
@@ -99,10 +159,9 @@ if command -v node >/dev/null 2>&1; then
 fi
 if [[ "$NODE_OK" == "0" ]]; then
 	warn "No Node.js 20+ found."
-	info "Install it yourself first, then re-run this script. On Debian/Ubuntu/Raspberry Pi OS:"
-	info "  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -"
-	info "  sudo apt install -y nodejs"
-	info "(nodesource adds an apt source -- deliberately not run automatically by this script.)"
+	info "Install it yourself first, then re-run this script:"
+	info "  $(node_install_hint)"
+	info "(deliberately not run automatically -- it can mean adding a package source, and that's your call.)"
 	exit 1
 fi
 echo
