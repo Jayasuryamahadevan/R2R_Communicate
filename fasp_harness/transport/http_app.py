@@ -1,21 +1,27 @@
-"""Starlette ASGI application: the FASP HTTP baseline profile (ss13).
+"""Starlette ASGI application: the FASP HTTP baseline profile (ss13), plus
+an optional live-push websocket layered on top of it.
 
 Route design: a single generic signed-envelope ingress
 (`POST /fasp/v1/envelopes`) dispatching on the envelope's `kind`, rather
 than one bespoke route per verb. This is more spec-faithful (ss13 literally
 specifies one ingress route) and more extensible -- a new message family
-needs a new dispatch-table entry, not a new route plus new server wiring.
+needs a new entry in `FaspHarness.DISPATCH` (core.py), not a new route plus
+new server wiring. Kind support, auth, replay dedup, and metrics all live
+in `FaspHarness.accept()` now; this module owns none of that -- it is a
+thin translation to/from the synchronous `FaspHarness` API via
+`run_in_threadpool` (the harness itself does not become async here;
+`Database`'s own lock already serializes concurrent writes, this only
+stops one slow adapter call from blocking every other connection's I/O).
 
 `POST /fasp/v1/receipts` is kept as its own route only because ss13 names
 it explicitly; it is a thin alias into the same `receipt.processed`
 handling `/fasp/v1/envelopes` would give it anyway.
 
-Every handler stays a thin translation to/from the synchronous
-`FaspHarness` API (unchanged since Phase 2-5) via `run_in_threadpool` --
-the harness itself does not become async here. `FaspHarness`'s own
-internal locking (one `threading.Lock`-guarded SQLite connection) already
-serializes concurrent writes correctly; this only stops one slow adapter
-call from blocking every other connection's I/O.
+`/fasp/v1/channel` (a websocket) carries the identical envelope protocol
+over one persistent connection instead of one HTTP request per envelope --
+see `channels.py` and `FaspHarness.accept()`/`_apply_task_outcome` for how
+a result that finishes after its synchronous caller gave up gets pushed
+here instead.
 """
 
 from __future__ import annotations
