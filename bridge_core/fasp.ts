@@ -216,12 +216,19 @@ export class FaspClient {
 	 * capabilities that peer granted at pairing time (default
 	 * `observe.`/`coordinate.` prefixes -- see fasp_harness's `hello()`).
 	 * Pairing alone only establishes trust; this is what turns that trust
-	 * into a real, signed request-response exchange between two agents. */
+	 * into a real, signed request-response exchange between two agents.
+	 *
+	 * `payload` is whatever fields that capability's adapter expects
+	 * (`coordinate.chat.v1` wants `{ objective }`; a custom capability can
+	 * want anything else entirely) -- this method only owns the envelope
+	 * fields every intent needs regardless of capability (idempotency
+	 * key, timestamps, signature), never the shape of the capability
+	 * itself. */
 	async proposeIntent(
 		baseUrl: string,
 		toSystemId: string,
 		capability: string,
-		objective: string,
+		payload: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
 		const { identity, kid, systemId } = this.loadOrCreateIdentity();
 		const issuedAt = stamp();
@@ -237,7 +244,7 @@ export class FaspClient {
 			payload: {
 				idempotency_key: `idem-${b64(randomBytes(12))}`,
 				capability,
-				objective,
+				...payload,
 			},
 		};
 		const signed = faspSign(envelope, identity, kid);

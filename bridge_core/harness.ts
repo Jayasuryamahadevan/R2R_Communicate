@@ -460,11 +460,15 @@ export class AgentHarness {
 	 * If `adminToken` is given (that harness's own admin token -- only
 	 * meaningful when the same operator runs both sides, or has handed
 	 * this agent that token on purpose), this also confirms the pairing
-	 * itself with no separate human approval step; without one, the
-	 * pairing sits "pending" until that harness's operator confirms it
-	 * some other way. Never throws: a failed attempt is recorded (state
-	 * "failed", with the error) rather than raised, since this is
-	 * expected to be called speculatively/autonomously. */
+	 * itself with no separate human approval step. Either way, `hello`'s
+	 * own `pairing_required` flag is checked too -- so a peer that
+	 * confirmed this agent independently (its own auto-accept policy, a
+	 * human operator acting out of band, anything) is honestly reported
+	 * as "paired" as well, not just the case where THIS call did the
+	 * confirming. Without either, the pairing sits "pending" until
+	 * confirmed some other way. Never throws: a failed attempt is
+	 * recorded (state "failed", with the error) rather than raised,
+	 * since this is expected to be called speculatively/autonomously. */
 	async connectFaspPeer(
 		baseUrl: string,
 		displayName: string,
@@ -478,8 +482,10 @@ export class AgentHarness {
 		const idCard = this.fasp.buildIdCard(displayName, capabilities);
 		try {
 			const hello = await this.fasp.hello(baseUrl, idCard);
-			let state: "pending" | "paired" = "pending";
-			if (options.adminToken) {
+			let state: "pending" | "paired" = hello.pairing_required
+				? "pending"
+				: "paired";
+			if (options.adminToken && state !== "paired") {
 				await this.fasp.confirmSelf(
 					baseUrl,
 					idCard.system_id,
@@ -538,14 +544,14 @@ export class AgentHarness {
 		baseUrl: string,
 		toSystemId: string,
 		capability: string,
-		objective: string,
+		payload: Record<string, unknown>,
 	): Promise<Record<string, unknown>> {
 		try {
 			const response = await this.fasp.proposeIntent(
 				baseUrl,
 				toSystemId,
 				capability,
-				objective,
+				payload,
 			);
 			this.log.append("fasp.intent_proposed", {
 				base_url: baseUrl,
