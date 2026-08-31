@@ -1,14 +1,14 @@
 /**
- * AgentHarness: the operational layer tying identity, the action log,
- * and experience-driven reconciliation together. Mirrors the Python
+ * AgentHarness: the operational layer tying identity, the append-only
+ * log, and log-driven reconciliation together. Mirrors the Python
  * reference implementation's harness.py -- see that repo's README.md
  * for the concept; this is its Node/TypeScript counterpart, built to be
  * embedded directly into a host agent's own extension/plugin mechanism
- * (this copy lives in opencode_bridge/; an identical one lives in
- * pi_bridge/ for the pi coding agent) rather than shelling out to
- * Python (see NO_PYTHON.md for why that matters). Deliberately has no
- * dependency on either host -- only on the sibling files in this same
- * directory.
+ * rather than shelling out to Python (see NO_PYTHON.md for why that
+ * matters). Lives once here in bridge_core/ and is imported unmodified
+ * by both pi_bridge/ and opencode_bridge/ -- see bridge_core/README.md
+ * for why. Deliberately has no dependency on either host -- only on the
+ * sibling files in this same directory.
  */
 
 import {
@@ -77,8 +77,13 @@ export interface AgentAdapter {
 export class AgentHarness {
 	readonly stateDir: string;
 	readonly adapter: AgentAdapter | undefined;
-	readonly actionLog: AppendOnlyLog;
-	readonly experience: AppendOnlyLog;
+	/** One append-only, hash-chained log for everything this agent does
+	 * or learns -- tool calls, bootstrap/renewal/reconciliation events,
+	 * and capability_discovered/capability_lost/limitation_discovered/
+	 * limitation_resolved entries, distinguished by `kind`. Filtering by
+	 * kind (see `reconcile()` below) is enough to tell "what did I do"
+	 * from "what did I learn" without needing two separate files for it. */
+	readonly log: AppendOnlyLog;
 
 	private readonly identityPath: string;
 	private readonly chainPath: string;
@@ -94,8 +99,7 @@ export class AgentHarness {
 		this.detailPath = join(stateDir, "detail.json");
 		this.sensitivePath = join(stateDir, "sensitive.json");
 		this.renewalPath = join(stateDir, "renewal.json");
-		this.actionLog = new AppendOnlyLog(join(stateDir, "action_log.jsonl"));
-		this.experience = new AppendOnlyLog(join(stateDir, "experience.jsonl"));
+		this.log = new AppendOnlyLog(join(stateDir, "log.jsonl"));
 	}
 
 	get isBootstrapped(): boolean {
@@ -185,7 +189,7 @@ export class AgentHarness {
 				"This state directory already has an identity.",
 			);
 		}
-		this.actionLog.append("bootstrap.started", { display_name: displayName });
+		this.log.append("bootstrap.started", { display_name: displayName });
 
 		const identity = generateIdentity();
 		const detail = createDetail(
@@ -221,7 +225,7 @@ export class AgentHarness {
 		if (sensitive) this.saveSensitive(sensitive);
 		this.saveRenewal(renew(genesis, identity));
 
-		this.actionLog.append("bootstrap.completed", {
+		this.log.append("bootstrap.completed", {
 			agent_id: identity.agentId,
 		});
 		return genesis;
@@ -244,7 +248,7 @@ export class AgentHarness {
 	renewCurrent(validityMs: number = DEFAULT_VALIDITY_MS): Renewal {
 		const renewal = renew(this.currentEpoch, this.identity, validityMs);
 		this.saveRenewal(renewal);
-		this.actionLog.append("identity.renewed", {
+		this.log.append("identity.renewed", {
 			valid_until: renewal.valid_until,
 		});
 		return renewal;
@@ -319,7 +323,7 @@ export class AgentHarness {
 
 		this.saveIdentity(newIdentity);
 		this.commitNewEpoch(epoch, detail, sensitive, newIdentity);
-		this.actionLog.append("identity.key_rotated", {
+		this.log.append("identity.key_rotated", {
 			epoch_number: epoch.epoch_number,
 		});
 		return epoch;
@@ -364,7 +368,7 @@ export class AgentHarness {
 			for (const capability of [...live]
 				.filter((c) => !capabilitiesBefore.includes(c))
 				.sort()) {
-				this.experience.append("capability_discovered", {
+				this.log.append("capability_discovered", {
 					capability,
 					source: "adapter",
 				});
@@ -372,7 +376,7 @@ export class AgentHarness {
 			for (const capability of capabilitiesBefore
 				.filter((c) => !live.has(c))
 				.sort()) {
-				this.experience.append("capability_lost", {
+				this.log.append("capability_lost", {
 					capability,
 					source: "adapter",
 				});
@@ -380,14 +384,14 @@ export class AgentHarness {
 		}
 
 		const capabilitiesAfter = replaySet(
-			this.experience.entries(),
+			this.log.entries(),
 			"capability_discovered",
 			"capability_lost",
 			"capability",
 			capabilitiesBefore,
 		);
 		const limitationsAfter = replaySet(
-			this.experience.entries(),
+			this.log.entries(),
 			"limitation_discovered",
 			"limitation_resolved",
 			"limitation",
@@ -402,7 +406,7 @@ export class AgentHarness {
 				capabilitiesAfter,
 				limitationsAfter,
 			);
-			this.actionLog.append("identity.reconciled", {
+			this.log.append("identity.reconciled", {
 				epoch_number: epoch.epoch_number,
 				capabilities: capabilitiesAfter,
 				limitations: limitationsAfter,
@@ -425,13 +429,16 @@ export class AgentHarness {
 		};
 	}
 
+	/** Assembles the one JSON object actually shown to a verifier. Only
+	 * covers what this harness can itself produce (the chain, Tier 2/3,
+	 * a renewal) -- attestations and delegate cards are real parts of
+	 * the AIC format, but this Node/TypeScript harness has no way to
+	 * create either yet, so a bundle that claimed to carry them would
+	 * always be empty. Add those fields back here if/when this harness
+	 * grows a real way to produce them; the Python reference
+	 * implementation already can, if you need that today. */
 	buildBundle(
-		options: {
-			discloseTier2?: boolean;
-			discloseTier3?: boolean;
-			attestations?: Record<string, unknown>[];
-			delegateCard?: Record<string, unknown> | null;
-		} = {},
+		options: { discloseTier2?: boolean; discloseTier3?: boolean } = {},
 	): Record<string, unknown> {
 		const disclosedTiers = [1];
 		const detail = options.discloseTier2 !== false ? this.detail : null;
@@ -446,8 +453,8 @@ export class AgentHarness {
 			detail,
 			sensitive,
 			renewal: this.renewal,
-			attestations: options.attestations ?? [],
-			delegate: options.delegateCard ?? null,
+			attestations: [],
+			delegate: null,
 		};
 	}
 

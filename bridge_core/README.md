@@ -47,8 +47,8 @@ which of those three paths a new host's thin adapter takes.
 | `renewal.ts` | The liveness heartbeat |
 | `log.ts` | The generic append-only, hash-chained JSON Lines log |
 | `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why) |
-| `harness.ts` | Ties identity, the action log, and experience-driven reconciliation together |
-| `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only |
+| `harness.ts` | Ties identity, the append-only log, and log-driven reconciliation together |
+| `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only -- available to import, not wired to a command by either bridge today |
 | `timestamps.ts` | The one timestamp format used everywhere here |
 
 No `package.json` here on purpose: this directory has zero dependencies

@@ -271,7 +271,7 @@ Two bridges load it today, unmodified, as a thin host-specific adapter:
 
 - [`pi_bridge/`](pi_bridge/) -- a [pi](https://github.com/earendil-works/pi)
   extension that also adds a generic MCP client (pi ships without one by
-  design) and generic incoming/outgoing webhook connectivity.
+  design).
 - [`opencode_bridge/`](opencode_bridge/) -- an
   [OpenCode](https://github.com/anomalyco/opencode) plugin that also
   defaults OpenCode Zen as the primary model provider (only when the

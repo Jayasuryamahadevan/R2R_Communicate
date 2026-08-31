@@ -1,6 +1,6 @@
 /**
- * pi_bridge: an Agent ID Card + MCP + webhook bridge for pi
- * ==========================================================
+ * pi_bridge: an Agent ID Card + MCP bridge for pi
+ * ================================================
  *
  * On first run in a workspace, pi is curious about its surroundings
  * (OS, hardware, accelerator/driver, available tools, its own toolset),
@@ -8,31 +8,30 @@
  * (https://github.com/Jayasuryamahadevan/agent-id-card -- SPEC.md is the
  * normative format; HARNESS_BOOTSTRAP.md is the procedure this
  * extension implements). Every tool call is recorded in an append-only,
- * hash-chained action log.
+ * hash-chained log.
  *
- * On top of that base, this bridge lets pi connect itself to:
- *   - ANY MCP server (stdio or Streamable HTTP) -- its tools are
- *     dynamically registered as pi tools, and each one gained is
- *     recorded as a `capability_discovered` experience entry, so
- *     connecting to a new MCP server flows straight into the next
- *     `/aic-reconcile` instead of silently expanding what this agent
- *     can do without its own card ever reflecting that.
- *   - ANY webhook, in both directions -- an incoming listener that can
- *     turn an external POST into a message pi actually sees, and an
- *     outgoing notifier that POSTs to configured URLs on bootstrap,
- *     reconciliation, and tool completion.
+ * On top of that base, this bridge lets pi connect itself to ANY MCP
+ * server (stdio or Streamable HTTP) -- its tools are dynamically
+ * registered as pi tools, and each one gained is recorded as a
+ * `capability_discovered` entry, so connecting to a new MCP server
+ * flows straight into the next `/aic-reconcile` instead of silently
+ * expanding what this agent can do without its own card ever
+ * reflecting that.
  *
- * No external dependency for the core identity layer (Node's built-in
- * `node:crypto`/`node:http` only); the MCP layer depends on the
- * official `@modelcontextprotocol/sdk` (see package.json).
+ * No external dependency for the identity layer (`../../bridge_core/`,
+ * Node's built-in `node:crypto` only, shared unmodified with
+ * opencode_bridge/); the MCP layer depends on the official
+ * `@modelcontextprotocol/sdk` (see package.json). Generic webhook
+ * connectivity is available at `../../bridge_core/webhooks.ts` if you
+ * want it, but isn't wired to a command here -- it wasn't earning its
+ * keep as part of this bridge's default surface.
  *
  * State lives in `.aic/` under the project root -- identity.json (the
  * private key, 0600), chain.json, detail.json, sensitive.json,
- * renewal.json, action_log.jsonl, experience.jsonl.
+ * renewal.json, log.jsonl.
  *
  * Commands: /aic-status, /aic-reconcile, /aic-mcp-connect,
- * /aic-mcp-disconnect, /aic-mcp-list, /aic-webhook-listen,
- * /aic-webhook-stop, /aic-webhook-notify, /aic-webhook-targets.
+ * /aic-mcp-disconnect.
  */
 
 import { join } from "node:path";
@@ -47,10 +46,6 @@ import {
 	discoverPermissionsAndNetwork,
 } from "../../bridge_core/provenance.js";
 import { verifyDetail } from "../../bridge_core/tiers.js";
-import {
-	WebhookNotifier,
-	WebhookReceiver,
-} from "../../bridge_core/webhooks.js";
 import {
 	McpRegistry,
 	type McpServerConfig,
@@ -82,17 +77,16 @@ async function bootstrapIfNeeded(
 		return;
 	}
 
-	harness.actionLog.append("environment.discovery_started", { cwd: ctx.cwd });
 	const provenance = collectRuntimeProvenance();
 	const permissions = discoverPermissionsAndNetwork();
-	harness.actionLog.append("environment.discovered", {
+	harness.log.append("environment.discovered", {
 		...provenance,
 		...permissions,
 	});
 
 	const toolNames = pi.getAllTools().map((tool) => tool.name);
 	const knownLimitations = [
-		"no memory of this workspace beyond entries already written to .aic/ (session context is not preserved across process restarts unless pi's own session storage is used)",
+		"no memory of this workspace beyond entries already written to .aic/",
 		"bounded by the active model's context window",
 		"can only act through the tools actually registered for this session, plus whatever MCP servers are explicitly connected via /aic-mcp-connect",
 	];
@@ -159,7 +153,7 @@ function registerMcpTools(
 					params as Record<string, unknown>,
 				);
 				if (harness.isBootstrapped)
-					harness.actionLog.append("mcp.tool_invoked", {
+					harness.log.append("mcp.tool_invoked", {
 						server: serverName,
 						tool: tool.toolName,
 					});
@@ -170,7 +164,7 @@ function registerMcpTools(
 			},
 		});
 		if (harness.isBootstrapped)
-			harness.experience.append("capability_discovered", {
+			harness.log.append("capability_discovered", {
 				capability: tool.qualifiedName,
 				source: `mcp:${serverName}`,
 			});
@@ -180,8 +174,6 @@ function registerMcpTools(
 export default function (pi: ExtensionAPI) {
 	const harnesses = new Map<string, AgentHarness>();
 	const mcpRegistries = new Map<string, McpRegistry>();
-	const webhookReceivers = new Map<string, WebhookReceiver>();
-	const webhookNotifiers = new Map<string, WebhookNotifier>();
 
 	function harnessFor(cwd: string): AgentHarness {
 		const stateDir = stateDirFor(cwd);
@@ -204,49 +196,27 @@ export default function (pi: ExtensionAPI) {
 		return registry;
 	}
 
-	function webhookNotifierFor(cwd: string): WebhookNotifier {
-		let notifier = webhookNotifiers.get(cwd);
-		if (!notifier) {
-			notifier = new WebhookNotifier(
-				join(stateDirFor(cwd), "webhook_outbox.jsonl"),
-			);
-			webhookNotifiers.set(cwd, notifier);
-		}
-		return notifier;
-	}
-
 	pi.on("session_start", async (_event, ctx) => {
-		const harness = harnessFor(ctx.cwd);
-		await bootstrapIfNeeded(harness, pi, ctx);
-		await webhookNotifierFor(ctx.cwd).notify("session_start", {
-			agent_id: harness.isBootstrapped ? harness.currentEpoch.agent_id : null,
-		});
+		await bootstrapIfNeeded(harnessFor(ctx.cwd), pi, ctx);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
 		const harness = harnessFor(ctx.cwd);
-		if (harness.isBootstrapped) {
-			harness.actionLog.append("tool.invoked", {
+		if (harness.isBootstrapped)
+			harness.log.append("tool.invoked", {
 				tool: event.toolName,
 				tool_call_id: event.toolCallId,
 			});
-		}
 	});
 
 	pi.on("tool_result", async (event, ctx) => {
 		const harness = harnessFor(ctx.cwd);
-		if (harness.isBootstrapped) {
-			harness.actionLog.append("tool.completed", {
+		if (harness.isBootstrapped)
+			harness.log.append("tool.completed", {
 				tool: event.toolName,
 				tool_call_id: event.toolCallId,
 				is_error: Boolean(event.isError),
 			});
-			if (event.isError) {
-				await webhookNotifierFor(ctx.cwd).notify("tool_failed", {
-					tool: event.toolName,
-				});
-			}
-		}
 	});
 
 	pi.registerCommand("aic-status", {
@@ -274,7 +244,6 @@ export default function (pi: ExtensionAPI) {
 						`declared_capabilities: ${detail?.declared_capabilities.join(", ") ?? "(not disclosed)"}`,
 						`known_limitations: ${detail?.known_limitations.join("; ") ?? "(not disclosed)"}`,
 						`connected MCP servers: ${mcpRegistryFor(ctx.cwd).listConnectedServers().join(", ") || "(none)"}`,
-						`outgoing webhook targets: ${webhookNotifierFor(ctx.cwd).listTargets().join(", ") || "(none)"}`,
 						"chain: verified OK",
 					].join("\n"),
 					"info",
@@ -307,10 +276,6 @@ export default function (pi: ExtensionAPI) {
 					: "agent-id-card: nothing to reconcile; the card already matches recorded experience and pi's current toolset.",
 				"info",
 			);
-			await webhookNotifierFor(ctx.cwd).notify(
-				"reconciled",
-				report as unknown as Record<string, unknown>,
-			);
 		},
 	});
 
@@ -339,7 +304,7 @@ export default function (pi: ExtensionAPI) {
 				const harness = harnessFor(ctx.cwd);
 				registerMcpTools(pi, harness, registry, name, tools);
 				if (harness.isBootstrapped)
-					harness.actionLog.append("mcp.connected", {
+					harness.log.append("mcp.connected", {
 						server: name,
 						transport,
 						tool_count: tools.length,
@@ -369,123 +334,9 @@ export default function (pi: ExtensionAPI) {
 			await mcpRegistryFor(ctx.cwd).disconnectServer(name);
 			const harness = harnessFor(ctx.cwd);
 			if (harness.isBootstrapped)
-				harness.actionLog.append("mcp.disconnected", { server: name });
+				harness.log.append("mcp.disconnected", { server: name });
 			ctx.ui.notify(
 				`agent-id-card: disconnected MCP server "${name}".`,
-				"info",
-			);
-		},
-	});
-
-	pi.registerCommand("aic-mcp-list", {
-		description: "List currently connected MCP servers.",
-		handler(_args, ctx) {
-			const servers = mcpRegistryFor(ctx.cwd).listConnectedServers();
-			ctx.ui.notify(
-				servers.length
-					? `connected MCP servers: ${servers.join(", ")}`
-					: "no MCP servers currently connected.",
-				"info",
-			);
-		},
-	});
-
-	pi.registerCommand("aic-webhook-listen", {
-		description:
-			"Start an incoming webhook listener: /aic-webhook-listen <port> [path]",
-		async handler(args, ctx) {
-			const [portText, path = "/webhook"] = args
-				.trim()
-				.split(/\s+/)
-				.filter(Boolean);
-			const port = Number(portText);
-			if (!Number.isInteger(port) || port <= 0) {
-				ctx.ui.notify("usage: /aic-webhook-listen <port> [path]", "error");
-				return;
-			}
-			const key = `${ctx.cwd}:${port}`;
-			if (webhookReceivers.has(key)) {
-				ctx.ui.notify(
-					`agent-id-card: already listening on port ${port}.`,
-					"info",
-				);
-				return;
-			}
-			const harness = harnessFor(ctx.cwd);
-			const receiver = new WebhookReceiver(
-				path,
-				async (payload) => {
-					if (harness.isBootstrapped)
-						harness.actionLog.append("webhook.event", { path, payload });
-					await pi.sendUserMessage(
-						`[webhook @ ${path}] ${JSON.stringify(payload)}`,
-					);
-				},
-				join(stateDirFor(ctx.cwd), "webhook_inbox.jsonl"),
-			);
-			try {
-				await receiver.listen(port);
-				webhookReceivers.set(key, receiver);
-				ctx.ui.notify(
-					`agent-id-card: listening for webhooks on http://127.0.0.1:${port}${path}`,
-					"info",
-				);
-			} catch (error) {
-				ctx.ui.notify(
-					`agent-id-card: failed to start webhook listener: ${(error as Error).message}`,
-					"error",
-				);
-			}
-		},
-	});
-
-	pi.registerCommand("aic-webhook-stop", {
-		description: "Stop an incoming webhook listener: /aic-webhook-stop <port>",
-		async handler(args, ctx) {
-			const port = args.trim();
-			const key = `${ctx.cwd}:${port}`;
-			const receiver = webhookReceivers.get(key);
-			if (!receiver) {
-				ctx.ui.notify(
-					`agent-id-card: no webhook listener on port ${port}.`,
-					"info",
-				);
-				return;
-			}
-			await receiver.close();
-			webhookReceivers.delete(key);
-			ctx.ui.notify(
-				`agent-id-card: stopped webhook listener on port ${port}.`,
-				"info",
-			);
-		},
-	});
-
-	pi.registerCommand("aic-webhook-notify", {
-		description:
-			"Add an outgoing webhook target, notified on bootstrap/reconcile/tool-failure: /aic-webhook-notify <url>",
-		handler(args, ctx) {
-			const url = args.trim();
-			if (!url) {
-				ctx.ui.notify("usage: /aic-webhook-notify <url>", "error");
-				return;
-			}
-			webhookNotifierFor(ctx.cwd).addTarget(url);
-			ctx.ui.notify(
-				`agent-id-card: will notify ${url} of future events.`,
-				"info",
-			);
-		},
-	});
-
-	pi.registerCommand("aic-webhook-targets", {
-		description: "List outgoing webhook targets.",
-		handler(_args, ctx) {
-			const targets = webhookNotifierFor(ctx.cwd).listTargets();
-			ctx.ui.notify(
-				targets.length
-					? targets.join(", ")
-					: "no outgoing webhook targets configured.",
 				"info",
 			);
 		},
@@ -493,12 +344,6 @@ export default function (pi: ExtensionAPI) {
 }
 
 // Re-exported for anything that wants to verify this workspace's chain,
-// or drive MCP/webhook connectivity, programmatically without going
-// through the session commands above.
-export {
-	verifyChain,
-	AgentHarness,
-	McpRegistry,
-	WebhookReceiver,
-	WebhookNotifier,
-};
+// or drive MCP connectivity, programmatically without going through the
+// session commands above.
+export { verifyChain, AgentHarness, McpRegistry };

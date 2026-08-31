@@ -68,10 +68,9 @@ async function bootstrapIfNeeded(harness: AgentHarness): Promise<void> {
 		return;
 	}
 
-	harness.actionLog.append("environment.discovery_started", {});
 	const provenance = collectRuntimeProvenance();
 	const permissions = discoverPermissionsAndNetwork();
-	harness.actionLog.append("environment.discovered", {
+	harness.log.append("environment.discovered", {
 		...provenance,
 		...permissions,
 	});
@@ -125,7 +124,7 @@ export const AgentIdCardPlugin: Plugin = async (input: PluginInput) => {
 
 		async "tool.execute.before"(hookInput) {
 			if (harness.isBootstrapped) {
-				harness.actionLog.append("tool.invoked", {
+				harness.log.append("tool.invoked", {
 					tool: hookInput.tool,
 					session_id: hookInput.sessionID,
 					call_id: hookInput.callID,
@@ -135,7 +134,7 @@ export const AgentIdCardPlugin: Plugin = async (input: PluginInput) => {
 
 		async "tool.execute.after"(hookInput) {
 			if (harness.isBootstrapped) {
-				harness.actionLog.append("tool.completed", {
+				harness.log.append("tool.completed", {
 					tool: hookInput.tool,
 					session_id: hookInput.sessionID,
 					call_id: hookInput.callID,
