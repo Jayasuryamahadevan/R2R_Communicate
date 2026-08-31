@@ -11,6 +11,15 @@ dependencies = ["cryptography>=42", "starlette>=0.37", "uvicorn>=0.30", "rfc8785
 
 [project.optional-dependencies]
 test = ["hypothesis>=6.100", "httpx2>=2.0"]
+dev = ["ruff>=0.16"]
 
 [tool.setuptools.packages.find]
 include = ["fasp_harness*"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "I"]
+ignore = ["E501"]

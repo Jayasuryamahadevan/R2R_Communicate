@@ -23,9 +23,10 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from http import HTTPStatus
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool

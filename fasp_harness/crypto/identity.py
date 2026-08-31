@@ -41,7 +41,7 @@ class Identity:
     kid: str
 
     @classmethod
-    def load_or_create(cls, path: Path) -> "Identity":
+    def load_or_create(cls, path: Path) -> Identity:
         if path.exists():
             record = json.loads(path.read_text(encoding="utf-8"))
             private = Ed25519PrivateKey.from_private_bytes(unb64(record["private_key"]))

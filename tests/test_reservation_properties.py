@@ -36,7 +36,7 @@ def _granted_segments_overlap(harness: FaspHarness) -> bool:
         by_cell.setdefault(row["cell"], []).append((row["start_ms"], row["end_ms"]))
     for intervals in by_cell.values():
         intervals.sort()
-        for (_, first_end), (second_start, _) in zip(intervals, intervals[1:]):
+        for (_, first_end), (second_start, _) in zip(intervals, intervals[1:], strict=False):
             if second_start < first_end:
                 return True
     return False

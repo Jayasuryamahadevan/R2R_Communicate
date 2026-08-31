@@ -13,7 +13,8 @@ from starlette.testclient import TestClient
 
 from fasp_harness.core import FaspHarness
 from fasp_harness.observability.logging import REDACTED_PLACEHOLDER, RedactingFilter, log
-from fasp_harness.transport.http_app import create_app, logger as transport_logger
+from fasp_harness.transport.http_app import create_app
+from fasp_harness.transport.http_app import logger as transport_logger
 
 
 class RedactionFilterTests(unittest.TestCase):

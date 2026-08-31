@@ -13,7 +13,6 @@ from typing import Any
 from .protocol.errors import FaspError
 from .storage.reservations_repo import ReservationsRepo
 
-
 MAX_LEASE_MS = 120_000
 MAX_SEGMENTS = 256
 

@@ -11,12 +11,12 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from .crypto.envelope import b64, unb64
 from .protocol.errors import FaspError
 from .storage.streams_repo import StreamsRepo
-
 
 # Base64 plus envelope metadata must remain inside the 64 KiB signed envelope.
 MAX_PACKET_BYTES = 40 * 1024

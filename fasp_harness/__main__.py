@@ -7,7 +7,6 @@ import sys
 from . import discovery
 from .transport import asgi_server
 
-
 if len(sys.argv) > 1 and sys.argv[1] == "discover":
     sys.argv.pop(1)
     discovery.main()

@@ -64,7 +64,7 @@ class Database:
         with self.lock:
             return self.connection.execute(sql, parameters).fetchone()
 
-    def write(self) -> "_WriteTransaction":
+    def write(self) -> _WriteTransaction:
         """One write transaction: `with db.write() as conn: conn.execute(...)`.
 
         Everything inside the block runs under `self.lock` and commits (or
