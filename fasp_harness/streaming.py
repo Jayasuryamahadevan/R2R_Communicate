@@ -11,10 +11,11 @@ from __future__ import annotations
 import hashlib
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Iterator
 
-from .core import FaspError, JsonState, b64, unb64
+from .crypto.envelope import b64, unb64
+from .protocol.errors import FaspError
+from .storage.streams_repo import StreamsRepo
 
 
 # Base64 plus envelope metadata must remain inside the 64 KiB signed envelope.
@@ -87,10 +88,8 @@ class Reassembler:
 class StreamRegistry:
     """Durable stream control state and bounded packet retention."""
 
-    def __init__(self, state: JsonState) -> None:
-        self.state = state
-        self.packet_dir = state.directory / "streams"
-        self.packet_dir.mkdir(mode=0o700, exist_ok=True)
+    def __init__(self, repo: StreamsRepo) -> None:
+        self.repo = repo
 
     def open(self, owner: str, config: dict[str, Any]) -> dict[str, Any]:
         stream_id = config.get("stream_id") or str(uuid.uuid4())
@@ -104,29 +103,13 @@ class StreamRegistry:
             raise FaspError("schema.invalid", "Stream requires a content_type.")
         if not 1 <= max_payload <= MAX_PACKET_BYTES or not 1 <= window <= MAX_WINDOW or not 0 <= retention <= MAX_RETENTION_PACKETS:
             raise FaspError("resource.exhausted", "Stream packet, window, or retention limit is invalid.")
-        streams = self.state.get("streams.json", {})
-        if stream_id in streams and streams[stream_id]["state"] == "open":
-            return streams[stream_id]
-        stream = {
-            "stream_id": stream_id,
-            "owner": owner,
-            "state": "open",
-            "delivery": mode,
-            "content_type": config["content_type"],
-            "max_payload_bytes": max_payload,
-            "window": window,
-            "retention_packets": retention,
-            "next_expected": 0,
-            "last_sequence": -1,
-            "opened_at_monotonic_ns": time.monotonic_ns(),
-        }
-        streams[stream_id] = stream
-        self.state.put("streams.json", streams)
-        return stream
+        existing = self.repo.get(stream_id)
+        if existing is not None and existing["state"] == "open":
+            return existing
+        return self.repo.open(stream_id, owner, mode, config["content_type"], max_payload, window, retention)
 
     def packet(self, owner: str, packet: dict[str, Any]) -> dict[str, Any]:
-        streams = self.state.get("streams.json", {})
-        stream = streams.get(packet.get("stream_id"))
+        stream = self.repo.get(packet.get("stream_id"))
         if not stream or stream["state"] != "open" or stream["owner"] != owner:
             raise FaspError("stream.not_open", "Stream is not open for this sender.")
         sequence = packet.get("sequence")
@@ -143,37 +126,25 @@ class StreamRegistry:
         if not duplicate:
             if stream["delivery"] == "reliable" and sequence != stream["next_expected"]:
                 raise FaspError("stream.out_of_order", "Reliable stream requires the next sequence; retransmit missing packet.")
-            stream["next_expected"] = sequence + 1
-            stream["last_sequence"] = max(stream["last_sequence"], sequence)
-            if stream["retention_packets"]:
-                packet_state = f"streams/{stream['stream_id']}.json"
-                existing = self.state.get(packet_state, [])
-                existing.append(packet)
-                existing = existing[-stream["retention_packets"]:]
-                # Atomic rewrite bounds retained stream data even if the sender is malicious.
-                self.state.put(packet_state, existing)
-        streams[stream["stream_id"]] = stream
-        self.state.put("streams.json", streams)
+            next_expected = sequence + 1
+            last_sequence = max(stream["last_sequence"], sequence)
+            self.repo.advance(stream["stream_id"], next_expected, last_sequence, packet if stream["retention_packets"] else None, stream["retention_packets"])
+            stream["next_expected"], stream["last_sequence"] = next_expected, last_sequence
         return {"type": "stream.ack", "stream_id": stream["stream_id"], "epoch": 0, "ack_sequence": stream["next_expected"] - 1, "credit": stream["window"], "duplicate": duplicate}
 
     def pull(self, requester: str, stream_id: str, after_sequence: int) -> dict[str, Any]:
-        streams = self.state.get("streams.json", {})
-        stream = streams.get(stream_id)
+        stream = self.repo.get(stream_id)
         if not stream or stream["state"] != "open":
             raise FaspError("stream.not_open", "Stream is not available.")
         if requester == stream["owner"]:
             raise FaspError("auth.not_authorized", "A stream owner cannot subscribe to its own remote feed.")
-        packets = self.state.get(f"streams/{stream_id}.json", [])
-        return {"stream_id": stream_id, "packets": [packet for packet in packets if packet["sequence"] > after_sequence], "last_sequence": stream["last_sequence"]}
+        packets = self.repo.packets_after(stream_id, after_sequence)
+        return {"stream_id": stream_id, "packets": packets, "last_sequence": stream["last_sequence"]}
 
     def close(self, owner: str, stream_id: str, reason: str) -> dict[str, Any]:
-        streams = self.state.get("streams.json", {})
-        stream = streams.get(stream_id)
+        stream = self.repo.get(stream_id)
         if not stream or stream["owner"] != owner:
             raise FaspError("stream.not_open", "Stream is not owned by this sender.")
-        stream["state"] = "closed"
-        stream["closed_reason"] = reason[:160]
-        stream["closed_at_monotonic_ns"] = time.monotonic_ns()
-        streams[stream_id] = stream
-        self.state.put("streams.json", streams)
-        return {"type": "stream.closed", "stream_id": stream_id, "reason": stream["closed_reason"]}
+        reason = reason[:160]
+        self.repo.close(stream_id, reason)
+        return {"type": "stream.closed", "stream_id": stream_id, "reason": reason}

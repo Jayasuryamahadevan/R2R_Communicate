@@ -10,7 +10,8 @@ import time
 import uuid
 from typing import Any
 
-from .core import FaspError, JsonState
+from .protocol.errors import FaspError
+from .storage.reservations_repo import ReservationsRepo
 
 
 MAX_LEASE_MS = 120_000
@@ -20,16 +21,8 @@ MAX_SEGMENTS = 256
 class ReservationBook:
     """A durable, conservative cell-and-time reservation arbiter."""
 
-    def __init__(self, state: JsonState) -> None:
-        self.state = state
-
-    def _active(self) -> dict[str, dict[str, Any]]:
-        now_ms = int(time.time() * 1000)
-        reservations = self.state.get("reservations.json", {})
-        active = {key: value for key, value in reservations.items() if value["lease_until_ms"] > now_ms and value["state"] == "granted"}
-        if active != reservations:
-            self.state.put("reservations.json", active)
-        return active
+    def __init__(self, repo: ReservationsRepo) -> None:
+        self.repo = repo
 
     @staticmethod
     def _validate_segments(segments: Any, now_ms: int) -> list[dict[str, Any]]:
@@ -47,6 +40,7 @@ class ReservationBook:
 
     def request(self, owner: str, payload: dict[str, Any]) -> dict[str, Any]:
         now_ms = int(time.time() * 1000)
+        self.repo.sweep_expired(now_ms)
         reservation_id = payload.get("reservation_id") or str(uuid.uuid4())
         if not isinstance(reservation_id, str) or len(reservation_id) > 128:
             raise FaspError("schema.invalid", "Reservation ID is invalid.")
@@ -54,31 +48,25 @@ class ReservationBook:
         if not 1_000 <= lease_ms <= MAX_LEASE_MS:
             raise FaspError("schema.invalid", "Reservation lease must be 1-120 seconds.")
         segments = self._validate_segments(payload.get("segments"), now_ms)
-        active = self._active()
-        if reservation_id in active:
-            existing = active[reservation_id]
+
+        existing = self.repo.get_active(reservation_id, now_ms)
+        if existing is not None:
             if existing["owner"] == owner:
-                return existing
+                return {"type": "reservation.grant", **existing}
             raise FaspError("fleet.reservation_conflict", "Reservation ID belongs to another robot.")
-        for existing in active.values():
-            for proposed in segments:
-                for held in existing["segments"]:
-                    overlap = proposed["cell"] == held["cell"] and proposed["start_ms"] < held["end_ms"] and held["start_ms"] < proposed["end_ms"]
-                    if overlap:
-                        return {"type": "reservation.reject", "reservation_id": reservation_id, "status": "conflict", "retry_after_ms": max(now_ms + 250, held["end_ms"]), "reason": "space_time_conflict"}
-        result = {"type": "reservation.grant", "reservation_id": reservation_id, "owner": owner, "state": "granted", "segments": segments, "lease_until_ms": min(now_ms + lease_ms, max(segment["end_ms"] for segment in segments) + 2_000)}
-        active[reservation_id] = result
-        self.state.put("reservations.json", active)
-        return result
+
+        conflict = self.repo.find_conflict(segments, now_ms)
+        if conflict is not None:
+            return {"type": "reservation.reject", "reservation_id": reservation_id, "status": "conflict", "retry_after_ms": max(now_ms + 250, conflict["end_ms"]), "reason": "space_time_conflict"}
+
+        lease_until_ms = min(now_ms + lease_ms, max(segment["end_ms"] for segment in segments) + 2_000)
+        self.repo.grant(reservation_id, owner, segments, lease_until_ms)
+        return {"type": "reservation.grant", "reservation_id": reservation_id, "owner": owner, "state": "granted", "segments": segments, "lease_until_ms": lease_until_ms}
 
     def release(self, owner: str, reservation_id: str) -> dict[str, Any]:
-        active = self._active()
-        reservation = active.get(reservation_id)
-        if not reservation or reservation["owner"] != owner:
+        now_ms = int(time.time() * 1000)
+        if not self.repo.release(owner, reservation_id, now_ms):
             raise FaspError("fleet.reservation_not_found", "Active reservation is not owned by this robot.")
-        reservation["state"] = "released"
-        active.pop(reservation_id, None)
-        self.state.put("reservations.json", active)
         return {"type": "reservation.released", "reservation_id": reservation_id}
 
 

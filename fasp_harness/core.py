@@ -25,12 +25,16 @@ from .platforms import runtime_profile
 from .policy import capability as capability_policy
 from .policy.grants import validate_grant_if_required
 from .policy.ratelimit import TokenBucketLimiter
+from .robotics import ReservationBook
 from .storage.db import Database
 from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
 from .storage.peers_repo import PeersRepo
+from .storage.reservations_repo import ReservationsRepo
 from .storage.revocations_repo import RevocationsRepo
+from .storage.streams_repo import StreamsRepo
 from .storage.tasks_repo import TERMINAL_STATES, TasksRepo
+from .streaming import StreamRegistry
 from .timestamps import now, parse_stamp, stamp
 
 PEER_PAIRING_VALIDITY = timedelta(days=90)
@@ -180,8 +184,9 @@ class FaspHarness:
         rate_limit_per_second: float = 10.0,
         rate_limit_burst: int = 20,
     ) -> None:
-        # JsonState still backs streaming/robotics/receipts until Phase 7
-        # migrates them onto the same SQLite database as everything else.
+        # JsonState still backs receipts.json and the admin_token file --
+        # everything else (peers, tasks, grants, streams, reservations,
+        # artifacts) is on SQLite as of Phase 7.
         self.state = JsonState(state_dir)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
         self.db = Database(state_dir / "fasp.db")
@@ -196,12 +201,8 @@ class FaspHarness:
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
-        # Local import avoids a circular dependency: stream frames use FASP
-        # encoding helpers, while the harness owns stream authorization.
-        from .streaming import StreamRegistry
-        from .robotics import ReservationBook
-        self.streams = StreamRegistry(self.state)
-        self.reservations = ReservationBook(self.state)
+        self.streams = StreamRegistry(StreamsRepo(self.db))
+        self.reservations = ReservationBook(ReservationsRepo(self.db))
         if not (state_dir / "admin_token").exists():
             token = secrets.token_urlsafe(32)
             (state_dir / "admin_token").write_text(token + "\n", encoding="utf-8")
