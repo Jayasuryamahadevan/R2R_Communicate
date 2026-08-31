@@ -123,12 +123,12 @@ if command -v uv >/dev/null 2>&1; then
 	# uv-managed venvs deliberately don't ship a `pip` binary inside them
 	# (uv installs packages itself) -- if `uv` is on this device, prefer
 	# it end to end rather than assuming plain venv+pip, which would fail
-	# against exactly that kind of venv.
-	info "uv found -- using it for the venv and the install"
-	if [[ ! -d .venv ]]; then
-		uv venv --python "$PYTHON_BIN" .venv --quiet
-	fi
-	uv pip install --python .venv/bin/python --quiet -e .
+	# against exactly that kind of venv. `uv sync` (not `uv pip install
+	# -e .`) is what actually consumes uv.lock -- installing from a
+	# committed lockfile instead of re-resolving pyproject.toml's ranges
+	# fresh every time is the whole point of committing one.
+	info "uv found -- using it, installing from the committed uv.lock"
+	uv sync --quiet
 elif [[ -d .venv && ! -x .venv/bin/pip ]]; then
 	warn ".venv exists but has no pip (likely uv-managed, and uv isn't on PATH anymore)."
 	info "Either install uv (https://docs.astral.sh/uv/) or remove .venv and re-run this script to get a plain venv instead."
