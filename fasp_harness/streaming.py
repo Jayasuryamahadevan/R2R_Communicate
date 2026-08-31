@@ -9,6 +9,7 @@ images, audio chunks, point clouds, or arbitrary bytes.
 from __future__ import annotations
 
 import hashlib
+import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -86,10 +87,46 @@ class Reassembler:
 
 
 class StreamRegistry:
-    """Durable stream control state and bounded packet retention."""
+    """Durable stream control state and bounded packet retention.
+
+    Live-push subscriptions are the one piece of state here that is
+    deliberately NOT durable, same reasoning as channels.py's
+    ConnectionRegistry: a subscription is a property of a live session
+    (push is a latency optimization on top of `pull`, which stays the
+    durable, resumable reliability backstop -- FASP_MESSAGING_STREAMING.md's
+    "reliable" delivery mode already has its own window/ack/retransmit
+    story that a dropped push notification never bypasses), so losing it
+    across a restart costs a subscriber nothing but re-sending one
+    `stream.subscribe` the next time it reconnects.
+    """
 
     def __init__(self, repo: StreamsRepo) -> None:
         self.repo = repo
+        self._lock = threading.Lock()
+        self._subscribers: dict[str, set[str]] = {}
+
+    def subscribe(self, peer_id: str, stream_id: str) -> dict[str, Any]:
+        stream = self.repo.get(stream_id)
+        if not stream or stream["state"] != "open":
+            raise FaspError("stream.not_open", "Stream is not available.")
+        if peer_id == stream["owner"]:
+            raise FaspError("auth.not_authorized", "A stream owner cannot subscribe to its own remote feed.")
+        with self._lock:
+            self._subscribers.setdefault(stream_id, set()).add(peer_id)
+        return {"type": "stream.subscribed", "stream_id": stream_id, "last_sequence": stream["last_sequence"]}
+
+    def unsubscribe(self, peer_id: str, stream_id: str) -> dict[str, Any]:
+        with self._lock:
+            live = self._subscribers.get(stream_id)
+            if live is not None:
+                live.discard(peer_id)
+                if not live:
+                    del self._subscribers[stream_id]
+        return {"type": "stream.unsubscribed", "stream_id": stream_id}
+
+    def subscribers_of(self, stream_id: str) -> set[str]:
+        with self._lock:
+            return set(self._subscribers.get(stream_id, ()))
 
     def open(self, owner: str, config: dict[str, Any]) -> dict[str, Any]:
         stream_id = config.get("stream_id") or str(uuid.uuid4())
@@ -147,4 +184,6 @@ class StreamRegistry:
             raise FaspError("stream.not_open", "Stream is not owned by this sender.")
         reason = reason[:160]
         self.repo.close(stream_id, reason)
+        with self._lock:
+            self._subscribers.pop(stream_id, None)
         return {"type": "stream.closed", "stream_id": stream_id, "reason": reason}

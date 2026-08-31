@@ -413,6 +413,8 @@ class FaspHarness:
         "stream.open": "_handle_stream_open",
         "stream.packet": "_handle_stream_packet",
         "stream.pull": "_handle_stream_pull",
+        "stream.subscribe": "_handle_stream_subscribe",
+        "stream.unsubscribe": "_handle_stream_unsubscribe",
         "stream.close": "_handle_stream_close",
         "reservation.request": "_handle_reservation_request",
         "reservation.release": "_handle_reservation_release",
@@ -690,7 +692,19 @@ class FaspHarness:
 
     def _handle_stream_packet(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         self._authorize_stream(envelope, peer)
-        return self.streams.packet(envelope["from"], envelope["payload"])
+        payload = envelope["payload"]
+        ack = self.streams.packet(envelope["from"], payload)
+        # Live push (ss13 streaming profile): a genuinely new (non-
+        # duplicate, non-retransmit) packet is fanned out immediately to
+        # every subscriber with an open channel -- `stream.pull` remains
+        # the durable, resumable backstop for whatever a dropped push
+        # notification, or a subscriber with no open channel, misses.
+        if not ack["duplicate"]:
+            stream_id = payload["stream_id"]
+            message = {"fasp": PROTOCOL, "type": "stream.push", "stream_id": stream_id, "packet": payload}
+            for subscriber in self.streams.subscribers_of(stream_id):
+                self.channels.push(subscriber, message)
+        return ack
 
     def stream_pull(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="stream.pull")
@@ -702,6 +716,32 @@ class FaspHarness:
         if not isinstance(payload.get("stream_id"), str):
             raise FaspError("schema.invalid", "stream.pull requires stream_id.")
         return self.streams.pull(envelope["from"], payload["stream_id"], int(payload.get("after_sequence", -1)))
+
+    def stream_subscribe(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        _, response = self.accept(envelope, expected_kind="stream.subscribe")
+        return response
+
+    def _handle_stream_subscribe(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        """Opt in to live push delivery of a stream's future packets over
+        this peer's open channel (see channels.py) -- a subscription with
+        no open channel simply receives nothing until one exists; it is
+        never an error, and `stream.pull` always still works regardless."""
+        self._authorize_stream(envelope, peer)
+        payload = envelope["payload"]
+        if not isinstance(payload.get("stream_id"), str):
+            raise FaspError("schema.invalid", "stream.subscribe requires stream_id.")
+        return self.streams.subscribe(envelope["from"], payload["stream_id"])
+
+    def stream_unsubscribe(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        _, response = self.accept(envelope, expected_kind="stream.unsubscribe")
+        return response
+
+    def _handle_stream_unsubscribe(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        del peer
+        payload = envelope["payload"]
+        if not isinstance(payload.get("stream_id"), str):
+            raise FaspError("schema.invalid", "stream.unsubscribe requires stream_id.")
+        return self.streams.unsubscribe(envelope["from"], payload["stream_id"])
 
     def stream_close(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="stream.close")
