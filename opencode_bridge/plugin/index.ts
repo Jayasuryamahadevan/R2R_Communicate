@@ -27,8 +27,8 @@
  *    this plugin pairs itself with that FASP harness as one of its
  *    peers on load -- the concrete mechanism behind "what other
  *    physical or AI agents am I connected to" (see `faspPeers` on
- *    `AgentHarness`, and `verifyWorkspace` below). Off by default: this
- *    never reaches out to a network nobody asked it to.
+ *    `AgentHarness`, and `verifyWorkspace` in ./verify.ts). Off by
+ *    default: this never reaches out to a network nobody asked it to.
  *
  * Deliberately NOT built here: an MCP client (OpenCode already ships a
  * full native one -- packages/opencode/src/mcp/ -- duplicating it would
@@ -40,6 +40,15 @@
  * but not wired to a command surface here, since OpenCode's command
  * model differs from pi's -- import `WebhookReceiver`/`WebhookNotifier`
  * directly if you want it from your own OpenCode config or plugin.
+ *
+ * This file exports ONLY its default plugin function, on purpose: a
+ * real running `opencode` (v1.18.25) calls every function a plugin
+ * module exports, not just the default, as if each one might itself be
+ * a plugin factory. `verifyWorkspace` used to be a second named export
+ * here and OpenCode called it too, with the wrong argument, logging a
+ * spurious "failed to load plugin" error (harmlessly, since the real
+ * plugin still worked) -- it now lives in ./verify.ts instead, which is
+ * never registered as a plugin entry point.
  */
 
 import { readFileSync } from "node:fs";
@@ -50,20 +59,24 @@ import {
 	collectRuntimeProvenance,
 	discoverPermissionsAndNetwork,
 } from "../../bridge_core/provenance.js";
-import type { FaspPeerRecord } from "../../bridge_core/state.js";
-import { verifyDetail } from "../../bridge_core/tiers.js";
 
 const PURPOSE =
 	"OpenCode coding agent assisting a developer in this workspace: reads, edits, and runs commands as directed.";
 
-/** OpenCode Zen model IDs -- see opencode.ai/docs/zen. Override by
- * setting AIC_OPENCODE_ZEN_MODEL / AIC_OPENCODE_ZEN_SMALL_MODEL, or by
- * simply setting your own "model"/"small_model" in opencode.json --
- * either takes precedence over this default. */
+/** OpenCode Zen model IDs -- see opencode.ai/docs/zen. These two were
+ * confirmed to actually exist by running `opencode models opencode`
+ * against a real Zen catalog (both free: cost.input/output = 0, no
+ * OpenCode account required) rather than assumed -- Zen's catalog is
+ * OpenCode's own and rotates over time, so re-run that command if a
+ * later OpenCode version rejects either as unknown. Override by setting
+ * AIC_OPENCODE_ZEN_MODEL / AIC_OPENCODE_ZEN_SMALL_MODEL, or by simply
+ * setting your own "model"/"small_model" in opencode.json -- either
+ * takes precedence over this default. */
 const DEFAULT_ZEN_MODEL =
-	process.env.AIC_OPENCODE_ZEN_MODEL ?? "opencode/claude-opus-5";
+	process.env.AIC_OPENCODE_ZEN_MODEL ?? "opencode/big-pickle";
 const DEFAULT_ZEN_SMALL_MODEL =
-	process.env.AIC_OPENCODE_ZEN_SMALL_MODEL ?? "opencode/claude-haiku-4-5";
+	process.env.AIC_OPENCODE_ZEN_SMALL_MODEL ??
+	"opencode/nemotron-3.5-lightning-free";
 
 function stateDirFor(directory: string): string {
 	return join(directory, ".aic");
@@ -154,7 +167,7 @@ function applyPrimaryProviderDefaults(config: Config): void {
 	if (!withModel.small_model) withModel.small_model = DEFAULT_ZEN_SMALL_MODEL;
 }
 
-export const AgentIdCardPlugin: Plugin = async (input: PluginInput) => {
+const agentIdCardPlugin: Plugin = async (input: PluginInput) => {
 	const harness = new AgentHarness(stateDirFor(input.directory));
 	await bootstrapIfNeeded(harness);
 	await connectFaspIfConfigured(harness);
@@ -186,32 +199,4 @@ export const AgentIdCardPlugin: Plugin = async (input: PluginInput) => {
 	};
 };
 
-/** Verify this workspace's card without going through OpenCode at all
- * -- e.g. from a shell script or CI step. Also reports this agent's own
- * self-state: FASP peers it has paired with (see `connectFaspIfConfigured`
- * above) -- MCP servers are deliberately not repeated here, since
- * OpenCode's own `config.mcp` is that state's one real source of truth. */
-export function verifyWorkspace(directory: string): {
-	ok: boolean;
-	agentId?: string;
-	error?: string;
-	faspPeers?: FaspPeerRecord[];
-} {
-	const harness = new AgentHarness(stateDirFor(directory));
-	if (!harness.isBootstrapped) return { ok: false, error: "not bootstrapped" };
-	try {
-		harness.verifyOwnChain();
-		const detail = harness.detail;
-		if (detail) verifyDetail(detail, harness.currentEpoch);
-		return {
-			ok: true,
-			agentId: harness.currentEpoch.agent_id,
-			faspPeers: harness.state.faspPeers,
-		};
-	} catch (error) {
-		return { ok: false, error: (error as Error).message };
-	}
-}
-
-export { AgentHarness };
-export default AgentIdCardPlugin;
+export default agentIdCardPlugin;
