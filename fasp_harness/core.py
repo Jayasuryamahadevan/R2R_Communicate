@@ -15,8 +15,9 @@ import threading
 import uuid
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
+from .audit.chain import AuditChain
 from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
 from .platforms import runtime_profile
@@ -27,10 +28,11 @@ from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
 from .storage.peers_repo import PeersRepo
 from .storage.revocations_repo import RevocationsRepo
-from .storage.tasks_repo import TasksRepo
+from .storage.tasks_repo import TERMINAL_STATES, TasksRepo
 from .timestamps import now, parse_stamp, stamp
 
 PEER_PAIRING_VALIDITY = timedelta(days=90)
+DEFAULT_TASK_LEASE = timedelta(seconds=30)
 
 __all__ = [
     "FaspError",
@@ -55,6 +57,31 @@ __all__ = [
 PROTOCOL = "fasp/1.0"
 MAX_INLINE_BYTES = 64 * 1024
 MAX_CLOCK_SKEW_SECONDS = 60
+
+
+def _task_response(task: dict[str, Any]) -> dict[str, Any]:
+    """Render a `tasks` row as the response shape its state implies.
+
+    Used both for a duplicate intent.propose (return the prior outcome
+    rather than re-running anything) and for task.cancel racing against
+    completion (report whatever the row's state actually resolved to).
+    """
+    state = task["state"]
+    if state == "COMPLETED":
+        return task["result"]
+    if state == "FAILED":
+        error = task["error"] or {}
+        return {"type": "task.fail", "intent_id": task["intent_id"], "idempotency_key": task["idempotency_key"], "status": "failed", "error": error, "completed_at": task["updated_at"]}
+    if state == "CANCELLED":
+        return {"type": "task.cancelled", "idempotency_key": task["idempotency_key"]}
+    if state == "REJECTED":
+        error = task["error"] or {}
+        return {"type": "task.fail", "intent_id": task["intent_id"], "idempotency_key": task["idempotency_key"], "status": "rejected", "error": error, "completed_at": task["updated_at"]}
+    # PROPOSED / RUNNING / CANCEL_PENDING: not yet resolved to a terminal
+    # outcome. This reference harness's synchronous adapter model makes
+    # observing one of these from a second caller rare, but not impossible
+    # under real thread concurrency (see tests/test_cancellation.py).
+    return {"type": "task.progress", "idempotency_key": task["idempotency_key"], "status": state.lower()}
 
 
 def _plain_json(value: Any) -> bytes:
@@ -143,13 +170,14 @@ class FaspHarness:
         # JsonState still backs streaming/robotics/receipts until Phase 7
         # migrates them onto the same SQLite database as everything else.
         self.state = JsonState(state_dir)
-        self.db = Database(state_dir / "fasp.db")
-        self.peers = PeersRepo(self.db)
-        self.inbox = InboxRepo(self.db)
-        self.tasks = TasksRepo(self.db)
-        self.grants = GrantsRepo(self.db)
-        self.revocations = RevocationsRepo(self.db)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
+        self.db = Database(state_dir / "fasp.db")
+        self.audit = AuditChain(self.db, self.identity.system_id)
+        self.peers = PeersRepo(self.db, self.audit)
+        self.inbox = InboxRepo(self.db)
+        self.tasks = TasksRepo(self.db, self.audit)
+        self.grants = GrantsRepo(self.db, self.audit)
+        self.revocations = RevocationsRepo(self.db, self.audit)
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
@@ -163,6 +191,10 @@ class FaspHarness:
             token = secrets.token_urlsafe(32)
             (state_dir / "admin_token").write_text(token + "\n", encoding="utf-8")
             os.chmod(state_dir / "admin_token", 0o600)
+        # A row can only still be RUNNING here if the previous process
+        # crashed mid-adapter-call; resolve it to a safe terminal state
+        # rather than silently leaving it stuck (ss7.1, ss10, ss15 #5/#6).
+        self.tasks.expire_stale_leases(stamp())
 
     @property
     def admin_token(self) -> str:
@@ -315,8 +347,18 @@ class FaspHarness:
         if not self.inbox.insert_if_new(envelope, stamp()):
             return True, self.inbox.get_response(envelope["message_id"])
         response: dict[str, Any] | None = None
-        if envelope["kind"] == "intent.propose":
-            response = self._handle_intent(envelope, peer)
+        try:
+            if envelope["kind"] == "intent.propose":
+                response = self._handle_intent(envelope, peer)
+            elif envelope["kind"] == "task.cancel":
+                response = self._handle_cancel(envelope, peer)
+        except FaspError as error:
+            # Recorded (not just raised) so a replay of this exact envelope
+            # returns the same rejection deterministically instead of
+            # re-running the check -- see the ss7.1 idempotent-handling note
+            # in _handle_intent for why this matters at the task level too.
+            self.inbox.set_response(envelope["message_id"], {"type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
+            raise
         self.inbox.set_response(envelope["message_id"], response)
         return False, response
 
@@ -328,27 +370,91 @@ class FaspHarness:
             raise FaspError("schema.invalid", "Intent requires idempotency_key and capability.")
         if not any(capability.startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Paired peer is not granted this capability prefix.")
+
+        # Creation of the PROPOSED row is what makes this idempotent (ss7.1):
+        # a duplicate of the same idempotency_key can never race past this
+        # point twice, and -- since this reference harness only ever runs an
+        # adapter synchronously within a single request -- a duplicate
+        # arriving on a later request will always find the first one
+        # already terminal, never PROPOSED/RUNNING.
+        if not self.tasks.propose(key, intent.get("intent_id"), capability, envelope["from"], stamp()):
+            existing = self.tasks.get(key)
+            if existing is not None and existing["state"] == "REJECTED":
+                error = existing["error"] or {}
+                raise FaspError(error.get("code", "policy.requires_confirmation"), error.get("detail", "Intent was previously rejected."))
+            if existing is not None and existing["state"] in TERMINAL_STATES:
+                return _task_response(existing)
+            raise FaspError("schema.invalid", "idempotency_key is already in use by a request still being processed.")
+
         capabilities = {item["id"]: item for item in self.adapter.capabilities()}
         if capability not in capabilities:
-            raise FaspError("capability.unavailable", "Capability is unavailable at this runtime.")
+            self._reject_task(key, "capability.unavailable", "Capability is unavailable at this runtime.")
         risk = intent.get("risk", capabilities[capability]["risk"])
         if not capability_policy.is_executable(risk):
-            raise FaspError("policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
+            self._reject_task(key, "policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
         grant_id = intent.get("grant", {}).get("id") if isinstance(intent.get("grant"), dict) else None
-        validate_grant_if_required(self.grants, envelope["from"], capability, grant_id, capability_policy.requires_grant(risk))
-        existing = self.tasks.get_result(key)
-        if existing is not None:
-            return existing
+        try:
+            validate_grant_if_required(self.grants, envelope["from"], capability, grant_id, capability_policy.requires_grant(risk))
+        except FaspError as error:
+            self._reject_task(key, error.code, error.detail)
+
+        max_runtime_s = capabilities[capability].get("max_runtime_s")
+        lease = timedelta(seconds=max_runtime_s) if isinstance(max_runtime_s, (int, float)) and max_runtime_s > 0 else DEFAULT_TASK_LEASE
+        if not self.tasks.start_running(key, stamp(now() + lease), stamp()):
+            # Lost a race to a concurrent task.cancel that reached the row
+            # first (PROPOSED -> CANCELLED); report that outcome, not ours.
+            return _task_response(self.tasks.get(key))
+
         try:
             output = self.adapter.handle(intent)
             result = {"type": "task.result", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "completed", "output": output, "completed_at": stamp()}
+            committed = self.tasks.complete(key, result, stamp())
         except FaspError as error:
             result = {"type": "task.fail", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "failed", "error": {"code": error.code, "detail": error.detail}, "completed_at": stamp()}
-        if not self.tasks.record_if_new(key, intent.get("intent_id"), capability, envelope["from"], result, stamp()):
-            # A concurrent duplicate raced in and recorded a result first;
-            # use that one so the effect is never counted/reported twice.
-            result = self.tasks.get_result(key) or result
+            committed = self.tasks.fail(key, {"code": error.code, "detail": error.detail}, stamp())
+        if not committed:
+            # A concurrent task.cancel moved the row to CANCEL_PENDING/
+            # CANCELLED while handle() was still running; the row's actual
+            # final state is authoritative, not the result just computed.
+            result = _task_response(self.tasks.get(key))
         return result
+
+    def _reject_task(self, key: str, code: str, detail: str) -> NoReturn:
+        self.tasks.reject(key, {"code": code, "detail": detail}, stamp())
+        raise FaspError(code, detail)
+
+    def _handle_cancel(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        """task.cancel: cancel-before-effect vs cancel-too-late (ss7.2, ss15 #7).
+
+        `peer` (the caller) must be the same peer the task was proposed by
+        -- cancellation is not a capability any paired peer gets to invoke
+        on any task.
+        """
+        del peer
+        key = envelope["payload"].get("idempotency_key")
+        if not isinstance(key, str) or not key:
+            raise FaspError("schema.invalid", "task.cancel requires idempotency_key.")
+        task = self.tasks.get(key)
+        if task is None:
+            raise FaspError("schema.invalid", "Unknown idempotency_key.")
+        if task["from_peer"] != envelope["from"]:
+            raise FaspError("auth.not_authorized", "Only the proposing peer may cancel this task.")
+
+        if self.tasks.cancel_immediately(key, stamp()):
+            return {"type": "task.cancelled", "idempotency_key": key}
+
+        task = self.tasks.get(key)
+        if task["state"] == "RUNNING" and self.tasks.request_cancel(key, stamp()):
+            cancel_hook = getattr(self.adapter, "cancel", None)
+            accepted = bool(cancel_hook(key)) if callable(cancel_hook) else False
+            if accepted and self.tasks.cancel_immediately(key, stamp()):
+                return {"type": "task.cancelled", "idempotency_key": key}
+            self.tasks.resume_running(key, stamp())
+            task = self.tasks.get(key)
+
+        if task["state"] == "CANCELLED":
+            return {"type": "task.cancelled", "idempotency_key": key}
+        return {"type": "task.too_late", "idempotency_key": key, "status": task["state"].lower(), "outcome": _task_response(task)}
 
     def pull_inbox(self, envelope: dict[str, Any]) -> dict[str, Any]:
         self._verify_envelope(envelope, "inbox.pull")

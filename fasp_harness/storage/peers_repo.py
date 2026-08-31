@@ -6,12 +6,14 @@ import json
 import secrets
 from typing import Any
 
+from ..audit.chain import AuditChain
 from .db import Database
 
 
 class PeersRepo:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, audit: AuditChain) -> None:
         self.db = db
+        self.audit = audit
 
     def get(self, peer_id: str) -> dict[str, Any] | None:
         row = self.db.read_one("SELECT * FROM peers WHERE peer_id = ?", (peer_id,))
@@ -80,6 +82,7 @@ class PeersRepo:
                     (paired_at, expires_at, peer_id),
                 )
             conn.execute("DELETE FROM revocations WHERE peer_id = ?", (peer_id,))
+            self.audit.append(conn, "peer.paired", peer_id, {"expires_at": expires_at}, paired_at)
         return self.get(peer_id)
 
     def all(self) -> dict[str, dict[str, Any]]:

@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..audit.chain import AuditChain
 from .db import Database
 
 
 class RevocationsRepo:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, audit: AuditChain) -> None:
         self.db = db
+        self.audit = audit
 
     def revoke(self, peer_id: str, revoked_at: str, reason: str, revocation_ref: str | None = None) -> None:
         with self.db.write() as conn:
@@ -24,6 +26,7 @@ class RevocationsRepo:
                 "ON CONFLICT(peer_id) DO UPDATE SET revoked_at = excluded.revoked_at, reason = excluded.reason, revocation_ref = excluded.revocation_ref",
                 (peer_id, revoked_at, reason, revocation_ref),
             )
+            self.audit.append(conn, "peer.revoked", peer_id, {"reason": reason, "revocation_ref": revocation_ref}, revoked_at)
 
     def get(self, peer_id: str) -> dict[str, Any] | None:
         row = self.db.read_one("SELECT * FROM revocations WHERE peer_id = ?", (peer_id,))

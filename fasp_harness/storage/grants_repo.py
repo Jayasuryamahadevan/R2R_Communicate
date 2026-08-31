@@ -10,6 +10,7 @@ import hashlib
 import json
 from typing import Any
 
+from ..audit.chain import AuditChain
 from ..crypto.envelope import b64
 from .db import Database
 
@@ -27,8 +28,9 @@ def compute_digest(grant_id: str, subject_peer: str, capability_prefixes: list[s
 
 
 class GrantsRepo:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, audit: AuditChain) -> None:
         self.db = db
+        self.audit = audit
 
     def issue(
         self,
@@ -48,6 +50,7 @@ class GrantsRepo:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
                 (grant_id, issuer, subject_peer, json.dumps(capability_prefixes), digest, purpose, json.dumps(constraints) if constraints is not None else None, issued_at, expires_at),
             )
+            self.audit.append(conn, "grant.issued", grant_id, {"subject_peer": subject_peer, "capability_prefixes": capability_prefixes, "digest": digest}, issued_at)
         grant = self.get(grant_id)
         assert grant is not None
         return grant
@@ -59,6 +62,8 @@ class GrantsRepo:
     def revoke(self, grant_id: str, revoked_at: str) -> bool:
         with self.db.write() as conn:
             cursor = conn.execute("UPDATE grants SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL", (revoked_at, grant_id))
+            if cursor.rowcount > 0:
+                self.audit.append(conn, "grant.revoked", grant_id, {}, revoked_at)
             return cursor.rowcount > 0
 
     def for_subject(self, subject_peer: str) -> list[dict[str, Any]]:
