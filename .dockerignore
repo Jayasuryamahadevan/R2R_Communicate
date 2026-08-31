@@ -1,0 +1,13 @@
+.git
+.github
+.venv
+.fasp
+.a2a_bridge
+.hypothesis
+__pycache__
+*.egg-info
+tests
+.claude
+Dockerfile
+.dockerignore
+.gitignore
