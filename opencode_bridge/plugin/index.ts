@@ -3,7 +3,7 @@
  * for OpenCode (https://github.com/anomalyco/opencode)
  * ======================================================================
  *
- * Two things, kept deliberately separate:
+ * Three things, kept deliberately separate:
  *
  * 1. Primary API key provider: the `config` hook defaults `model` and
  *    `small_model` to OpenCode Zen (`opencode/...`) -- OpenCode's own
@@ -23,15 +23,26 @@
  *    appended to a tamper-evident action log via the `tool.execute.
  *    before`/`tool.execute.after` hooks.
  *
+ * 3. Optional FASP pairing (../../fasp_harness/): if AIC_FASP_URL is set,
+ *    this plugin pairs itself with that FASP harness as one of its
+ *    peers on load -- the concrete mechanism behind "what other
+ *    physical or AI agents am I connected to" (see `faspPeers` on
+ *    `AgentHarness`, and `verifyWorkspace` below). Off by default: this
+ *    never reaches out to a network nobody asked it to.
+ *
  * Deliberately NOT built here: an MCP client (OpenCode already ships a
  * full native one -- packages/opencode/src/mcp/ -- duplicating it would
  * be the over-engineering this bridge was explicitly asked to avoid).
+ * OpenCode's own `config.mcp` is this workspace's real, live MCP
+ * self-state; bridge_core's MCP self-state (state.ts) is deliberately
+ * left unused here rather than kept as a second, shadow copy of it.
  * `bridge_core/webhooks.ts` is available (pure Node, no host coupling)
  * but not wired to a command surface here, since OpenCode's command
  * model differs from pi's -- import `WebhookReceiver`/`WebhookNotifier`
  * directly if you want it from your own OpenCode config or plugin.
  */
 
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Config, Plugin, PluginInput } from "@opencode-ai/plugin";
 import { AgentHarness } from "../../bridge_core/harness.js";
@@ -39,6 +50,7 @@ import {
 	collectRuntimeProvenance,
 	discoverPermissionsAndNetwork,
 } from "../../bridge_core/provenance.js";
+import type { FaspPeerRecord } from "../../bridge_core/state.js";
 import { verifyDetail } from "../../bridge_core/tiers.js";
 
 const PURPOSE =
@@ -55,6 +67,35 @@ const DEFAULT_ZEN_SMALL_MODEL =
 
 function stateDirFor(directory: string): string {
 	return join(directory, ".aic");
+}
+
+/** Only ever resolved from the environment, never accepted as a config
+ * value that might end up written back to disk or logged. */
+function resolveFaspAdminToken(): string | undefined {
+	if (process.env.AIC_FASP_ADMIN_TOKEN) return process.env.AIC_FASP_ADMIN_TOKEN;
+	const stateDir = process.env.AIC_FASP_STATE_DIR;
+	if (!stateDir) return undefined;
+	try {
+		return readFileSync(join(stateDir, "admin_token"), "utf-8").trim();
+	} catch {
+		return undefined;
+	}
+}
+
+/** Pair with a FASP harness (../../fasp_harness/) as one of its peers,
+ * but only if the operator opted in by setting AIC_FASP_URL -- this
+ * bridge must never reach out to a network nobody configured it to.
+ * Best effort: a failed attempt is recorded on the card's own log, not
+ * thrown, since this must never block OpenCode from starting. */
+async function connectFaspIfConfigured(harness: AgentHarness): Promise<void> {
+	const baseUrl = process.env.AIC_FASP_URL;
+	if (!baseUrl) return;
+	await harness.connectFaspPeer(
+		baseUrl,
+		`opencode@${process.env.HOSTNAME ?? "workspace"}`,
+		["chat", "tool.execute"],
+		{ adminToken: resolveFaspAdminToken() },
+	);
 }
 
 async function bootstrapIfNeeded(harness: AgentHarness): Promise<void> {
@@ -116,6 +157,7 @@ function applyPrimaryProviderDefaults(config: Config): void {
 export const AgentIdCardPlugin: Plugin = async (input: PluginInput) => {
 	const harness = new AgentHarness(stateDirFor(input.directory));
 	await bootstrapIfNeeded(harness);
+	await connectFaspIfConfigured(harness);
 
 	return {
 		async config(config) {
@@ -145,11 +187,15 @@ export const AgentIdCardPlugin: Plugin = async (input: PluginInput) => {
 };
 
 /** Verify this workspace's card without going through OpenCode at all
- * -- e.g. from a shell script or CI step. */
+ * -- e.g. from a shell script or CI step. Also reports this agent's own
+ * self-state: FASP peers it has paired with (see `connectFaspIfConfigured`
+ * above) -- MCP servers are deliberately not repeated here, since
+ * OpenCode's own `config.mcp` is that state's one real source of truth. */
 export function verifyWorkspace(directory: string): {
 	ok: boolean;
 	agentId?: string;
 	error?: string;
+	faspPeers?: FaspPeerRecord[];
 } {
 	const harness = new AgentHarness(stateDirFor(directory));
 	if (!harness.isBootstrapped) return { ok: false, error: "not bootstrapped" };
@@ -157,7 +203,11 @@ export function verifyWorkspace(directory: string): {
 		harness.verifyOwnChain();
 		const detail = harness.detail;
 		if (detail) verifyDetail(detail, harness.currentEpoch);
-		return { ok: true, agentId: harness.currentEpoch.agent_id };
+		return {
+			ok: true,
+			agentId: harness.currentEpoch.agent_id,
+			faspPeers: harness.state.faspPeers,
+		};
 	} catch (error) {
 		return { ok: false, error: (error as Error).message };
 	}

@@ -11,14 +11,8 @@
  * sibling files in this same directory.
  */
 
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import {
 	type AgentIdentity,
 	AICError,
@@ -35,6 +29,8 @@ import {
 	type Epoch,
 	verifyChain,
 } from "./epoch.js";
+import { FaspClient } from "./fasp.js";
+import { readJson, writeJson } from "./fsjson.js";
 import { AppendOnlyLog } from "./log.js";
 import {
 	DEFAULT_VALIDITY_MS,
@@ -42,32 +38,19 @@ import {
 	renew,
 	verifyRenewal,
 } from "./renewal.js";
+import { type FaspPeerRecord, SelfState } from "./state.js";
 import {
 	createDetail,
 	createSensitive,
 	type Tier2Detail,
 	type Tier3Sensitive,
 } from "./tiers.js";
-import { now } from "./timestamps.js";
+import { now, stamp } from "./timestamps.js";
 
 interface StoredIdentity {
 	agent_id: string;
 	public_key: string;
 	private_key: string;
-}
-
-function readJson<T>(path: string, fallback: T): T {
-	if (!existsSync(path)) return fallback;
-	return JSON.parse(readFileSync(path, "utf-8")) as T;
-}
-
-function writeJson(path: string, value: unknown, mode: number): void {
-	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-	const tmp = `${path}.tmp`;
-	writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf-8");
-	chmodSync(tmp, mode);
-	writeFileSync(path, readFileSync(tmp));
-	chmodSync(path, mode);
 }
 
 export interface AgentAdapter {
@@ -84,12 +67,18 @@ export class AgentHarness {
 	 * kind (see `reconcile()` below) is enough to tell "what did I do"
 	 * from "what did I learn" without needing two separate files for it. */
 	readonly log: AppendOnlyLog;
+	/** This agent's own self-managed configuration -- which MCP servers
+	 * it should stay connected to or may connect to on its own
+	 * initiative, and which FASP peers it has paired with. See
+	 * state.ts. */
+	readonly state: SelfState;
 
 	private readonly identityPath: string;
 	private readonly chainPath: string;
 	private readonly detailPath: string;
 	private readonly sensitivePath: string;
 	private readonly renewalPath: string;
+	private readonly fasp: FaspClient;
 
 	constructor(stateDir: string, adapter?: AgentAdapter) {
 		this.stateDir = stateDir;
@@ -100,6 +89,8 @@ export class AgentHarness {
 		this.sensitivePath = join(stateDir, "sensitive.json");
 		this.renewalPath = join(stateDir, "renewal.json");
 		this.log = new AppendOnlyLog(join(stateDir, "log.jsonl"));
+		this.state = new SelfState(join(stateDir, "self_state.json"));
+		this.fasp = new FaspClient(stateDir);
 	}
 
 	get isBootstrapped(): boolean {
@@ -460,6 +451,82 @@ export class AgentHarness {
 
 	verifyOwnChain(): void {
 		verifyChain(this.chain);
+	}
+
+	/** Pair with a FASP harness (../fasp_harness/) as one of its peers --
+	 * the concrete mechanism behind "what physical or AI agents am I
+	 * connected to": a FASP harness this agent is paired with can list
+	 * every other peer it already knows about (see faspPeers() below).
+	 * If `adminToken` is given (that harness's own admin token -- only
+	 * meaningful when the same operator runs both sides, or has handed
+	 * this agent that token on purpose), this also confirms the pairing
+	 * itself with no separate human approval step; without one, the
+	 * pairing sits "pending" until that harness's operator confirms it
+	 * some other way. Never throws: a failed attempt is recorded (state
+	 * "failed", with the error) rather than raised, since this is
+	 * expected to be called speculatively/autonomously. */
+	async connectFaspPeer(
+		baseUrl: string,
+		displayName: string,
+		capabilities: string[],
+		options: { adminToken?: string } = {},
+	): Promise<{
+		systemId: string;
+		state: "pending" | "paired" | "failed";
+		error?: string;
+	}> {
+		const idCard = this.fasp.buildIdCard(displayName, capabilities);
+		try {
+			const hello = await this.fasp.hello(baseUrl, idCard);
+			let state: "pending" | "paired" = "pending";
+			if (options.adminToken) {
+				await this.fasp.confirmSelf(
+					baseUrl,
+					idCard.system_id,
+					hello.pair_code,
+					options.adminToken,
+				);
+				state = "paired";
+			}
+			this.state.rememberFaspPeer({
+				baseUrl,
+				systemId: hello.system_id,
+				state,
+				updatedAt: stamp(now()),
+			});
+			this.log.append("fasp.peer_connected", {
+				base_url: baseUrl,
+				remote_system_id: hello.system_id,
+				state,
+			});
+			return { systemId: hello.system_id, state };
+		} catch (error) {
+			const message = (error as Error).message;
+			this.state.rememberFaspPeer({
+				baseUrl,
+				state: "failed",
+				lastError: message,
+				updatedAt: stamp(now()),
+			});
+			this.log.append("fasp.peer_connect_failed", {
+				base_url: baseUrl,
+				error: message,
+			});
+			return { systemId: "", state: "failed", error: message };
+		}
+	}
+
+	/** If `adminToken` is given, fetch the live peer list from that FASP
+	 * harness at `baseUrl` -- every physical or AI agent it has ever
+	 * paired with, not just this one. Otherwise falls back to this
+	 * agent's own recollection of what it has tried to pair with, which
+	 * needs no admin rights on anything but is necessarily incomplete. */
+	async faspPeers(
+		options: { baseUrl?: string; adminToken?: string } = {},
+	): Promise<Record<string, unknown> | FaspPeerRecord[]> {
+		if (options.baseUrl && options.adminToken)
+			return this.fasp.listPeers(options.baseUrl, options.adminToken);
+		return this.state.faspPeers;
 	}
 }
 

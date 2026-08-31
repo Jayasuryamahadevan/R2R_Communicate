@@ -37,7 +37,19 @@ to a tamper-evident action log via the `tool.execute.before`/
 **No duplicated MCP client.** OpenCode already ships a full native MCP
 client (`packages/opencode/src/mcp/` upstream) -- this bridge does not
 rebuild one. "Connect to any MCP server" is already true for OpenCode
-out of the box; nothing extra was needed here.
+out of the box; nothing extra was needed here. Its self-state for MCP
+servers is therefore OpenCode's own `config.mcp`, not a second copy of
+it in `bridge_core`.
+
+**Optional FASP pairing.** Set `AIC_FASP_URL` and this plugin pairs
+itself, on load, with that [FASP harness](../fasp_harness/) as one of
+its peers -- the concrete answer to "what other physical or AI agents
+am I connected to" (`verifyWorkspace(directory)` reports the result).
+Off by default: this bridge never reaches out to a network nobody
+configured it to. Self-confirms the pairing (no separate human approval
+step) if `AIC_FASP_ADMIN_TOKEN` or `AIC_FASP_STATE_DIR` is also set --
+see `pi_bridge/README.md`'s Quick Start for what those mean; the same
+rule applies here.
 
 ## Usage
 
@@ -64,4 +76,7 @@ The identity layer is literally the same files `pi_bridge/` uses
 `config`-hook logic (default only when unset, real bootstrap producing
 a chain that verifies) was run directly against this plugin's exported
 functions while building it, not merely assumed to work from the type
-signatures.
+signatures. FASP pairing (`bridge_core/fasp.ts`) was verified the same
+way as in `pi_bridge/README.md`: a real round trip against a running
+Python `fasp_harness` instance, not merely asserted from the two
+protocols' schemas.

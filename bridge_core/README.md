@@ -5,13 +5,13 @@ The one, host-agnostic implementation of the
 identity layer, shared by every bridge in this repository
 ([`pi_bridge/`](../pi_bridge/), [`opencode_bridge/`](../opencode_bridge/),
 and whatever comes next). Nothing in this directory imports from, or
-knows about, any specific host agent -- that's the whole point: nine
+knows about, any specific host agent -- that's the whole point: twelve
 files, importable by any Node/TypeScript host, that don't change no
 matter which one loads them.
 
 ## Why this exists as its own directory
 
-Both bridges started as separate copies of the same nine files. That
+Both bridges started as separate copies of the same files. That
 worked, until it didn't: a real bug (a floating-point field that a
 minimal RFC 8785 canonicalizer can't sign) was fixed once, then had to
 be found and fixed a second time in the other copy, because nothing
@@ -27,9 +27,9 @@ for real, against a real Node process on this actual machine (real
 CPU/GPU/OS, not fixtures) under two independent, unrelated host
 agents, producing byte-identical, cross-verified signed output both
 times. Adding a third host means writing a third thin
-`index.ts`-equivalent that imports these same nine files -- not
-forking, not re-deriving the crypto, not risking a second copy of the
-float bug. And for a system with no Node at all,
+`index.ts`-equivalent that imports these same files -- not forking, not
+re-deriving the crypto, not risking a second copy of the float bug. And
+for a system with no Node at all,
 [`agent-id-card`'s `NO_PYTHON.md`](https://github.com/Jayasuryamahadevan/agent-id-card/blob/main/NO_PYTHON.md)
 gives the same guarantee one level down: the wire format itself (Ed25519
 over a documented RFC 8785 subset) is provably reproducible in OpenSSL,
@@ -47,12 +47,39 @@ which of those three paths a new host's thin adapter takes.
 | `renewal.ts` | The liveness heartbeat |
 | `log.ts` | The generic append-only, hash-chained JSON Lines log |
 | `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why) |
-| `harness.ts` | Ties identity, the append-only log, and log-driven reconciliation together |
+| `harness.ts` | Ties identity, the append-only log, self-managed state, and log-driven reconciliation together |
+| `state.ts` | This agent's own self-editable configuration: MCP servers to stay connected to or auto-connect to, and FASP peers paired with |
+| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers -- see "Self-knowledge" below |
 | `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only -- available to import, not wired to a command by either bridge today |
 | `timestamps.ts` | The one timestamp format used everywhere here |
+| `fsjson.ts` | The one atomic-JSON-file read/write every piece of persisted state above goes through |
 
 No `package.json` here on purpose: this directory has zero dependencies
 of its own (Node built-ins only). Each bridge's own `package.json` adds
 whatever ITS host needs (`@modelcontextprotocol/sdk` for `pi_bridge`,
 `@opencode-ai/plugin` for `opencode_bridge`) without this core ever
 needing to know that.
+
+## Self-knowledge: what am I connected to, and can I connect myself?
+
+`AgentHarness.state` (`state.ts`) is this agent's own persisted answer
+to "what MCP servers do I have" -- every server a host bridge connects
+it to is remembered and reconnected automatically next time, and a
+human operator can pre-vet further candidates (tagged with what
+capability they provide) that this agent may connect to entirely on its
+own initiative when it decides it needs one, without ever reaching for
+a server nobody vetted. `pi_bridge` uses this directly (it has no
+native MCP client of its own); `opencode_bridge` deliberately does not
+(OpenCode's own `config.mcp` is that state's one real source of truth
+there -- a second, shadow copy of it here would just be something else
+to keep in sync).
+
+`AgentHarness.connectFaspPeer()`/`faspPeers()` (`fasp.ts`) is the answer
+to "what other physical or AI agents am I connected to": this agent can
+pair itself with a FASP harness (`../fasp_harness/`, this repository's
+other half) as one of its peers over FASP's real wire protocol, and --
+when it holds that harness's admin token, i.e. the same operator runs
+both sides -- list every other peer already paired with it, live. This
+was verified against a real, running Python `fasp_harness` instance
+while writing it (a real `hello` -> `pair/confirm` -> `/peers` round
+trip over HTTP, not asserted from the two protocols' schemas alone).

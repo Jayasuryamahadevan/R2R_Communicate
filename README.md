@@ -265,7 +265,14 @@ subset, `node:crypto` only) of the
 [Agent ID Card](https://github.com/Jayasuryamahadevan/agent-id-card)
 identity layer that fixes that -- curious about its own environment on
 first run, hash-chained rather than a static credential, and kept
-honest over time as the agent's actual capabilities change.
+honest over time as the agent's actual capabilities change. It also
+knows its own connections, not just its own identity: which MCP
+servers it's using (remembered across restarts, and extendable on its
+own initiative from a human-vetted candidate list), and which other
+physical or AI agents it's paired with, by pairing itself with a FASP
+harness (this repository's other half) as one of its own peers -- see
+[`bridge_core/README.md`](bridge_core/README.md)'s "Self-knowledge"
+section.
 
 Two bridges load it today, unmodified, as a thin host-specific adapter:
 
@@ -278,7 +285,7 @@ Two bridges load it today, unmodified, as a thin host-specific adapter:
   user hasn't already chosen one), and relies on OpenCode's own native
   MCP client rather than duplicating one.
 
-A third host needs only its own thin adapter importing the same nine
+A third host needs only its own thin adapter importing the same
 `bridge_core` files -- see [`bridge_core/README.md`](bridge_core/README.md)
 for why that single shared core, rather than one copy per host, is the
 actual answer to "hardware- and software-agnostic": it has been run, for

@@ -18,6 +18,24 @@
  * expanding what this agent can do without its own card ever
  * reflecting that.
  *
+ * Two forms of genuine self-management, both backed by
+ * `bridge_core/state.ts` so they survive a restart and are visible via
+ * `/aic-status`, not just held in memory:
+ *  - Every MCP server this bridge connects to is remembered and
+ *    reconnected automatically the next time pi starts in this
+ *    workspace -- connecting it once is enough.
+ *  - A human operator can pre-vet a server as a "candidate" tagged with
+ *    what it provides (`/aic-mcp-allow`); pi can then connect to one of
+ *    those on its own initiative (`/aic-mcp-auto`) when it decides it
+ *    needs a capability none of its current tools provide, without
+ *    ever reaching for a server nobody vetted.
+ *
+ * This bridge can also pair itself with a FASP harness
+ * (../../fasp_harness/) as one of its peers -- the concrete answer to
+ * "what other physical or AI agents am I connected to": a FASP harness
+ * this agent is paired with can list every other peer it already knows
+ * about (`/aic-fasp-peers`).
+ *
  * No external dependency for the identity layer (`../../bridge_core/`,
  * Node's built-in `node:crypto` only, shared unmodified with
  * opencode_bridge/); the MCP layer depends on the official
@@ -28,12 +46,14 @@
  *
  * State lives in `.aic/` under the project root -- identity.json (the
  * private key, 0600), chain.json, detail.json, sensitive.json,
- * renewal.json, log.jsonl.
+ * renewal.json, log.jsonl, self_state.json, fasp_identity.json (0600).
  *
  * Commands: /aic-status, /aic-reconcile, /aic-mcp-connect,
- * /aic-mcp-disconnect.
+ * /aic-mcp-disconnect, /aic-mcp-allow, /aic-mcp-auto, /aic-fasp-connect,
+ * /aic-fasp-peers.
  */
 
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	ExtensionAPI,
@@ -45,6 +65,7 @@ import {
 	collectRuntimeProvenance,
 	discoverPermissionsAndNetwork,
 } from "../../bridge_core/provenance.js";
+import type { McpCandidate } from "../../bridge_core/state.js";
 import { verifyDetail } from "../../bridge_core/tiers.js";
 import {
 	McpRegistry,
@@ -55,8 +76,24 @@ import {
 const PURPOSE =
 	"Coding agent (pi) assisting a developer in this workspace: reads, edits, and runs commands as directed.";
 
+const DEFAULT_FASP_URL = "http://127.0.0.1:8766";
+
 function stateDirFor(cwd: string): string {
 	return join(cwd, ".aic");
+}
+
+/** Only ever resolved from the environment, never accepted as a plain
+ * command argument -- a chat command's arguments end up in this
+ * session's own transcript, which is the wrong place for a secret. */
+function resolveFaspAdminToken(): string | undefined {
+	if (process.env.AIC_FASP_ADMIN_TOKEN) return process.env.AIC_FASP_ADMIN_TOKEN;
+	const stateDir = process.env.AIC_FASP_STATE_DIR;
+	if (!stateDir) return undefined;
+	try {
+		return readFileSync(join(stateDir, "admin_token"), "utf-8").trim();
+	} catch {
+		return undefined;
+	}
 }
 
 async function bootstrapIfNeeded(
@@ -171,6 +208,64 @@ function registerMcpTools(
 	}
 }
 
+async function connectAndRegister(
+	pi: ExtensionAPI,
+	harness: AgentHarness,
+	registry: McpRegistry,
+	config: McpServerConfig,
+): Promise<McpToolDescriptor[]> {
+	const tools = await registry.connectServer(config);
+	registerMcpTools(pi, harness, registry, config.name, tools);
+	if (harness.isBootstrapped)
+		harness.log.append("mcp.connected", {
+			server: config.name,
+			transport: config.transport,
+			tool_count: tools.length,
+		});
+	return tools;
+}
+
+/** Reconnect every MCP server this agent previously decided to keep
+ * connected -- connecting it once (via /aic-mcp-connect) is enough;
+ * this is what makes that decision survive a restart instead of
+ * silently reverting to "no MCP tools" every time pi starts. Best
+ * effort: one server failing to come back up must never block the
+ * others, or block the session starting at all. */
+async function reconnectSavedMcpServers(
+	pi: ExtensionAPI,
+	harness: AgentHarness,
+	registry: McpRegistry,
+	ctx: ExtensionContext,
+): Promise<void> {
+	if (!harness.isBootstrapped) return;
+	for (const server of harness.state.mcpServers) {
+		if (registry.getConnection(server.name)) continue;
+		try {
+			const tools = await connectAndRegister(pi, harness, registry, server);
+			ctx.ui.notify(
+				`agent-id-card: reconnected remembered MCP server "${server.name}" (${tools.length} tool(s)).`,
+				"info",
+			);
+		} catch (error) {
+			ctx.ui.notify(
+				`agent-id-card: could not reconnect remembered MCP server "${server.name}": ${(error as Error).message}`,
+				"error",
+			);
+		}
+	}
+}
+
+function parseMcpServerArgs(
+	name: string,
+	transport: string,
+	rest: string[],
+): McpServerConfig | null {
+	if (transport !== "stdio" && transport !== "http") return null;
+	return transport === "stdio"
+		? { name, transport, command: rest[0], args: rest.slice(1) }
+		: { name, transport, url: rest[0] };
+}
+
 export default function (pi: ExtensionAPI) {
 	const harnesses = new Map<string, AgentHarness>();
 	const mcpRegistries = new Map<string, McpRegistry>();
@@ -197,7 +292,9 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.on("session_start", async (_event, ctx) => {
-		await bootstrapIfNeeded(harnessFor(ctx.cwd), pi, ctx);
+		const harness = harnessFor(ctx.cwd);
+		await bootstrapIfNeeded(harness, pi, ctx);
+		await reconnectSavedMcpServers(pi, harness, mcpRegistryFor(ctx.cwd), ctx);
 	});
 
 	pi.on("tool_call", async (event, ctx) => {
@@ -235,6 +332,8 @@ export default function (pi: ExtensionAPI) {
 				const detail = harness.detail;
 				if (detail) verifyDetail(detail, harness.currentEpoch);
 				const epoch = harness.currentEpoch;
+				const faspPeers = harness.state.faspPeers;
+				const candidates = harness.state.mcpCandidates;
 				ctx.ui.notify(
 					[
 						`agent_id: ${epoch.agent_id}`,
@@ -244,6 +343,9 @@ export default function (pi: ExtensionAPI) {
 						`declared_capabilities: ${detail?.declared_capabilities.join(", ") ?? "(not disclosed)"}`,
 						`known_limitations: ${detail?.known_limitations.join("; ") ?? "(not disclosed)"}`,
 						`connected MCP servers: ${mcpRegistryFor(ctx.cwd).listConnectedServers().join(", ") || "(none)"}`,
+						`remembered MCP servers (reconnect on start): ${harness.state.mcpServers.map((s) => s.name).join(", ") || "(none)"}`,
+						`pre-approved MCP candidates (for /aic-mcp-auto): ${candidates.map((c) => `${c.name}[${c.provides.join("+")}]`).join(", ") || "(none)"}`,
+						`FASP peers: ${faspPeers.map((p) => `${p.baseUrl}=${p.state}`).join(", ") || "(none)"}`,
 						"chain: verified OK",
 					].join("\n"),
 					"info",
@@ -281,41 +383,36 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("aic-mcp-connect", {
 		description:
-			"Connect to an MCP server: /aic-mcp-connect <name> stdio <command> [args...]  |  /aic-mcp-connect <name> http <url>",
+			"Connect to an MCP server and remember it for future sessions: /aic-mcp-connect <name> stdio <command> [args...]  |  /aic-mcp-connect <name> http <url>",
 		async handler(args, ctx) {
 			const [name, transport, ...rest] = args
 				.trim()
 				.split(/\s+/)
 				.filter(Boolean);
-			if (!name || (transport !== "stdio" && transport !== "http")) {
+			const config = name ? parseMcpServerArgs(name, transport, rest) : null;
+			if (!config) {
 				ctx.ui.notify(
 					"usage: /aic-mcp-connect <name> <stdio|http> <command-or-url> [args...]",
 					"error",
 				);
 				return;
 			}
-			const config: McpServerConfig =
-				transport === "stdio"
-					? { name, transport, command: rest[0], args: rest.slice(1) }
-					: { name, transport, url: rest[0] };
 			try {
-				const registry = mcpRegistryFor(ctx.cwd);
-				const tools = await registry.connectServer(config);
 				const harness = harnessFor(ctx.cwd);
-				registerMcpTools(pi, harness, registry, name, tools);
-				if (harness.isBootstrapped)
-					harness.log.append("mcp.connected", {
-						server: name,
-						transport,
-						tool_count: tools.length,
-					});
+				const tools = await connectAndRegister(
+					pi,
+					harness,
+					mcpRegistryFor(ctx.cwd),
+					config,
+				);
+				harness.state.rememberMcpServer(config);
 				ctx.ui.notify(
-					`agent-id-card: connected to MCP server "${name}" (${tools.length} tool(s): ${tools.map((tool) => tool.toolName).join(", ") || "none"}).`,
+					`agent-id-card: connected to MCP server "${config.name}" (${tools.length} tool(s): ${tools.map((tool) => tool.toolName).join(", ") || "none"}) -- remembered for future sessions.`,
 					"info",
 				);
 			} catch (error) {
 				ctx.ui.notify(
-					`agent-id-card: MCP connect to "${name}" failed: ${(error as Error).message}`,
+					`agent-id-card: MCP connect to "${config.name}" failed: ${(error as Error).message}`,
 					"error",
 				);
 			}
@@ -324,7 +421,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerCommand("aic-mcp-disconnect", {
 		description:
-			"Disconnect a previously connected MCP server: /aic-mcp-disconnect <name>",
+			"Disconnect a previously connected MCP server, and stop reconnecting it automatically: /aic-mcp-disconnect <name>",
 		async handler(args, ctx) {
 			const name = args.trim();
 			if (!name) {
@@ -333,12 +430,126 @@ export default function (pi: ExtensionAPI) {
 			}
 			await mcpRegistryFor(ctx.cwd).disconnectServer(name);
 			const harness = harnessFor(ctx.cwd);
+			harness.state.forgetMcpServer(name);
 			if (harness.isBootstrapped)
 				harness.log.append("mcp.disconnected", { server: name });
 			ctx.ui.notify(
-				`agent-id-card: disconnected MCP server "${name}".`,
+				`agent-id-card: disconnected MCP server "${name}" and will no longer reconnect it automatically.`,
 				"info",
 			);
+		},
+	});
+
+	pi.registerCommand("aic-mcp-allow", {
+		description:
+			"Pre-approve an MCP server for this agent to connect to on its own initiative (see /aic-mcp-auto): /aic-mcp-allow <name> <provides-csv> <stdio|http> <command-or-url> [args...]",
+		async handler(args, ctx) {
+			const [name, providesCsv, transport, ...rest] = args
+				.trim()
+				.split(/\s+/)
+				.filter(Boolean);
+			const config = name ? parseMcpServerArgs(name, transport, rest) : null;
+			if (!config || !providesCsv) {
+				ctx.ui.notify(
+					"usage: /aic-mcp-allow <name> <provides-csv> <stdio|http> <command-or-url> [args...]",
+					"error",
+				);
+				return;
+			}
+			const candidate: McpCandidate = {
+				...config,
+				provides: providesCsv.split(",").filter(Boolean),
+			};
+			harnessFor(ctx.cwd).state.addMcpCandidate(candidate);
+			ctx.ui.notify(
+				`agent-id-card: "${name}" pre-approved as an MCP candidate providing: ${candidate.provides.join(", ")}. Use /aic-mcp-auto ${candidate.provides[0] ?? ""} to connect it.`,
+				"info",
+			);
+		},
+	});
+
+	pi.registerCommand("aic-mcp-auto", {
+		description:
+			"Connect, on this agent's own initiative, to a pre-approved MCP candidate providing the given capability: /aic-mcp-auto [capability-hint]",
+		async handler(args, ctx) {
+			const harness = harnessFor(ctx.cwd);
+			const hint = args.trim() || undefined;
+			const [candidate] = harness.state.unconnectedCandidates(hint);
+			if (!candidate) {
+				ctx.ui.notify(
+					hint
+						? `agent-id-card: no pre-approved, not-yet-connected MCP candidate provides "${hint}". Use /aic-mcp-allow to pre-approve one first.`
+						: "agent-id-card: no pre-approved, not-yet-connected MCP candidates. Use /aic-mcp-allow to pre-approve one first.",
+					"info",
+				);
+				return;
+			}
+			try {
+				const tools = await connectAndRegister(
+					pi,
+					harness,
+					mcpRegistryFor(ctx.cwd),
+					candidate,
+				);
+				harness.state.rememberMcpServer(candidate);
+				ctx.ui.notify(
+					`agent-id-card: connected itself to pre-approved MCP server "${candidate.name}" (providing ${candidate.provides.join(", ")}; ${tools.length} tool(s) gained).`,
+					"info",
+				);
+			} catch (error) {
+				ctx.ui.notify(
+					`agent-id-card: self-connect to "${candidate.name}" failed: ${(error as Error).message}`,
+					"error",
+				);
+			}
+		},
+	});
+
+	pi.registerCommand("aic-fasp-connect", {
+		description:
+			"Pair with a FASP harness as one of its peers (default http://127.0.0.1:8766, or set AIC_FASP_URL): /aic-fasp-connect [baseUrl]",
+		async handler(args, ctx) {
+			const harness = harnessFor(ctx.cwd);
+			const baseUrl =
+				args.trim() || process.env.AIC_FASP_URL || DEFAULT_FASP_URL;
+			const adminToken = resolveFaspAdminToken();
+			const result = await harness.connectFaspPeer(
+				baseUrl,
+				`pi@${process.env.HOSTNAME ?? "workspace"}`,
+				pi.getAllTools().map((tool) => tool.name),
+				{ adminToken },
+			);
+			ctx.ui.notify(
+				result.state === "failed"
+					? `agent-id-card: FASP pairing with ${baseUrl} failed: ${result.error}`
+					: `agent-id-card: FASP pairing with ${baseUrl} -> ${result.state}${result.state === "pending" ? " (waiting for that harness's operator to confirm; set AIC_FASP_ADMIN_TOKEN or AIC_FASP_STATE_DIR to self-confirm when you control both sides)" : ""}.`,
+				result.state === "failed" ? "error" : "info",
+			);
+		},
+	});
+
+	pi.registerCommand("aic-fasp-peers", {
+		description:
+			"List FASP peers (physical or AI agents): live from a harness if AIC_FASP_ADMIN_TOKEN/AIC_FASP_STATE_DIR is set, else this agent's own recollection: /aic-fasp-peers [baseUrl]",
+		async handler(args, ctx) {
+			const harness = harnessFor(ctx.cwd);
+			const baseUrl =
+				args.trim() || process.env.AIC_FASP_URL || DEFAULT_FASP_URL;
+			const adminToken = resolveFaspAdminToken();
+			try {
+				const peers = await harness.faspPeers({ baseUrl, adminToken });
+				ctx.ui.notify(
+					adminToken
+						? `FASP peers known to ${baseUrl}:\n${JSON.stringify(peers, null, 2)}`
+						: `This agent's own recorded FASP pairings (no admin token available for a live fleet-wide list):\n${JSON.stringify(peers, null, 2)}`,
+					"info",
+				);
+			} catch (error) {
+				ctx.ui.notify(
+					`agent-id-card: could not list FASP peers: ${(error as Error).message}`,
+					"error",
+				);
+			}
 		},
 	});
 }
