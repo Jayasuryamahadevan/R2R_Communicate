@@ -49,19 +49,37 @@ class PeersRepo:
         assert peer is not None
         return peer
 
-    def confirm(self, peer_id: str, pair_code: str, paired_at: str, prefixes: list[str] | None) -> dict[str, Any] | None:
-        """Mark `peer_id` paired if `pair_code` matches, timing-safely. None if not."""
+    def confirm(
+        self,
+        peer_id: str,
+        pair_code: str,
+        paired_at: str,
+        expires_at: str,
+        prefixes: list[str] | None,
+    ) -> dict[str, Any] | None:
+        """Mark `peer_id` paired if `pair_code` matches, timing-safely. None if not.
+
+        `expires_at` bounds the pairing itself (ss3.3's pairing record MUST
+        carry one) -- re-pairing is required once it passes, it is not
+        authority forever. Re-pairing here also clears any prior
+        revocation, since a fresh pairing ceremony IS the re-pairing flow
+        ss12 requires after a suspected key compromise.
+        """
         with self.db.write() as conn:
             row = conn.execute("SELECT pair_code FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
             if row is None or not secrets.compare_digest(row["pair_code"], pair_code):
                 return None
             if prefixes is not None:
                 conn.execute(
-                    "UPDATE peers SET state = 'paired', paired_at = ?, allowed_capability_prefixes_json = ? WHERE peer_id = ?",
-                    (paired_at, json.dumps(prefixes), peer_id),
+                    "UPDATE peers SET state = 'paired', paired_at = ?, expires_at = ?, allowed_capability_prefixes_json = ? WHERE peer_id = ?",
+                    (paired_at, expires_at, json.dumps(prefixes), peer_id),
                 )
             else:
-                conn.execute("UPDATE peers SET state = 'paired', paired_at = ? WHERE peer_id = ?", (paired_at, peer_id))
+                conn.execute(
+                    "UPDATE peers SET state = 'paired', paired_at = ?, expires_at = ? WHERE peer_id = ?",
+                    (paired_at, expires_at, peer_id),
+                )
+            conn.execute("DELETE FROM revocations WHERE peer_id = ?", (peer_id,))
         return self.get(peer_id)
 
     def all(self) -> dict[str, dict[str, Any]]:
@@ -75,5 +93,7 @@ def _row_to_peer(row: Any) -> dict[str, Any]:
         "pair_code": row["pair_code"],
         "seen_at": row["seen_at"],
         "paired_at": row["paired_at"],
+        "expires_at": row["expires_at"],
+        "trust_tier": row["trust_tier"],
         "allowed_capability_prefixes": json.loads(row["allowed_capability_prefixes_json"]),
     }

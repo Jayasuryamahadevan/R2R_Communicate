@@ -6,6 +6,7 @@ import argparse
 import importlib
 import json
 import ssl
+from datetime import timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -105,6 +106,16 @@ class FaspHandler(BaseHTTPRequestHandler):
             elif route == "/pair/confirm":
                 self._admin()
                 self._json(HTTPStatus.OK, self.server.harness.confirm_peer(payload.get("peer_id", ""), payload.get("pair_code", ""), payload.get("allowed_capability_prefixes")))
+            elif route == "/pair/revoke":
+                self._admin()
+                self._json(HTTPStatus.OK, self.server.harness.revoke_peer(payload.get("peer_id", ""), payload.get("reason", "revoked by local operator"), payload.get("revocation_ref")))
+            elif route == "/grants/issue":
+                self._admin()
+                duration = timedelta(seconds=int(payload.get("duration_seconds", 3600)))
+                self._json(HTTPStatus.OK, self.server.harness.issue_grant(payload.get("subject_peer", ""), payload.get("capability_prefixes", []), duration, payload.get("purpose"), payload.get("constraints")))
+            elif route == "/grants/revoke":
+                self._admin()
+                self._json(HTTPStatus.OK, self.server.harness.revoke_grant(payload.get("grant_id", "")))
             elif route in {"/send", "/task"}:
                 duplicate, response = self.server.harness.accept(payload, "intent.propose" if route == "/task" else None)
                 self._json(HTTPStatus.OK, {"fasp": "fasp/1.0", "type": "receipt.delivered", "duplicate": duplicate, "message_id": payload.get("message_id"), "response": response})

@@ -20,11 +20,17 @@ from typing import Any, Protocol
 from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
 from .platforms import runtime_profile
+from .policy import capability as capability_policy
+from .policy.grants import validate_grant_if_required
 from .storage.db import Database
+from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
 from .storage.peers_repo import PeersRepo
+from .storage.revocations_repo import RevocationsRepo
 from .storage.tasks_repo import TasksRepo
 from .timestamps import now, parse_stamp, stamp
+
+PEER_PAIRING_VALIDITY = timedelta(days=90)
 
 __all__ = [
     "FaspError",
@@ -141,6 +147,8 @@ class FaspHarness:
         self.peers = PeersRepo(self.db)
         self.inbox = InboxRepo(self.db)
         self.tasks = TasksRepo(self.db)
+        self.grants = GrantsRepo(self.db)
+        self.revocations = RevocationsRepo(self.db)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
@@ -205,16 +213,65 @@ class FaspHarness:
         return sign({"fasp": PROTOCOL, "type": "hello.ready", "system_id": self.identity.system_id, "id_card": self.id_card(), "pair_code": fingerprint, "pairing_required": peer["state"] != "paired", "issued_at": stamp()}, self.identity.private, self.identity.kid)
 
     def confirm_peer(self, peer_id: str, pair_code: str, prefixes: list[str] | None = None) -> dict[str, Any]:
-        peer = self.peers.confirm(peer_id, pair_code, stamp(), prefixes)
+        expires_at = stamp(now() + PEER_PAIRING_VALIDITY)
+        peer = self.peers.confirm(peer_id, pair_code, stamp(), expires_at, prefixes)
         if peer is None:
             raise FaspError("auth.pairing_not_found", "Peer or pair code is invalid.")
-        return {"ok": True, "peer_id": peer_id, "state": "paired", "allowed_capability_prefixes": peer["allowed_capability_prefixes"]}
+        return {"ok": True, "peer_id": peer_id, "state": "paired", "expires_at": expires_at, "allowed_capability_prefixes": peer["allowed_capability_prefixes"]}
+
+    def revoke_peer(self, peer_id: str, reason: str, revocation_ref: str | None = None) -> dict[str, Any]:
+        """Immediately reject `peer_id` regardless of its pairing state.
+
+        Per ss12: "On suspected key compromise, a system MUST stop
+        accepting grants bound to that key ... and require re-pairing."
+        Re-pairing (`confirm_peer`) is what clears this.
+        """
+        self.revocations.revoke(peer_id, stamp(), reason, revocation_ref)
+        return {"ok": True, "peer_id": peer_id, "revoked": True}
 
     def _peer(self, peer_id: str) -> dict[str, Any]:
+        if self.revocations.is_revoked(peer_id):
+            raise FaspError("auth.peer_revoked", "Peer's identity has been revoked; re-pairing is required.")
         peer = self.peers.get(peer_id)
         if not peer or peer.get("state") != "paired":
             raise FaspError("auth.not_paired", "Peer is not paired and authorized.")
+        if peer.get("expires_at") and parse_stamp(peer["expires_at"]) <= now():
+            raise FaspError("auth.pairing_expired", "Peer's pairing has expired; re-pairing is required.")
         return peer
+
+    def issue_grant(
+        self,
+        subject_peer: str,
+        capability_prefixes: list[str],
+        duration: timedelta,
+        purpose: str | None = None,
+        constraints: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Issue a time-limited, scoped grant to an already-paired peer (ss6, ss8).
+
+        Grants are issued locally (by whoever holds the admin token, i.e.
+        this system's own operating principal), not requested over the
+        network -- there is no remote `grant.request` handler here, only
+        the local decision to hand one out.
+        """
+        if not self.peers.get(subject_peer):
+            raise FaspError("schema.invalid", "Cannot issue a grant to an unknown peer.")
+        issued = now()
+        return self.grants.issue(
+            grant_id="grant-" + secrets.token_urlsafe(12),
+            issuer=self.identity.system_id,
+            subject_peer=subject_peer,
+            capability_prefixes=capability_prefixes,
+            issued_at=stamp(issued),
+            expires_at=stamp(issued + duration),
+            purpose=purpose,
+            constraints=constraints,
+        )
+
+    def revoke_grant(self, grant_id: str) -> dict[str, Any]:
+        if not self.grants.revoke(grant_id, stamp()):
+            raise FaspError("schema.invalid", "Grant does not exist or is already revoked.")
+        return {"ok": True, "grant_id": grant_id, "revoked": True}
 
     def make_envelope(self, kind: str, to: str, payload: dict[str, Any], conversation_id: str | None = None, causation_id: str | None = None) -> dict[str, Any]:
         issued = now()
@@ -274,8 +331,11 @@ class FaspHarness:
         capabilities = {item["id"]: item for item in self.adapter.capabilities()}
         if capability not in capabilities:
             raise FaspError("capability.unavailable", "Capability is unavailable at this runtime.")
-        if intent.get("risk", capabilities[capability]["risk"]) not in {"observe", "reversible"}:
+        risk = intent.get("risk", capabilities[capability]["risk"])
+        if not capability_policy.is_executable(risk):
             raise FaspError("policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
+        grant_id = intent.get("grant", {}).get("id") if isinstance(intent.get("grant"), dict) else None
+        validate_grant_if_required(self.grants, envelope["from"], capability, grant_id, capability_policy.requires_grant(risk))
         existing = self.tasks.get_result(key)
         if existing is not None:
             return existing
