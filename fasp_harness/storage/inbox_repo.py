@@ -64,8 +64,13 @@ class InboxRepo:
         message contents through this endpoint, which the least-privilege,
         zero-trust intent of FASP_PROTOCOL.md ss3.1/ss9.2 rules out.
         """
+        # `kind != 'inbox.pull'` excludes the mailbox query itself: since
+        # every dispatchable kind is now recorded here for replay dedup
+        # (core.py's `accept()`), an `inbox.pull` call would otherwise see
+        # its own past calls reflected back as "messages", which is pure
+        # self-referential noise no consumer of this mailbox mirror wants.
         rows = self.db.read(
-            "SELECT envelope_json, issued_at FROM envelopes_inbox WHERE from_peer = ? ORDER BY row_id",
+            "SELECT envelope_json, issued_at FROM envelopes_inbox WHERE from_peer = ? AND kind != 'inbox.pull' ORDER BY row_id",
             (from_peer,),
         )
         return [json.loads(row["envelope_json"]) for row in rows if parse_stamp(row["issued_at"]).timestamp() > cursor]

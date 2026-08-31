@@ -43,10 +43,14 @@ class TransportTests(unittest.TestCase):
         endpoints = self.bob.id_card()["endpoints"]
         self.assertEqual(self.client.get(endpoints["profile"].replace(self.bob.base_url, "")).status_code, 200)
         self.assertEqual(self.client.post(endpoints["pair_hello"].replace(self.bob.base_url, ""), json={"id_card": self.alice.id_card()}).status_code, 200)
-        # An empty body has no `kind` at all -- protocol.unsupported_kind (404),
-        # not a routing 404 -- which still proves the route itself exists.
-        self.assertEqual(self.client.post(endpoints["envelopes"].replace(self.bob.base_url, ""), json={}).json()["error"]["code"], "protocol.unsupported_kind")
-        self.assertEqual(self.client.post(endpoints["receipts"].replace(self.bob.base_url, ""), json={}).json()["error"]["code"], "protocol.unsupported_kind")
+        # An empty body misses every required envelope field, including
+        # `kind` -- schema.invalid (400), not a routing 404 -- which still
+        # proves the route itself exists.
+        self.assertEqual(self.client.post(endpoints["envelopes"].replace(self.bob.base_url, ""), json={}).json()["error"]["code"], "schema.invalid")
+        self.assertEqual(self.client.post(endpoints["receipts"].replace(self.bob.base_url, ""), json={}).json()["error"]["code"], "schema.invalid")
+        self.assertTrue(endpoints["channel"].endswith("/fasp/v1/channel"))
+        with self.client.websocket_connect("/fasp/v1/channel") as socket:
+            socket.close()
 
     def test_peers_requires_admin_token(self) -> None:
         unauthenticated = self.client.get("/peers")

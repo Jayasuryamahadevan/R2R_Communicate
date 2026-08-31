@@ -20,6 +20,8 @@ call from blocking every other connection's I/O.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -32,7 +34,8 @@ from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..core import PROTOCOL, FaspError, FaspHarness
 from ..observability.logging import configure, log
@@ -41,24 +44,14 @@ logger = configure()
 
 MAX_BODY_BYTES = 64 * 1024
 
-# kind -> FaspHarness method name for envelope kinds that have their own
-# dedicated verify+handle path (not routed through accept()'s intent/
-# idempotency machinery, since they're pull/control operations rather than
-# effect-producing intents).
-DIRECT_HANDLERS: dict[str, str] = {
-    "inbox.pull": "pull_inbox",
-    "receipt.processed": "receipt",
-    "stream.open": "stream_open",
-    "stream.packet": "stream_packet",
-    "stream.pull": "stream_pull",
-    "stream.close": "stream_close",
-    "reservation.request": "reservation_request",
-    "reservation.release": "reservation_release",
-    "safety.halt": "safety_halt",
-    "safety.status": "safety_status",
-    "incident.report": "report_incident",
-    "heartbeat": "heartbeat",
-}
+# Kinds whose HTTP response is wrapped in a `receipt.delivered` envelope --
+# the two-phase "delivery receipt is not a completion receipt" shape ss7.1
+# requires specifically for the task lifecycle. Every other kind's response
+# is returned as-is: it's a plain request/response RPC, not a durable job.
+# Kind support and dispatch itself is entirely `FaspHarness.accept()`'s
+# job now (`core.py`'s `DISPATCH` table) -- this transport module no longer
+# keeps its own parallel copy of that mapping.
+RECEIPT_WRAPPED_KINDS = frozenset({"intent.propose", "task.cancel", "artifact.fetch"})
 
 
 def _error_status(error: FaspError) -> int:
@@ -204,30 +197,75 @@ def create_app(harness: FaspHarness) -> Starlette:
     @catching
     async def post_envelopes(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
-        kind = payload.get("kind")
-        if kind in ("intent.propose", "task.cancel", "artifact.fetch"):
-            duplicate, response = await run_in_threadpool(harness.accept, payload)
+        duplicate, response = await run_in_threadpool(harness.accept, payload)
+        if payload.get("kind") in RECEIPT_WRAPPED_KINDS:
             return _json_ok({"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": payload.get("message_id"), "response": response})
-        handler_name = DIRECT_HANDLERS.get(kind)
-        if handler_name is None:
-            raise FaspError("protocol.unsupported_kind", f"Unsupported envelope kind: {kind!r}.")
-        # accept()'s intent/task/artifact kinds count themselves (core.py);
-        # count everything dispatched through DIRECT_HANDLERS here so
-        # fasp_envelopes_total covers every kind, not just those three.
-        harness.metrics.increment("fasp_envelopes_total", kind=kind)
-        result = await run_in_threadpool(getattr(harness, handler_name), payload)
-        return _json_ok(result)
+        return _json_ok(response)
 
     @catching
     async def post_receipts(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
-        if payload.get("kind") != "receipt.processed":
-            raise FaspError("protocol.unsupported_kind", "POST /fasp/v1/receipts only accepts receipt.processed.")
-        harness.metrics.increment("fasp_envelopes_total", kind="receipt.processed")
-        result = await run_in_threadpool(harness.receipt, payload)
-        return _json_ok(result)
+        _, response = await run_in_threadpool(harness.accept, payload, "receipt.processed")
+        return _json_ok(response)
+
+    async def channel_endpoint(websocket: WebSocket) -> None:
+        """`/fasp/v1/channel`: the same signed-envelope protocol as
+        `/fasp/v1/envelopes`, just carried over a persistent, full-duplex
+        connection instead of one HTTP request per envelope (ss13's
+        transport-agnostic framing: only the wire *transport* differs here,
+        never the envelope format, auth, or dedup semantics).
+
+        There is no separate handshake message: the first authenticated
+        frame's `from` registers this connection for push delivery (see
+        `channels.py` and `FaspHarness._apply_task_outcome`), and every
+        later frame -- of any dispatchable kind -- is handled exactly as an
+        HTTP POST would handle it.
+        """
+        await websocket.accept()
+        registered_peer: str | None = None
+        try:
+            while True:
+                try:
+                    payload = await websocket.receive_json()
+                except (ValueError, WebSocketDisconnect):
+                    break
+                if not isinstance(payload, dict):
+                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": "schema.invalid", "detail": "Frame must be a JSON object."}})
+                    continue
+                try:
+                    duplicate, response = await run_in_threadpool(harness.accept, payload)
+                except FaspError as error:
+                    harness.metrics.increment("fasp_auth_failures_total", code=error.code)
+                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
+                    continue
+                sender = payload.get("from")
+                if isinstance(sender, str) and sender != registered_peer:
+                    if registered_peer is not None:
+                        harness.channels.unregister(registered_peer, websocket)
+                    harness.channels.register(sender, websocket)
+                    registered_peer = sender
+                if payload.get("kind") in RECEIPT_WRAPPED_KINDS:
+                    await websocket.send_json({"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": payload.get("message_id"), "response": response})
+                else:
+                    await websocket.send_json(response)
+        finally:
+            if registered_peer is not None:
+                harness.channels.unregister(registered_peer, websocket)
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app: Starlette):
+        del app
+        harness.channels.bind_loop(asyncio.get_running_loop())
+        try:
+            yield
+        finally:
+            # Graceful drain (ss15 #5/#6): let in-flight adapter calls
+            # finish on their own rather than abandoning them mid-call the
+            # moment the process is asked to stop.
+            await run_in_threadpool(harness.close)
 
     return Starlette(
+        lifespan=lifespan,
         routes=[
             Route("/profile", get_profile, methods=["GET"]),
             Route("/.well-known/fasp/id-card.json", get_profile, methods=["GET"]),
@@ -241,5 +279,6 @@ def create_app(harness: FaspHarness) -> Starlette:
             Route("/grants/revoke", post_grants_revoke, methods=["POST"]),
             Route("/fasp/v1/envelopes", post_envelopes, methods=["POST"]),
             Route("/fasp/v1/receipts", post_receipts, methods=["POST"]),
-        ]
+            WebSocketRoute("/fasp/v1/channel", channel_endpoint),
+        ],
     )

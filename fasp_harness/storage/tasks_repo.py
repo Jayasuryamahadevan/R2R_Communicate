@@ -36,6 +36,14 @@ class TasksRepo:
         row = self.db.read_one("SELECT * FROM tasks WHERE idempotency_key = ?", (idempotency_key,))
         return _row_to_task(row) if row is not None else None
 
+    def count_inflight(self) -> int:
+        """Tasks not yet in a terminal state -- the durable admission-control
+        bound for the adapter work queue (`FaspHarness.max_inflight_tasks`):
+        the database itself is the queue's source of truth, so this needs
+        no separate in-memory counter to stay consistent across a restart."""
+        row = self.db.read_one("SELECT COUNT(*) AS n FROM tasks WHERE state IN ('PROPOSED', 'RUNNING', 'CANCEL_PENDING')")
+        return row["n"] if row is not None else 0
+
     def propose(self, idempotency_key: str, intent_id: str | None, capability: str, from_peer: str, at: str) -> bool:
         """Insert a new PROPOSED row. False if idempotency_key already exists
         -- this IS the idempotency guard (ss7.1: "MUST NOT repeat ... effect")."""

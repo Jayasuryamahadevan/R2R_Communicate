@@ -22,12 +22,18 @@ class IPRateLimitMiddleware:
         self.limiter = TokenBucketLimiter(rate_per_second, burst)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] not in ("http", "websocket"):
             await self.app(scope, receive, send)
             return
         client = scope.get("client")
         key = client[0] if client else "unknown"
         if not self.limiter.allow(key):
+            if scope["type"] == "websocket":
+                # A long-lived connection attempt is still a connection
+                # attempt: deny it before the handshake completes rather
+                # than only rate-limiting the one-shot HTTP surface.
+                await send({"type": "websocket.close", "code": 1013})
+                return
             response = JSONResponse(
                 {"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": "resource.exhausted", "detail": "Too many requests from this address."}},
                 status_code=429,
