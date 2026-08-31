@@ -40,19 +40,22 @@ import type {
 	ExtensionAPI,
 	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { verifyChain } from "./epoch.js";
-import { AgentHarness } from "./harness.js";
+import { verifyChain } from "../../bridge_core/epoch.js";
+import { AgentHarness } from "../../bridge_core/harness.js";
+import {
+	collectRuntimeProvenance,
+	discoverPermissionsAndNetwork,
+} from "../../bridge_core/provenance.js";
+import { verifyDetail } from "../../bridge_core/tiers.js";
+import {
+	WebhookNotifier,
+	WebhookReceiver,
+} from "../../bridge_core/webhooks.js";
 import {
 	McpRegistry,
 	type McpServerConfig,
 	type McpToolDescriptor,
 } from "./mcp.js";
-import {
-	collectRuntimeProvenance,
-	discoverPermissionsAndNetwork,
-} from "./provenance.js";
-import { verifyDetail } from "./tiers.js";
-import { WebhookNotifier, WebhookReceiver } from "./webhooks.js";
 
 const PURPOSE =
 	"Coding agent (pi) assisting a developer in this workspace: reads, edits, and runs commands as directed.";

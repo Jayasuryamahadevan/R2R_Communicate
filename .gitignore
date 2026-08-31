@@ -5,4 +5,6 @@ __pycache__/
 *.egg-info/
 pi_bridge/extension/node_modules/
 pi_bridge/extension/.aic/
+opencode_bridge/plugin/node_modules/
+opencode_bridge/plugin/.aic/
 

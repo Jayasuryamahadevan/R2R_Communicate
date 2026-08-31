@@ -2,9 +2,13 @@
  * AgentHarness: the operational layer tying identity, the action log,
  * and experience-driven reconciliation together. Mirrors the Python
  * reference implementation's harness.py -- see that repo's README.md
- * for the concept; this is its Node/TypeScript counterpart, built for
- * embedding directly into a pi extension rather than shelling out to
- * Python (see NO_PYTHON.md for why that matters).
+ * for the concept; this is its Node/TypeScript counterpart, built to be
+ * embedded directly into a host agent's own extension/plugin mechanism
+ * (this copy lives in opencode_bridge/; an identical one lives in
+ * pi_bridge/ for the pi coding agent) rather than shelling out to
+ * Python (see NO_PYTHON.md for why that matters). Deliberately has no
+ * dependency on either host -- only on the sibling files in this same
+ * directory.
  */
 
 import {

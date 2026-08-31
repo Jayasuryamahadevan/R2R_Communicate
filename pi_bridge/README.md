@@ -13,20 +13,21 @@ itself.
 
 ## What's here
 
-`extension/` is a single, self-contained pi extension:
+`extension/` is a single pi extension. The identity layer itself
+(`crypto`/`epoch`/`tiers`/`renewal`/`log`/`provenance`/`harness`/
+`webhooks`) is NOT duplicated here -- it lives once, host-agnostic, in
+[`../bridge_core/`](../bridge_core/), imported directly
+(`../../bridge_core/harness.js`, etc.), and is shared byte-for-byte with
+[`opencode_bridge/`](../opencode_bridge/). Only what's actually specific
+to `pi` lives in this directory:
 
 | File | Purpose |
 |---|---|
-| `crypto.ts` | Ed25519 signing + a minimal RFC 8785 canonicalizer, `node:crypto` only, no external dependency |
-| `epoch.ts` | Tier 1 (public) identity content, hash-chained across epochs |
-| `tiers.ts` | Tier 2 (detailed) / Tier 3 (sensitive) content, digest-committed by the epoch |
-| `renewal.ts` | The liveness heartbeat that replaces a revocation list for the common case |
-| `log.ts` | A generic append-only, hash-chained JSON Lines log |
-| `provenance.ts` | Honest runtime/environment introspection for Tier 3 |
-| `harness.ts` | Ties identity, the action log, and experience-driven reconciliation together |
-| `mcp.ts` | A generic MCP client: connect to ANY MCP server (stdio or Streamable HTTP); every tool gained is recorded as `capability_discovered` experience |
-| `webhooks.ts` | Generic webhook connectivity in both directions -- an incoming listener and an outgoing notifier, `node:http` + `fetch` only |
-| `index.ts` | The actual pi extension: wires all of the above into pi's `session_start`/`tool_call`/`tool_result` events and nine `/aic-*` commands |
+| `mcp.ts` | A generic MCP client: connect to ANY MCP server (stdio or Streamable HTTP); every tool gained is recorded as `capability_discovered` experience. (`pi` deliberately ships with no built-in MCP support, so this bridge provides one; `opencode_bridge` does not need this file at all, since OpenCode already has a native MCP client.) |
+| `index.ts` | The actual pi extension: wires `bridge_core`'s harness + this file's MCP client into pi's `session_start`/`tool_call`/`tool_result` events and nine `/aic-*` commands |
+
+See [`../bridge_core/README.md`](../bridge_core/README.md) for why the
+identity layer lives there instead of here.
 
 ## Why this belongs next to FASP
 

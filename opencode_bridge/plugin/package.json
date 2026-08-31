@@ -1,0 +1,9 @@
+{
+	"name": "opencode-bridge-agent-id-card",
+	"private": true,
+	"type": "module",
+	"description": "OpenCode plugin: Agent ID Card identity + OpenCode Zen as the default (primary) model provider, for the R2R_Communicate FASP harness project.",
+	"dependencies": {
+		"@opencode-ai/plugin": "^1.18.25"
+	}
+}

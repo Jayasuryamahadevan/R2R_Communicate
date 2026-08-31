@@ -55,7 +55,11 @@ export function discoverHardware(): Record<string, unknown> {
 		cpu_count: cpuList.length || UNKNOWN,
 		os: platform(),
 		os_version: release(),
-		total_memory_gb: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
+		// An integer count of MB, not a rounded GB float: this data flows
+		// into signed Tier 3 content, and the canonicalizer this bridge
+		// uses (crypto.ts) deliberately only covers integers -- see
+		// NO_PYTHON.md. Still precise to within a fraction of a percent.
+		total_memory_mb: Math.round(totalmem() / 1024 ** 2),
 		...detectAccelerator(),
 	};
 }
