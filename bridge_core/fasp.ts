@@ -5,17 +5,20 @@
  * when the same operator runs both sides of one machine), and see who
  * else that harness already knows about (`/peers`, admin-only) -- the
  * concrete mechanism behind "what physical or AI agents am I connected
- * to". This is a client only: it does not run FASP's own HTTP server,
- * so it cannot yet receive envelopes pushed back at it -- `endpoints` in
- * the id_card this builds are honestly `null` rather than fabricated.
+ * to". This does not run FASP's own HTTP server itself -- `endpoints` in
+ * the id_card this builds are honestly `null` rather than fabricated --
+ * but `openChannel()` gives it a real, persistent, autonomous receive
+ * path anyway: a live `/fasp/v1/channel` websocket connection a peer can
+ * push results to without this agent ever polling for them.
  *
  * Speaks the real wire protocol (fasp_harness/transport/http_app.py,
- * fasp_harness/core.py) over plain `fetch`: RFC 8785 canonicalization +
- * Ed25519, exactly like crypto.ts, but FASP's own record shape --
- * `fasp:system:<hash>` identities and a `{alg, kid, value}` signature
- * block, not AIC's `aic:agent:<hash>` / `{alg, value}` -- so it gets its
- * own small sign/verify here rather than repurposing crypto.ts's, which
- * is intentionally scoped to AIC's own schemas.
+ * fasp_harness/core.py) over plain `fetch` and, for the channel, the
+ * platform `WebSocket`: RFC 8785 canonicalization + Ed25519, exactly
+ * like crypto.ts, but FASP's own record shape -- `fasp:system:<hash>`
+ * identities and a `{alg, kid, value}` signature block, not AIC's
+ * `aic:agent:<hash>` / `{alg, value}` -- so it gets its own small
+ * sign/verify here rather than repurposing crypto.ts's, which is
+ * intentionally scoped to AIC's own schemas.
  */
 
 import { createHash, sign as nodeSign, randomBytes } from "node:crypto";
@@ -283,18 +286,16 @@ export class FaspClient {
 		});
 	}
 
-	/** The general case `proposeIntent` is one instance of: build, sign,
-	 * and POST any FASP envelope `kind` (`reservation.request`,
-	 * `reservation.release`, `heartbeat`, ...), not just `intent.propose`.
-	 * This method owns exactly the fields every envelope needs regardless
-	 * of kind (from/to/timestamps/nonce/signature); `payload` is entirely
-	 * that kind's own concern, unvalidated here. */
-	async sendEnvelope(
-		baseUrl: string,
+	/** Build and sign one FASP envelope of any `kind`
+	 * (`intent.propose`/`reservation.request`/`heartbeat`/...) -- the one
+	 * piece every transport (an HTTP POST to `/fasp/v1/envelopes`, or a
+	 * frame on the persistent `/fasp/v1/channel` websocket) needs
+	 * identically. Never sends it anywhere itself. */
+	buildEnvelope(
 		kind: string,
 		toSystemId: string,
 		payload: Record<string, unknown>,
-	): Promise<Record<string, unknown>> {
+	): Record<string, unknown> {
 		const { identity, kid, systemId } = this.loadOrCreateIdentity();
 		const issuedAt = stamp();
 		const envelope = {
@@ -308,7 +309,74 @@ export class FaspClient {
 			nonce: b64(randomBytes(16)),
 			payload,
 		};
-		const signed = faspSign(envelope, identity, kid);
+		return faspSign(envelope, identity, kid);
+	}
+
+	/** The general case `proposeIntent` is one instance of: build, sign,
+	 * and POST any FASP envelope `kind` (`reservation.request`,
+	 * `reservation.release`, `heartbeat`, ...), not just `intent.propose`.
+	 * `payload` is entirely that kind's own concern, unvalidated here. */
+	async sendEnvelope(
+		baseUrl: string,
+		kind: string,
+		toSystemId: string,
+		payload: Record<string, unknown>,
+	): Promise<Record<string, unknown>> {
+		const signed = this.buildEnvelope(kind, toSystemId, payload);
 		return postJson(`${baseUrl.replace(/\/$/, "")}/fasp/v1/envelopes`, signed);
 	}
+
+	/** Open a persistent connection to a FASP harness's
+	 * `/fasp/v1/channel` websocket -- the real answer to "communicate
+	 * autonomously, without either side polling": the first envelope
+	 * frame sent on it registers this connection for push delivery
+	 * (fasp_harness/channels.py's `ConnectionRegistry`), so a task that
+	 * outlives its synchronous wait budget (`max_runtime_s`) gets its
+	 * real result delivered here the moment it's ready, with nobody
+	 * asking "did you get a new message" -- see fasp_harness/core.py's
+	 * `_apply_task_outcome`/`_on_adapter_done`.
+	 *
+	 * `onMessage` fires for every frame this channel receives: the
+	 * immediate response to whatever this agent sends over it (a
+	 * `task.progress` if a task's synchronous window has already
+	 * elapsed), any later `task.push` for that same task, and anything
+	 * else pushed to this agent's system_id independently of a request it
+	 * made (fasp_harness/core.py also pushes stream messages the same
+	 * way). Node's built-in global `WebSocket` -- no dependency, matching
+	 * the rest of this file. */
+	async openChannel(
+		baseUrl: string,
+		onMessage: (message: Record<string, unknown>) => void,
+	): Promise<FaspChannel> {
+		const wsUrl = `${baseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/fasp/v1/channel`;
+		const socket = new WebSocket(wsUrl);
+		await new Promise<void>((resolve, reject) => {
+			socket.addEventListener("open", () => resolve(), { once: true });
+			socket.addEventListener(
+				"error",
+				() => reject(new Error(`Could not open FASP channel at ${wsUrl}`)),
+				{ once: true },
+			);
+		});
+		socket.addEventListener("message", (event) => {
+			try {
+				onMessage(JSON.parse(event.data as string));
+			} catch {
+				// A malformed frame is dropped, not fatal to the channel --
+				// this is a best-effort optimization layer by design (see
+				// channels.py), never the only path to a result.
+			}
+		});
+		return {
+			send: (envelope) => socket.send(JSON.stringify(envelope)),
+			close: () => socket.close(),
+		};
+	}
+}
+
+export interface FaspChannel {
+	/** Send an already-built, already-signed envelope (see
+	 * `buildEnvelope()`) as a raw frame on this channel. */
+	send(envelope: Record<string, unknown>): void;
+	close(): void;
 }

@@ -49,7 +49,7 @@ which of those three paths a new host's thin adapter takes.
 | `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why); accelerator detection checks NVIDIA, AMD/ROCm, and Apple Silicon in turn, and CPU architecture (arm64/x64/...) is always recorded |
 | `harness.ts` | Ties identity, the append-only log, self-managed state, and log-driven reconciliation together |
 | `state.ts` | This agent's own self-editable configuration: MCP servers to stay connected to or auto-connect to, and FASP peers paired with |
-| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, and for sending it a real signed intent once paired -- see "Self-knowledge" below |
+| `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, sending it a real signed intent once paired, and holding a persistent channel open for autonomous push delivery -- see "Self-knowledge" and "Autonomous communication" below |
 | `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only -- available to import, not wired to a command by either bridge today |
 | `timestamps.ts` | The one timestamp format used everywhere here |
 | `fsjson.ts` | The one atomic-JSON-file read/write every piece of persisted state above goes through |
@@ -105,3 +105,24 @@ found by actually injecting packet loss (`tc netem`) between two
 containers and comparing: a plain `fetch()` had a measurable failure
 rate at 40-60% loss, this bridge's retrying client had none. A 4xx is
 never retried -- that's a real rejection, not a transient failure.
+
+## Autonomous communication: no polling, no "did you get my message"
+
+`FaspClient.openChannel()` is what makes two agents genuinely
+autonomous with each other instead of one having to keep asking the
+other "any news yet": a persistent `/fasp/v1/channel` websocket
+connection (Node's own built-in `WebSocket`, no dependency), matching
+fasp_harness's own real push-delivery mechanism
+(`channels.py`'s `ConnectionRegistry`, `core.py`'s
+`_apply_task_outcome`/`_on_adapter_done`) -- a task that outlives its
+synchronous wait budget (`max_runtime_s`) has its real result delivered
+here the instant it's ready, not on the next poll.
+
+Verified end to end, not asserted from the docstrings: a capability
+whose declared `max_runtime_s` (1s) is deliberately shorter than how
+long it actually takes (a real 3-second sleep) -- the only way its real
+result can reach the caller at all is this push path. Across four
+separate runs: an immediate `task.progress` acknowledgement at ~1.0s,
+then the real result arriving, unprompted, at ~3.0s -- the client never
+polled once in between, it just listened on the channel it opened at
+the start.
