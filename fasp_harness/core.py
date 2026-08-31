@@ -17,6 +17,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any, NoReturn, Protocol
 
+from .artifacts.store import ArtifactStore
 from .audit.chain import AuditChain
 from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
@@ -33,6 +34,8 @@ from .timestamps import now, parse_stamp, stamp
 
 PEER_PAIRING_VALIDITY = timedelta(days=90)
 DEFAULT_TASK_LEASE = timedelta(seconds=30)
+ARTIFACT_INLINE_THRESHOLD_BYTES = 8 * 1024
+ARTIFACT_RETENTION = timedelta(days=7)
 
 __all__ = [
     "FaspError",
@@ -178,6 +181,7 @@ class FaspHarness:
         self.tasks = TasksRepo(self.db, self.audit)
         self.grants = GrantsRepo(self.db, self.audit)
         self.revocations = RevocationsRepo(self.db, self.audit)
+        self.artifacts = ArtifactStore(self.db, state_dir)
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
@@ -352,6 +356,8 @@ class FaspHarness:
                 response = self._handle_intent(envelope, peer)
             elif envelope["kind"] == "task.cancel":
                 response = self._handle_cancel(envelope, peer)
+            elif envelope["kind"] == "artifact.fetch":
+                response = self._handle_artifact_fetch(envelope, peer)
         except FaspError as error:
             # Recorded (not just raised) so a replay of this exact envelope
             # returns the same rejection deterministically instead of
@@ -407,7 +413,8 @@ class FaspHarness:
 
         try:
             output = self.adapter.handle(intent)
-            result = {"type": "task.result", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "completed", "output": output, "completed_at": stamp()}
+            result = {"type": "task.result", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "completed", "completed_at": stamp()}
+            result.update(self._materialize_output(output, envelope["from"]))
             committed = self.tasks.complete(key, result, stamp())
         except FaspError as error:
             result = {"type": "task.fail", "intent_id": intent.get("intent_id"), "idempotency_key": key, "status": "failed", "error": {"code": error.code, "detail": error.detail}, "completed_at": stamp()}
@@ -422,6 +429,29 @@ class FaspHarness:
     def _reject_task(self, key: str, code: str, detail: str) -> NoReturn:
         self.tasks.reject(key, {"code": code, "detail": detail}, stamp())
         raise FaspError(code, detail)
+
+    def _materialize_output(self, output: Any, created_by: str) -> dict[str, Any]:
+        """Inline `output` unless it's too big for a signed 64 KiB envelope
+        (ss5), in which case store it as an immutable artifact (ss11) and
+        return a digest reference instead."""
+        encoded = _plain_json(output)
+        if len(encoded) <= ARTIFACT_INLINE_THRESHOLD_BYTES:
+            return {"output": output}
+        artifact = self.artifacts.put(encoded, "application/json", created_by, stamp(), ARTIFACT_RETENTION)
+        return {"artifact": {"artifact_id": artifact["artifact_id"], "digest": artifact["digest"], "media_type": artifact["media_type"], "size_bytes": artifact["size_bytes"]}}
+
+    def _handle_artifact_fetch(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        del peer
+        artifact_id = envelope["payload"].get("artifact_id")
+        if not isinstance(artifact_id, str):
+            raise FaspError("schema.invalid", "artifact.fetch requires artifact_id.")
+        artifact = self.artifacts.get(artifact_id)
+        if artifact is None:
+            raise FaspError("schema.invalid", "Unknown artifact_id.")
+        data = self.artifacts.read_bytes(artifact_id)
+        if data is None or len(data) > MAX_INLINE_BYTES:
+            raise FaspError("resource.too_large", "Artifact exceeds inline transfer size; use an out-of-band transfer.")
+        return {"artifact_id": artifact_id, "media_type": artifact["media_type"], "digest": artifact["digest"], "payload": b64(data)}
 
     def _handle_cancel(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         """task.cancel: cancel-before-effect vs cancel-too-late (ss7.2, ss15 #7).
