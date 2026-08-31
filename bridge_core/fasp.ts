@@ -21,15 +21,22 @@
  * intentionally scoped to AIC's own schemas.
  */
 
-import { createHash, sign as nodeSign, randomBytes } from "node:crypto";
+import {
+	createHash,
+	sign as nodeSign,
+	verify as nodeVerify,
+	randomBytes,
+} from "node:crypto";
 import { join } from "node:path";
 import {
 	type AgentIdentity,
+	AICError,
 	b64,
 	canonicalize,
 	generateIdentity,
 	identityFromRawPrivateKey,
 	privateKeyRawBytes,
+	publicKeyFromRaw,
 	unb64,
 } from "./crypto.js";
 import { readJson, writeJson } from "./fsjson.js";
@@ -83,6 +90,75 @@ function faspSign(
 		nodeSign(null, canonicalize(unsigned), identity.privateKey),
 	);
 	return { ...unsigned, signature: { alg: "Ed25519", kid, value } };
+}
+
+/** Mirrors fasp_harness/core.py's `FaspHarness.verify_id_card()` exactly
+ * -- schema, expiry, signature, and identity-matches-key, in that order.
+ * A real, confirmed gap this closes: without this, `hello()` trusted
+ * WHATEVER `system_id`/`id_card` a server claimed with zero
+ * verification -- proved by standing up a plain HTTP server that
+ * returned a completely fabricated identity (an unrelated system_id, an
+ * empty/garbage signature) and watching `connectFaspPeer()` accept it
+ * and report `state: "paired"`. */
+function verifyFaspIdCard(card: Record<string, unknown>): void {
+	const required = [
+		"fasp",
+		"type",
+		"system_id",
+		"public_key",
+		"endpoints",
+		"expires_at",
+		"signature",
+	];
+	if (
+		!required.every((key) => key in card) ||
+		card.fasp !== PROTOCOL ||
+		card.type !== "id_card"
+	) {
+		throw new AICError("schema.invalid", "Invalid FASP ID card.");
+	}
+	const expiresAt = card.expires_at;
+	if (typeof expiresAt !== "string" || Date.parse(expiresAt) <= Date.now()) {
+		throw new AICError("auth.card_expired", "ID card has expired.");
+	}
+	const signature = card.signature as
+		| { alg?: string; kid?: string; value?: string }
+		| undefined;
+	if (
+		!signature ||
+		signature.alg !== "Ed25519" ||
+		typeof signature.value !== "string"
+	) {
+		throw new AICError(
+			"auth.invalid_signature",
+			"ID card has no valid signature.",
+		);
+	}
+	const publicKeyB64 = card.public_key;
+	if (typeof publicKeyB64 !== "string") {
+		throw new AICError("schema.invalid", "ID card is missing public_key.");
+	}
+	const { signature: _signature, ...unsigned } = card;
+	const publicKey = publicKeyFromRaw(unb64(publicKeyB64));
+	const ok = nodeVerify(
+		null,
+		canonicalize(unsigned),
+		publicKey,
+		unb64(signature.value),
+	);
+	if (!ok) {
+		throw new AICError(
+			"auth.invalid_signature",
+			"ID card signature does not verify against its own public_key.",
+		);
+	}
+	const expectedSystemId = faspSystemIdFor(publicKeyB64);
+	if (card.system_id !== expectedSystemId) {
+		throw new AICError(
+			"auth.identity_mismatch",
+			"ID card's system_id does not match sha256(public_key) -- this card was not honestly derived from its own claimed key.",
+		);
+	}
 }
 
 const MAX_NETWORK_RETRIES = 3;
@@ -216,12 +292,34 @@ export class FaspClient {
 	/** `POST /pair/hello`: introduce this agent's id_card to a FASP
 	 * harness. Returns that harness's own pair_code for this pairing
 	 * attempt (needed for `confirmSelf`) and whether it's already paired
-	 * from a prior hello. */
+	 * from a prior hello.
+	 *
+	 * The returned `id_card` is verified the same way fasp_harness's own
+	 * `hello()` verifies ours (signature, expiry, system_id-matches-key)
+	 * before this method trusts anything in it, and the top-level
+	 * `system_id` is cross-checked against that card's own -- without
+	 * this, whatever answered at `baseUrl` could claim to be any peer at
+	 * all with zero cryptographic backing (confirmed by actually doing
+	 * that against the unpatched version of this method). */
 	async hello(baseUrl: string, idCard: FaspIdCard): Promise<FaspHelloResult> {
 		const body = await postJson(`${baseUrl.replace(/\/$/, "")}/pair/hello`, {
 			id_card: idCard,
 		});
-		return body as unknown as FaspHelloResult;
+		const result = body as unknown as FaspHelloResult;
+		if (result.type !== "hello.ready" || typeof result.system_id !== "string") {
+			throw new AICError(
+				"schema.invalid",
+				`Malformed hello response from ${baseUrl}.`,
+			);
+		}
+		verifyFaspIdCard(result.id_card);
+		if (result.id_card.system_id !== result.system_id) {
+			throw new AICError(
+				"auth.identity_mismatch",
+				`${baseUrl} answered as ${result.system_id} but returned an id_card for a different system_id -- refusing to trust it.`,
+			);
+		}
+		return result;
 	}
 
 	/** `POST /pair/confirm`: only succeeds with that FASP harness's own

@@ -45,14 +45,14 @@ which of those three paths a new host's thin adapter takes.
 | `epoch.ts` | Tier 1 (public) identity content, hash-chained across epochs |
 | `tiers.ts` | Tier 2 (detailed) / Tier 3 (sensitive) content, digest-committed by the epoch |
 | `renewal.ts` | The liveness heartbeat |
-| `log.ts` | The generic append-only, hash-chained JSON Lines log |
+| `log.ts` | The generic append-only, hash-chained JSON Lines log -- safe across two separate processes appending to the same file (a real file lock, confirmed necessary by actually breaking the chain without it first) |
 | `provenance.ts` | Honest runtime/environment introspection (integers only -- see the note in the file on why); accelerator detection checks NVIDIA, AMD/ROCm, and Apple Silicon in turn, and CPU architecture (arm64/x64/...) is always recorded |
 | `harness.ts` | Ties identity, the append-only log, self-managed state, and log-driven reconciliation together |
 | `state.ts` | This agent's own self-editable configuration: MCP servers to stay connected to or auto-connect to, and FASP peers paired with |
 | `fasp.ts` | A client for pairing with a FASP harness (`../fasp_harness/`) as one of its peers, sending it a real signed intent once paired, and holding a persistent channel open for autonomous push delivery -- see "Self-knowledge" and "Autonomous communication" below |
 | `webhooks.ts` | Generic incoming/outgoing webhook connectivity, `node:http` + `fetch` only -- available to import, not wired to a command by either bridge today |
 | `timestamps.ts` | The one timestamp format used everywhere here |
-| `fsjson.ts` | The one atomic-JSON-file read/write every piece of persisted state above goes through |
+| `fsjson.ts` | The one atomic-JSON-file read/write every piece of persisted state above goes through -- a corrupted file fails with a clear, actionable error, not a raw `SyntaxError` |
 
 No `package.json` here on purpose: this directory has zero dependencies
 of its own (Node built-ins only). Each bridge's own `package.json` adds
@@ -83,6 +83,15 @@ both sides -- list every other peer already paired with it, live. This
 was verified against a real, running Python `fasp_harness` instance
 while writing it (a real `hello` -> `pair/confirm` -> `/peers` round
 trip over HTTP, not asserted from the two protocols' schemas alone).
+
+`hello()`'s response is cryptographically verified (signature, expiry,
+system_id-matches-key -- mirroring fasp_harness's own
+`verify_id_card()` exactly) before anything in it is trusted. This
+closed a real, confirmed vulnerability: the unpatched version accepted
+WHATEVER `system_id`/`id_card` a server returned with zero
+verification, proved by standing up a plain HTTP server that answered
+`/pair/hello` with a completely fabricated identity and watching
+`connectFaspPeer()` accept it and report `state: "paired"`.
 
 Pairing alone only establishes trust; `AgentHarness.faspPropose()` is
 what actually uses it -- a real, signed `intent.propose` envelope sent
