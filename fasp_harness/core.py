@@ -24,12 +24,16 @@ from .audit.chain import AuditChain
 from .channels import ConnectionRegistry
 from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
+from .fleet.model import Mission
+from .fleet.service import MissionService
+from .layers import CapabilityDeclaration, LayerGuard, describe_layers
 from .observability.metrics import MetricsRegistry
 from .platforms import runtime_profile
 from .policy import capability as capability_policy
 from .policy.grants import validate_grant_if_required
 from .policy.ratelimit import TokenBucketLimiter
 from .robotics import LocalSafetyGate, ReservationBook
+from .safety.interlock import SafetySupervisor
 from .storage.db import Database
 from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
@@ -191,6 +195,9 @@ class FaspHarness:
         safety_gate: LocalSafetyGate | None = None,
         adapter_concurrency: int = DEFAULT_ADAPTER_CONCURRENCY,
         max_inflight_tasks: int = DEFAULT_MAX_INFLIGHT_TASKS,
+        supervisor: SafetySupervisor | None = None,
+        missions: MissionService | None = None,
+        layer_guard: LayerGuard | None = None,
     ) -> None:
         # JsonState still backs receipts.json and the admin_token file --
         # everything else (peers, tasks, grants, streams, reservations,
@@ -210,9 +217,19 @@ class FaspHarness:
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
         self.adapter = adapter or DefaultSafeAdapter()
+        # The layer invariant is checked HERE, before a socket is bound: an
+        # adapter exposing a Layer 1 function fails startup rather than
+        # failing an audit six months later (see fasp_harness/layers.py).
+        self.layer_guard = layer_guard or LayerGuard()
+        self.capability_declarations = {declaration.id: declaration for declaration in self.layer_guard.validate_adapter(self.adapter.capabilities())}
         self.streams = StreamRegistry(StreamsRepo(self.db))
         self.reservations = ReservationBook(ReservationsRepo(self.db))
         self.safety_gate = safety_gate
+        # Layers 1-3 integration, all optional: a plain coordination node
+        # runs with none of them, and every handler below reports
+        # `capability.unavailable` rather than pretending.
+        self.supervisor = supervisor
+        self.missions = missions
         # Bounded adapter work queue (ss7, ss15 #5/#6): every intent.propose
         # submits adapter.handle() here rather than calling it inline, which
         # buys three things a single synchronous call never had -- a real
@@ -266,6 +283,9 @@ class FaspHarness:
                 "channel": self.base_url.replace("https://", "wss://").replace("http://", "ws://") + "/fasp/v1/channel",
             },
             "capabilities": self.adapter.capabilities(),
+            # Published so a peer can see, before sending anything, which
+            # layers this system implements and which it only observes.
+            "layers": describe_layers(),
             "issued_at": stamp(),
             "expires_at": stamp(now() + timedelta(days=30)),
         }
@@ -420,6 +440,11 @@ class FaspHarness:
         "reservation.release": "_handle_reservation_release",
         "safety.halt": "_handle_safety_halt",
         "safety.status": "_handle_safety_status",
+        "safety.evidence": "_handle_safety_evidence",
+        "mission.dispatch": "_handle_mission_dispatch",
+        "mission.cancel": "_handle_mission_cancel",
+        "mission.status": "_handle_mission_status",
+        "fleet.status": "_handle_fleet_status",
         "incident.report": "_handle_report_incident",
         "heartbeat": "_handle_heartbeat",
     }
@@ -494,6 +519,13 @@ class FaspHarness:
         capabilities = {item["id"]: item for item in self.adapter.capabilities()}
         if capability not in capabilities:
             self._reject_task(key, "capability.unavailable", "Capability is unavailable at this runtime.")
+        # Re-checked here, not only at startup: an adapter may compute its
+        # capability list per call, and the layer boundary is not something
+        # to enforce once and hope stays enforced.
+        try:
+            self.layer_guard.check_capability(self.capability_declarations.get(capability) or CapabilityDeclaration.from_mapping(capabilities[capability]))
+        except FaspError as error:
+            self._reject_task(key, error.code, error.detail)
         risk = intent.get("risk", capabilities[capability]["risk"])
         if not capability_policy.is_executable(risk):
             self._reject_task(key, "policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
@@ -786,14 +818,34 @@ class FaspHarness:
         return response
 
     def _handle_safety_halt(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        """Honour a halt request from a paired peer, everywhere it applies.
+
+        A halt is the one thing this harness does eagerly and without
+        further authorization: stopping is always safe, and a peer that
+        can authenticate can always ask for it. Note the asymmetry with
+        `safety.clear`, which does not exist as a message kind at all --
+        clearing is local work at the machine, not a protocol operation
+        (FASP_PROTOCOL.md ss9.1, and `fasp_harness/layers.py`).
+        """
         del peer
-        if self.safety_gate is None:
-            raise FaspError("capability.unavailable", "This system has no local safety-gated actuation to halt.")
         reason = str(envelope["payload"].get("reason", "halt requested by peer"))[:200]
-        self.safety_gate.request_halt(reason)
+        if self.supervisor is None and self.safety_gate is None:
+            raise FaspError("capability.unavailable", "This system has no local safety-gated actuation to halt.")
+        response: dict[str, Any] = {"type": "safety.status"}
+        if self.supervisor is not None:
+            demand = self.supervisor.demand_halt("peer:" + envelope["from"], reason, origin="peer")
+            response.update({**self.supervisor.status(), "demand": demand.to_dict()})
+        if self.safety_gate is not None:
+            self.safety_gate.request_halt(reason)
+            response.update(self.safety_gate.status())
+        if self.missions is not None:
+            # Ask every coordinated vehicle to stop as well. Best effort by
+            # design: whether a vehicle acknowledges changes nothing about
+            # the latch above, and nothing about its own protective stop.
+            response["fleet"] = self.missions.halt_all(reason, source="peer:" + envelope["from"], origin="peer")["vehicles"]
         with self.db.write() as conn:
             self.audit.append(conn, "safety.halt_requested", envelope["from"], {"reason": reason}, stamp())
-        return {"type": "safety.status", **self.safety_gate.status()}
+        return response
 
     def safety_status(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="safety.status")
@@ -801,9 +853,87 @@ class FaspHarness:
 
     def _handle_safety_status(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         del envelope, peer
+        if self.supervisor is not None:
+            return {"type": "safety.status", **self.supervisor.status()}
         if self.safety_gate is None:
             raise FaspError("capability.unavailable", "This system has no local safety gate to report on.")
         return {"type": "safety.status", **self.safety_gate.status()}
+
+    def safety_evidence(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        _, response = self.accept(envelope, expected_kind="safety.evidence")
+        return response
+
+    def _handle_safety_evidence(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        """Everything a peer may know about this system's Layer 1 relationship.
+
+        Deliberately read-only and deliberately complete: which controller,
+        whether it is real hardware, what integrity is claimed for it, which
+        safety functions are declared, and the current state. A peer
+        deciding whether to trust this system with coordination needs that;
+        a peer can do nothing with it.
+        """
+        del envelope, peer
+        if self.supervisor is None:
+            raise FaspError("capability.unavailable", "This system observes no safety controller.")
+        return self.supervisor.evidence()
+
+    def _require_prefix(self, peer: dict[str, Any], capability: str) -> None:
+        if not any(capability.startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+            raise FaspError("auth.not_authorized", f"Paired peer is not authorized for {capability!r}.")
+
+    def mission_dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        _, response = self.accept(envelope, expected_kind="mission.dispatch")
+        return response
+
+    def _handle_mission_dispatch(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        """Accept goal-level Layer 3 work: a mission, not a trajectory.
+
+        Everything that decides whether this is safe and sensible -- the
+        safety latch, leadership, vehicle selection across vendors, twin
+        preflight, space-time reservation -- happens in `MissionService`,
+        in that order. This handler only authorizes and translates.
+        """
+        self._require_prefix(peer, "fleet.mission.v1")
+        if self.missions is None:
+            raise FaspError("capability.unavailable", "This system does not coordinate missions.")
+        return self.missions.submit(Mission.from_dict(envelope["payload"], requested_by=envelope["from"]))
+
+    def mission_cancel(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        _, response = self.accept(envelope, expected_kind="mission.cancel")
+        return response
+
+    def _handle_mission_cancel(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        self._require_prefix(peer, "fleet.mission.v1")
+        if self.missions is None:
+            raise FaspError("capability.unavailable", "This system does not coordinate missions.")
+        mission_id = envelope["payload"].get("mission_id")
+        if not isinstance(mission_id, str) or not mission_id:
+            raise FaspError("schema.invalid", "mission.cancel requires mission_id.")
+        return self.missions.cancel(mission_id, envelope["from"])
+
+    def mission_status(self, envelope: dict[str, Any]) -> dict[str, Any]:
+        _, response = self.accept(envelope, expected_kind="mission.status")
+        return response
+
+    def _handle_mission_status(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        self._require_prefix(peer, "fleet.mission.v1")
+        if self.missions is None:
+            raise FaspError("capability.unavailable", "This system does not coordinate missions.")
+        mission_id = envelope["payload"].get("mission_id")
+        if not isinstance(mission_id, str) or not mission_id:
+            raise FaspError("schema.invalid", "mission.status requires mission_id.")
+        record = self.missions.status(mission_id)
+        if record.get("mission_id") and self.missions.missions.get(mission_id)["requested_by"] != envelope["from"]:
+            raise FaspError("auth.not_authorized", "Only the requesting peer may read this mission.")
+        return record
+
+    def _handle_fleet_status(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
+        """Layer 2/3 observation: what the fleet is doing, right now."""
+        del envelope
+        self._require_prefix(peer, "observe.fleet.v1")
+        if self.missions is None:
+            raise FaspError("capability.unavailable", "This system does not coordinate a fleet.")
+        return {"type": "fleet.status", **self.missions.overview()}
 
     def report_incident(self, envelope: dict[str, Any]) -> dict[str, Any]:
         """Durably record an incident report (ss11); this harness does not

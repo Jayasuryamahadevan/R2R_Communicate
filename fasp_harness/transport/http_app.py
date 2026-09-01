@@ -44,6 +44,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..core import PROTOCOL, FaspError, FaspHarness
+from ..edge.health import HealthRegistry
 from ..observability.logging import configure, log
 
 logger = configure()
@@ -124,6 +125,17 @@ def _live_gauges(harness: FaspHarness) -> dict[str, int]:
     gauges["fasp_active_streams"] = active_streams["n"] if active_streams else 0
     active_reservations = harness.db.read_one("SELECT COUNT(*) AS n FROM reservations WHERE state = 'granted'")
     gauges["fasp_active_reservations"] = active_reservations["n"] if active_reservations else 0
+    for row in harness.db.read("SELECT state, COUNT(*) AS n FROM missions GROUP BY state"):
+        gauges[f'fasp_missions{{state="{row["state"]}"}}'] = row["n"]
+    for row in harness.db.read("SELECT state, COUNT(*) AS n FROM outbox GROUP BY state"):
+        gauges[f'fasp_outbox{{state="{row["state"]}"}}'] = row["n"]
+    if harness.supervisor is not None:
+        # Exported so an operator can alert on a latched halt or a stale
+        # safety sample without polling an authenticated endpoint per node.
+        status = harness.supervisor.current_status()
+        gauges["fasp_safety_halt_latched"] = int(harness.supervisor.latched)
+        gauges["fasp_safety_controller_reachable"] = int(status.reachable)
+        gauges["fasp_safety_sample_stale"] = int(status.stale)
     return gauges
 
 
@@ -137,8 +149,27 @@ def _require_admin(request: Request, harness: FaspHarness) -> None:
         raise FaspError("auth.admin_required", "Local administrator token is required.")
 
 
-def create_app(harness: FaspHarness) -> Starlette:
+def default_health(harness: FaspHarness) -> HealthRegistry:
+    """The probes every node has, whether or not it coordinates a fleet.
+
+    `database` is critical (a node that cannot reach its own durable state
+    is wedged and should be restarted); the audit chain and the safety
+    controller affect readiness only -- a node with a failing audit chain
+    must stop receiving work and be looked at, not be silently restarted
+    into the same state.
+    """
+    health = HealthRegistry(node_id=harness.display_name)
+    health.register("database", lambda: (bool(harness.db.read_one("SELECT 1 AS ok")), "sqlite reachable"), critical=True)
+    health.register("audit-chain", lambda: (harness.audit.verify()[0], "hash chain verifies"))
+    if harness.supervisor is not None:
+        health.register("safety-controller", lambda: (harness.supervisor.current_status().reachable, harness.supervisor.current_status().detail or "controller reachable"))
+    health.mark_started()
+    return health
+
+
+def create_app(harness: FaspHarness, health: HealthRegistry | None = None) -> Starlette:
     catching = _catching(harness)
+    health = health or default_health(harness)
 
     @catching
     async def get_profile(request: Request) -> JSONResponse:
@@ -158,6 +189,46 @@ def create_app(harness: FaspHarness) -> Starlette:
         _require_admin(request, harness)
         gauges = await run_in_threadpool(_live_gauges, harness)
         return PlainTextResponse(harness.metrics.render(gauges), headers={"Cache-Control": "no-store"})
+
+    @catching
+    async def get_livez(request: Request) -> JSONResponse:
+        """Is this process wedged? A failure here means restart me.
+
+        Public and minimal: an orchestrator needs a status code, and the
+        names of internal checks are not something to hand to anyone who
+        can reach the port. `/health` (admin) carries the detail.
+        """
+        del request
+        live, body = await run_in_threadpool(health.live)
+        return JSONResponse({"ok": live, "state": body["state"]}, status_code=HTTPStatus.OK if live else HTTPStatus.SERVICE_UNAVAILABLE, headers={"Cache-Control": "no-store"})
+
+    @catching
+    async def get_readyz(request: Request) -> JSONResponse:
+        """Should this node receive work? A standby answers no, and is fine."""
+        del request
+        ready, body = await run_in_threadpool(health.ready)
+        return JSONResponse({"ok": ready, "state": body["state"]}, status_code=HTTPStatus.OK if ready else HTTPStatus.SERVICE_UNAVAILABLE, headers={"Cache-Control": "no-store"})
+
+    @catching
+    async def get_health_detail(request: Request) -> JSONResponse:
+        _require_admin(request, harness)
+        return _json_ok(await run_in_threadpool(health.snapshot))
+
+    @catching
+    async def get_safety(request: Request) -> JSONResponse:
+        """Layer 1 evidence for a local operator: read-only, like everything
+        else that touches Layer 1 in this process."""
+        _require_admin(request, harness)
+        if harness.supervisor is None:
+            raise FaspError("capability.unavailable", "This system observes no safety controller.")
+        return _json_ok(await run_in_threadpool(harness.supervisor.evidence))
+
+    @catching
+    async def get_fleet(request: Request) -> JSONResponse:
+        _require_admin(request, harness)
+        if harness.missions is None:
+            raise FaspError("capability.unavailable", "This system does not coordinate a fleet.")
+        return _json_ok(await run_in_threadpool(harness.missions.overview))
 
     @catching
     async def post_pair_hello(request: Request) -> JSONResponse:
@@ -276,6 +347,11 @@ def create_app(harness: FaspHarness) -> Starlette:
             Route("/profile", get_profile, methods=["GET"]),
             Route("/.well-known/fasp/id-card.json", get_profile, methods=["GET"]),
             Route("/health", get_health, methods=["GET"]),
+            Route("/livez", get_livez, methods=["GET"]),
+            Route("/readyz", get_readyz, methods=["GET"]),
+            Route("/health/detail", get_health_detail, methods=["GET"]),
+            Route("/safety", get_safety, methods=["GET"]),
+            Route("/fleet", get_fleet, methods=["GET"]),
             Route("/peers", get_peers, methods=["GET"]),
             Route("/metrics", get_metrics, methods=["GET"]),
             Route("/pair/hello", post_pair_hello, methods=["POST"]),

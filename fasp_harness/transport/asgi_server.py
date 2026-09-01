@@ -18,7 +18,9 @@ from pathlib import Path
 import uvicorn
 
 from ..core import FaspHarness
-from .http_app import create_app
+from ..protocol.errors import FaspError
+from ..security.posture import DeploymentConfig, SecurityProfile, evaluate_posture
+from .http_app import create_app, default_health
 from .middleware import IPRateLimitMiddleware
 
 
@@ -37,8 +39,8 @@ def load_adapter(reference: str | None) -> object | None:
         raise SystemExit(f"Cannot load --adapter {reference!r}: {exc}") from exc
 
 
-def build_asgi_app(harness: FaspHarness, ip_rate_limit_per_second: float = 20.0, ip_rate_limit_burst: int = 40):
-    return IPRateLimitMiddleware(create_app(harness), ip_rate_limit_per_second, ip_rate_limit_burst)
+def build_asgi_app(harness: FaspHarness, ip_rate_limit_per_second: float = 20.0, ip_rate_limit_burst: int = 40, health=None):
+    return IPRateLimitMiddleware(create_app(harness, health), ip_rate_limit_per_second, ip_rate_limit_burst)
 
 
 def _tls13_only_context_factory(config: uvicorn.Config, default_factory):
@@ -64,6 +66,8 @@ def main() -> None:
     parser.add_argument("--rate-limit-burst", type=int, default=20, help="Burst allowance on top of --rate-limit-per-peer.")
     parser.add_argument("--ip-rate-limit-per-second", type=float, default=20.0, help="Sustained requests per second, per source address, before authentication.")
     parser.add_argument("--ip-rate-limit-burst", type=int, default=40)
+    parser.add_argument("--config", type=Path, help="Node configuration JSON (see examples/node.json): safety controller, fleets, site map, HA. Without it this serves a plain coordination node.")
+    parser.add_argument("--security-profile", choices=["development", "hardened", "production"], default="development", help="Startup gate. `production` refuses to run without mutual TLS, an enforcing ROS 2 domain, 0600 private material, and a real safety controller.")
     args = parser.parse_args()
 
     secure = bool(args.tls_cert or args.tls_key)
@@ -77,19 +81,61 @@ def main() -> None:
     if secure and not base_url.startswith("https://"):
         raise SystemExit("A TLS listener requires an https:// --public-url.")
 
-    harness = FaspHarness(
-        args.state_dir,
-        args.name,
-        base_url,
-        load_adapter(args.adapter),
-        rate_limit_per_second=args.rate_limit_per_peer,
-        rate_limit_burst=args.rate_limit_burst,
-    )
-    app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst)
+    # The security gate runs before anything binds a socket or connects to
+    # a controller: a deployment that would be refused is refused before it
+    # can do anything at all.
+    profile = SecurityProfile(args.security_profile)
+    node = None
+    if args.config:
+        from ..deployment import NodeConfig, build_node
+
+        config = NodeConfig.from_file(args.config)
+        config.state_dir = args.state_dir if args.state_dir != Path(".fasp") else config.state_dir
+        config.base_url = base_url
+        config.profile = profile
+        try:
+            node = build_node(config, adapter=load_adapter(args.adapter))
+        except FaspError as error:
+            raise SystemExit(f"{error.code}: {error.detail}") from error
+        harness = node.harness
+        health = node.health
+        node.start_loops()
+    else:
+        harness = FaspHarness(
+            args.state_dir,
+            args.name,
+            base_url,
+            load_adapter(args.adapter),
+            rate_limit_per_second=args.rate_limit_per_peer,
+            rate_limit_burst=args.rate_limit_burst,
+        )
+        posture = evaluate_posture(
+            DeploymentConfig(
+                profile=profile,
+                host=args.host,
+                tls_cert=args.tls_cert,
+                tls_key=args.tls_key,
+                tls_client_ca=args.tls_client_ca,
+                insecure_http=args.insecure_http,
+                state_dir=args.state_dir,
+                rate_limit_per_peer=args.rate_limit_per_peer,
+                ip_rate_limit_per_second=args.ip_rate_limit_per_second,
+                audit_verified=harness.audit.verify()[0],
+            )
+        )
+        if not posture.acceptable:
+            print(posture.render_text())
+            raise SystemExit(f"Refusing to start in the {profile.value} security profile.")
+        health = default_health(harness)
+
+    app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst, health)
 
     print(f"FASP harness for {harness.identity.system_id}")
-    print(f"Profile: {base_url}/profile")
+    print(f"Profile: {base_url}/profile  ({profile.value} security profile)")
     print(f"Admin token file: {args.state_dir / 'admin_token'} (keep private)")
+    if node is not None:
+        print(f"Safety controller: {node.supervisor.driver.describe()['model'] if node.supervisor and node.supervisor.driver else 'none observed'}")
+        print(f"Fleets: {', '.join(node.registry.fleets) or 'none'}   Leader: {node.lease.is_leader if node.lease else 'single-node'}")
 
     config_kwargs: dict[str, object] = {}
     if secure:
@@ -100,8 +146,12 @@ def main() -> None:
             config_kwargs["ssl_ca_certs"] = str(args.tls_client_ca)
             config_kwargs["ssl_cert_reqs"] = ssl.CERT_REQUIRED
 
-    config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info", **config_kwargs)
-    uvicorn.Server(config).run()
+    server_config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info", **config_kwargs)
+    try:
+        uvicorn.Server(server_config).run()
+    finally:
+        if node is not None:
+            node.stop()
 
 
 if __name__ == "__main__":

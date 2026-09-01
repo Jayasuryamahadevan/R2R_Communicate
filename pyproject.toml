@@ -16,6 +16,14 @@ dev = ["ruff>=0.16"]
 [tool.setuptools.packages.find]
 include = ["fasp_harness*"]
 
+# The schema migrations are code, not documentation: without them an
+# installed (non-editable) harness builds an empty database and every query
+# fails. An editable install masks this because the files are on disk
+# anyway, which is exactly why it went unnoticed -- tests/test_packaging.py
+# now asserts they are discoverable.
+[tool.setuptools.package-data]
+fasp_harness = ["storage/migrations/*.sql"]
+
 [tool.ruff]
 line-length = 140
 target-version = "py311"

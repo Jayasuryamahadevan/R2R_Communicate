@@ -22,3 +22,45 @@ jobs:
         run: ruff check fasp_harness tests
       - name: Run test suite
         run: python -m unittest discover -s tests -v
+
+      # The operator gates, run as gates. Each exits non-zero on a failing
+      # verdict, so a regression in the safety argument or the timing
+      # evidence fails the build rather than being noticed later in a
+      # report nobody reads.
+      - name: Layer model
+        run: python -m fasp_harness layers
+      - name: Hardware-in-the-loop safety scenarios (simulated device)
+        run: python -m fasp_harness hil
+      - name: Zone and conduit model
+        run: python -m fasp_harness zones
+      - name: Software bill of materials
+        run: python -m fasp_harness sbom > sbom.json
+      - name: Safety case
+        # Exits 1 here by design: E15 requires a real certified safety
+        # controller, and CI has a simulator. The check is that every OTHER
+        # claim still holds, and that the two that cannot are the two
+        # reported.
+        run: |
+          python -m fasp_harness safety-case --json > safety-case.json || true
+          python - <<'CHECK'
+          import json, sys
+          report = json.load(open("safety-case.json"))
+          failed = sorted(claim["id"] for claim in report["claims"] if claim["verdict"] in {"not_supported", "inconclusive"})
+          expected = ["G1", "G8"]
+          if failed != expected:
+              print(f"Safety case regression: expected {expected} unsupported, got {failed}")
+              for claim in report["claims"]:
+                  print(f"  {claim['verdict']:14} {claim['id']}: {claim['detail'][:120]}")
+              sys.exit(1)
+          print(f"Safety case as expected: {report['counts']['supported']} supported, "
+                f"{report['counts']['delegated']} delegated, {report['counts']['undeveloped']} undeveloped.")
+          CHECK
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-py${{ matrix.python-version }}
+          path: |
+            sbom.json
+            safety-case.json
+          if-no-files-found: ignore
