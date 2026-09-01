@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-576%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-577%20passing-brightgreen">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime%20deps-5-brightgreen">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey"></a>
 </p>
@@ -681,7 +681,7 @@ controllers and emergency stops for every physical actuator.**
 ---
 
 <p align="center">
-  <sub><b>17k lines of Python · 576 tests · 5 runtime dependencies · Apache 2.0</b></sub>
+  <sub><b>17k lines of Python · 577 tests · 5 runtime dependencies · Apache 2.0</b></sub>
 </p>
 
 <p align="center">
