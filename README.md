@@ -185,6 +185,12 @@ A separation verdict quotes the residual risk it was decided at.
 - **delegated authority that expires without a message**: bounded in space,
   time and speed, symmetric between platforms, carried in the existing grant's
   `constraints`, and structurally unable to name a Layer 1 function
+- **dilated space-time reservations**, wired into the existing arbiter and
+  reachable over the signed envelope path: segments carry a temporal guard
+  from the requester's clock uncertainty and a volume from its guard band, so
+  two robots that share no cell vocabulary still cannot occupy the same air,
+  and two reservations 10 ms apart on paper conflict when their owners'
+  clocks disagree by 200
 
 All of it is pure Python -- no numeric dependency was added, because the
 install on an edge appliance is audited and every wheel is a supply-chain

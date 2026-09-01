@@ -91,3 +91,111 @@ class RoboticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DilatedReservationOverTheWireTests(unittest.TestCase):
+    """The dilated reservation reaching the arbiter through a signed envelope.
+
+    The library-level behaviour is covered in tests/test_spatial_reservation.py.
+    What is asserted here is that it is actually reachable by a peer --
+    that guard bands and volumes survive the envelope path, the
+    authorisation check and the dispatch table, rather than being a
+    facility only local code can use.
+    """
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.coordinator = FaspHarness(root / "coordinator", "coordinator", "http://coordinator:8766")
+        self.robots = {}
+        for name in ("robot-a", "robot-b", "robot-c"):
+            harness = FaspHarness(root / name, name, f"http://{name}:8766")
+            hello = self.coordinator.hello(harness.id_card())
+            self.coordinator.confirm_peer(harness.identity.system_id, hello["pair_code"], ["fleet."])
+            self.robots[name] = harness
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def request(self, robot: str, payload: dict) -> dict:
+        envelope = self.robots[robot].make_envelope("reservation.request", self.coordinator.identity.system_id, payload)
+        return self.coordinator.reservation_request(envelope)
+
+    @staticmethod
+    def box(centre: float, half_width: float) -> dict:
+        return {
+            "frame_id": "site",
+            "minimum_m": [centre - half_width, -half_width, -0.5],
+            "maximum_m": [centre + half_width, half_width, 2.0],
+        }
+
+    def test_a_guarded_segment_survives_the_envelope_path(self) -> None:
+        start = int(time.time() * 1000) + 1_000
+        granted = self.request("robot-a", {
+            "reservation_id": "guarded", "lease_ms": 30_000,
+            "segments": [{"cell": "aisle-3/cell-17", "start_ms": start, "end_ms": start + 2_000, "guard_ms": 400}],
+        })
+        self.assertEqual(granted["type"], "reservation.grant")
+        self.assertEqual(granted["segments"][0]["guard_ms"], 400)
+
+    def test_two_peers_apart_on_paper_conflict_once_their_clocks_are_admitted(self) -> None:
+        start = int(time.time() * 1000) + 1_000
+        self.request("robot-a", {
+            "reservation_id": "a", "segments": [{"cell": "aisle-3/cell-17", "start_ms": start, "end_ms": start + 2_000, "guard_ms": 300}],
+        })
+        rejected = self.request("robot-b", {
+            "reservation_id": "b", "segments": [{"cell": "aisle-3/cell-17", "start_ms": start + 2_050, "end_ms": start + 4_000, "guard_ms": 300}],
+        })
+        self.assertEqual(rejected["status"], "conflict")
+
+    def test_peers_sharing_no_cell_vocabulary_still_conflict_physically(self) -> None:
+        """Two vendors, two cell maps, one floor. Neither name means
+        anything to the other, and the boxes are what stop them meeting."""
+        start = int(time.time() * 1000) + 1_000
+        granted = self.request("robot-a", {
+            "reservation_id": "a",
+            "segments": [{"cell": "vendor-x/aisle-3", "start_ms": start, "end_ms": start + 2_000, "volume": self.box(0.0, 2.0)}],
+        })
+        self.assertEqual(granted["type"], "reservation.grant")
+
+        rejected = self.request("robot-b", {
+            "reservation_id": "b",
+            "segments": [{"cell": "vendor-y/zone-14", "start_ms": start + 500, "end_ms": start + 1_500, "volume": self.box(1.0, 2.0)}],
+        })
+        self.assertEqual(rejected["status"], "conflict")
+        self.assertEqual(rejected["basis"], "volume")
+
+        elsewhere = self.request("robot-c", {
+            "reservation_id": "c",
+            "segments": [{"cell": "vendor-z/dock-2", "start_ms": start + 500, "end_ms": start + 1_500, "volume": self.box(60.0, 2.0)}],
+        })
+        self.assertEqual(elsewhere["type"], "reservation.grant")
+
+    def test_an_abusive_guard_is_refused_at_the_boundary_not_granted(self) -> None:
+        """A peer is not trusted to declare its own dilation without bound."""
+        start = int(time.time() * 1000) + 1_000
+        with self.assertRaises(FaspError):
+            self.request("robot-a", {
+                "reservation_id": "greedy",
+                "segments": [{"cell": "aisle-3/cell-17", "start_ms": start, "end_ms": start + 1_000, "guard_ms": 600_000}],
+            })
+
+    def test_an_oversized_volume_is_refused_at_the_boundary(self) -> None:
+        start = int(time.time() * 1000) + 1_000
+        with self.assertRaises(FaspError):
+            self.request("robot-a", {
+                "reservation_id": "greedy",
+                "segments": [{"cell": "aisle-3/cell-17", "start_ms": start, "end_ms": start + 1_000, "volume": self.box(0.0, 5_000.0)}],
+            })
+
+    def test_an_unpaired_peer_still_cannot_reserve_anything(self) -> None:
+        """The new fields change what a reservation says, not who may make
+        one."""
+        stranger = FaspHarness(Path(self.temp.name) / "stranger", "stranger", "http://stranger:8766")
+        start = int(time.time() * 1000) + 1_000
+        envelope = stranger.make_envelope("reservation.request", self.coordinator.identity.system_id, {
+            "reservation_id": "x",
+            "segments": [{"cell": "aisle-3/cell-17", "start_ms": start, "end_ms": start + 1_000, "guard_ms": 100}],
+        })
+        with self.assertRaises(FaspError):
+            self.coordinator.reservation_request(envelope)
