@@ -10,6 +10,27 @@ network. A model is attached through a local adapter with declared capabilities;
 the harness authenticates the peer, verifies its authorization scope, journals
 idempotency, and only then invokes that adapter.
 
+## The layer model
+
+FASP is a coordination protocol, not a control system. That distinction is
+enforced in code ([`fasp_harness/layers.py`](fasp_harness/layers.py)), not
+asserted in a README:
+
+| Layer | Owns | Runs | FASP may |
+|---|---|---|---|
+| **1** hard real-time local safety | E-stop, safety-rated protective fields, speed/force limiting, safety PLC, motor control | certified hardware / an RTOS, **outside this process** | **observe only** |
+| **2** local autonomy | navigation, perception, obstacle avoidance, route following | on the vehicle | observe, request a halt, coordinate, dispatch a *goal* |
+| **3** fleet coordination | missions, zone reservation, charging, scheduling | **here** | + configure |
+| **4** enterprise / cloud | WMS, MES, ERP, digital twin, analytics, approvals | **here** | + configure |
+
+An adapter that exposes a Layer 1 capability **fails startup**, and a
+semantic deny list refuses capabilities whose *meaning* is a Layer 1
+function regardless of the layer they claim. There is no `safety.clear`
+message kind: clearing a halt is local work at the machine. Run
+`python -m fasp_harness layers` to print what a build enforces, and see
+[FASP_INDUSTRIAL_ARCHITECTURE.md](FASP_INDUSTRIAL_ARCHITECTURE.md) for the
+full statement of what is and is not claimed.
+
 ## Architecture
 
 - **Transport**: Starlette + uvicorn (ASGI). HTTP/1.1 parsing, TLS/ALPN, and
@@ -80,6 +101,95 @@ idempotency, and only then invokes that adapter.
   and an opt-in `stream.subscribe` push channel on top of durable `stream.pull`
 - mutual TLS, per-IP and per-peer rate limiting, and an artifact storage cap
 
+### Layer 3/4 industrial integration
+
+- a checked layer model: Layer 1 is observable and unwritable from FASP,
+  enforced at adapter registration and again on the dispatch path
+- **deterministic scheduling** for the management plane: drift-free periodic
+  execution with deadlines, defined overrun policies, measured jitter, and
+  fail-safe watchdogs -- and an explicit, structural refusal to claim hard
+  real-time (`hard_realtime` is a constant `False`, with reasons)
+- **safety-controller integration**: a dependency-free Modbus/TCP client and
+  server, a vendor-neutral driver interface, two-channel E-stop evaluation
+  with discrepancy detection, latching, and no write path to any
+  safety-relevant address
+- **OPC UA**: client abstraction, deterministic address-space simulator,
+  optional `asyncua` binding, and a deny-by-default write allowlist
+- **ROS 2**: the managed-node lifecycle state machine, DDS QoS
+  Requested-vs-Offered compatibility, and an SROS 2 posture check that
+  treats `Permit` as critical
+- **multi-vendor fleets**: a neutral mission/vehicle model, a registry
+  multiplexing any number of vendors, a VDA 5050 adapter with the order
+  sequencing and update rules enforced, and a declaratively configured REST
+  adapter
+- **edge HA**: leader election with fencing tokens that refuse a superseded
+  coordinator at the moment of effect, plus separate startup/liveness/
+  readiness/drain probes
+- **offline resilience**: durable store-and-forward with per-destination
+  ordering and dead lettering; a seeded virtual-time network with loss,
+  duplication, reordering, corruption and asymmetric partitions; and
+  store-carry-forward relaying validated across a 60s hard partition
+- **hardware-in-the-loop**: a bench measuring response times against
+  declared deadlines, emitting hash-chained signable evidence
+- **digital twin**: consulted before dispatch (reachability, energy,
+  obstacles, deadline, space-time conflict) and compared against reality
+  after, with divergence withdrawing trust in its own predictions
+- **security workflow**: an IEC 62443-3-3 register evaluated against the
+  running configuration, a zone/conduit model, a startup gate that refuses
+  an insecure deployment, and a CycloneDX SBOM
+- **a machine-checkable safety case**: GSN claims bound to executed
+  evidence, with Layer 1 claims marked *delegated* and independent
+  validation marked *undeveloped* rather than omitted
+
+### Cross-domain spatial coordination
+
+[`fasp_harness/spatial/`](fasp_harness/spatial/) coordinates machines that
+share no clock and no coordinate frame -- the air-ground case, where a drone
+and a ground vehicle must agree about where each other are, when, and who may
+act. Four message types, each one honest answer:
+
+| | | |
+|---|---|---|
+| **TimeSync** | `clock.py` | when, to within a stated bound |
+| **StateReport** | `state.py` | where and how fast, with covariance |
+| **FrameLink** | `frames.py` | how two frames relate, and how stale that is |
+| **Grant** | `authority.py` | who may act, where, until when |
+
+The invariant is that **no value crosses a machine boundary without its
+uncertainty attached**. A timestamp is an interval, not a number. A pose is a
+mean and a covariance. A frame relationship carries a drift rate and decays.
+A separation verdict quotes the residual risk it was decided at.
+
+- **two-way time transfer** with min-filtered samples, so a heavy-tailed
+  queueing link does not drag the estimate into its own tail, and a refusal
+  to assume zero drift: until skew is measurable the bound is the datasheet
+  worst case (50 ppm is 180 ms per hour)
+- **Kabsch/Umeyama frame alignment** with a covariance fitted from the
+  residual, composition through the SE(3) adjoint, and links that *decay* --
+  a visual alignment ten minutes old reports 31 m of position sigma rather
+  than the 0.4 mm it had when fresh. Collinear correspondences are refused,
+  not fitted
+- **domain-specific prediction**: a ground vehicle's uncertainty is
+  anisotropic, because heading error times distance driven is cross-track
+  error; a rotorcraft's is isotropic and roughly forty times larger, because
+  gusts dominate. Timing uncertainty becomes position uncertainty at
+  `v * epsilon`, which is the seam between the clock and the pose
+- **guard bands at a stated risk**: `max(statistical, reachable)` rather than
+  a sum, sized over the delay still ahead and not only the delay already
+  suffered, with the coverage factor taken from the chi-square quantile for
+  the stated number of dimensions
+- **morphology-aware conflict**: air and subsurface are separated by the water
+  column whatever their coordinates say; pairs that genuinely can meet fall
+  through to ordinary 3D geometry, which handles a drone landing on a ground
+  robot with no altitude special-casing
+- **delegated authority that expires without a message**: bounded in space,
+  time and speed, symmetric between platforms, carried in the existing grant's
+  `constraints`, and structurally unable to name a Layer 1 function
+
+All of it is pure Python -- no numeric dependency was added, because the
+install on an edge appliance is audited and every wheel is a supply-chain
+question.
+
 ## HTTP endpoints
 
 | Endpoint | Method | Access | Purpose |
@@ -96,12 +206,18 @@ idempotency, and only then invokes that adapter.
 | `/fasp/v1/envelopes` | POST | paired signed envelope | generic ingress; dispatches on the envelope's `kind` |
 | `/fasp/v1/receipts` | POST | paired signed `receipt.processed` | alias into the same dispatch, per FASP_PROTOCOL.md ss13 |
 | `/fasp/v1/channel` | WS | paired signed envelope, per frame | the same dispatch over a persistent connection, plus push delivery |
+| `/livez` | GET | public | is this process wedged? (restart me) |
+| `/readyz` | GET | public | should this node receive work? (a standby answers no) |
+| `/health/detail` | GET | local admin token | per-check detail behind the probes |
+| `/safety` | GET | local admin token | Layer 1 evidence: controller, declared safety functions, current state |
+| `/fleet` | GET | local admin token | vehicles, missions, leadership, and twin divergence |
 
 `/fasp/v1/envelopes` dispatches `intent.propose`/`task.cancel`/`artifact.fetch`
 through the idempotent task pipeline (response wrapped in `receipt.delivered`),
 and `task.status`, `inbox.pull`, `receipt.processed`,
 `stream.open/packet/pull/subscribe/unsubscribe/close`,
-`reservation.request/release`, `safety.halt/status`, `incident.report`, and
+`reservation.request/release`, `safety.halt/status/evidence`,
+`mission.dispatch/cancel/status`, `fleet.status`, `incident.report`, and
 `heartbeat` through their own dedicated handlers, returning each one's own
 response shape directly. An unrecognized `kind` is rejected with
 `protocol.unsupported_kind`, never silently accepted. Every kind shares one
@@ -294,6 +410,51 @@ and for a host with no Node at all,
 [`agent-id-card`'s `NO_PYTHON.md`](https://github.com/Jayasuryamahadevan/agent-id-card/blob/main/NO_PYTHON.md)
 gives the same crypto in OpenSSL, or libsodium instead.
 
+## Operator commands
+
+```bash
+python -m fasp_harness layers            # the layer model this build enforces
+python -m fasp_harness rt-probe          # what timing can this host honestly offer?
+python -m fasp_harness hil               # run the safety response-time scenarios
+python -m fasp_harness safety-case  --config examples/node.json
+python -m fasp_harness security-report --config examples/node.json
+python -m fasp_harness posture --profile production --host 0.0.0.0
+python -m fasp_harness zones             # the IEC 62443-3-2 zone/conduit model
+python -m fasp_harness sbom              # CycloneDX bill of materials
+python -m fasp_harness guard-budget --round-trip-ms 40 --speed-limit-mps 2 --clearance-m 3
+```
+
+`safety-case`, `security-report`, `posture`, `hil`, and `guard-budget` exit
+non-zero on a failing verdict, so they work as pipeline gates. Every one of them accepts
+`--json`. [`examples/`](examples/) has a complete node configuration and a
+worked mission -- one that dispatches, and one the twin refuses because its
+route crosses a wall.
+
+`guard-budget` answers the question an integrator asks once the radio is
+chosen and before the aisle width is fixed, and makes an otherwise invisible
+chain visible: a slower radio is a wider guard band is a wider aisle. Feed it
+the p99 round trip, not the mean -- queueing on a shared radio is
+heavy-tailed, and the mean describes a link nobody experiences.
+
+## Assembling a full node
+
+[`fasp_harness/deployment.py`](fasp_harness/deployment.py) wires one from a
+JSON description: safety supervisor, fleet adapters, leader lease, twin,
+outbox, health probes, and the periodic loops that keep them current.
+
+```python
+from pathlib import Path
+from fasp_harness.deployment import NodeConfig, build_node
+
+node = build_node(NodeConfig.from_file(Path("examples/node.json")))
+node.start_loops()
+```
+
+The security posture is evaluated and enforced *before* anything binds a
+socket, and the safety controller is sampled before the first dispatch
+decision can be made. Absent configuration produces an absent subsystem,
+never a simulated one standing in silently.
+
 ## Production hardening
 
 This harness is a reference baseline, not a safety-certified robot controller.
@@ -310,6 +471,10 @@ can only ever be *requested* over the network, never used to clear one. See
 See [FASP_RUNTIME_PROFILES.md](FASP_RUNTIME_PROFILES.md) for cross-platform
 deployment profiles and [FASP_MESSAGING_STREAMING.md](FASP_MESSAGING_STREAMING.md)
 for the packet-management and live-streaming profile.
+[FASP_INDUSTRIAL_ARCHITECTURE.md](FASP_INDUSTRIAL_ARCHITECTURE.md) states,
+capability by capability, what the Layer 3/4 industrial integration does and
+what it deliberately does not claim -- including the three things it cannot:
+hard real-time, safety certification, and independent validation.
 
 ## License
 
