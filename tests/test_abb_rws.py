@@ -6,6 +6,7 @@ import unittest
 import urllib.parse
 from unittest.mock import patch
 
+from fasp_harness.__main__ import INDUSTRIAL_COMMANDS
 from fasp_harness.deployment import NodeConfig, _build_registry
 from fasp_harness.fleet.abb_rws import AbbRwsPilotAdapter, AbbRwsPilotConfig, parse_rws_xhtml
 from fasp_harness.fleet.model import Mission, MissionState
@@ -86,6 +87,9 @@ def adapter(fake: FakeRws, *, enabled: bool = True, allowed: frozenset[str] = fr
 
 
 class AbbRwsParsingTests(unittest.TestCase):
+    def test_abb_pilot_check_is_routed_to_the_industrial_cli(self) -> None:
+        self.assertIn("abb-pilot-check", INDUSTRIAL_COMMANDS)
+
     def test_official_xhtml_span_shape_is_parsed(self) -> None:
         parsed = parse_rws_xhtml(xhtml(opmode="MANR", ctrlexecstate="stopped"))
         self.assertEqual(parsed, {"opmode": "MANR", "ctrlexecstate": "stopped"})
