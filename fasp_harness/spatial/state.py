@@ -46,6 +46,7 @@ from .linalg import (
     NotPositiveSemidefinite,
     Vector,
     cholesky,
+    conservative_sum,
     identity,
     jacobi_eigh,
     mat_add,
@@ -391,7 +392,7 @@ class StateReport:
             speed_limit_mps=self.speed_limit_mps,
         )
 
-    def in_frame(self, link: FrameLink, *, now_ms: float | None = None) -> StateReport:
+    def in_frame(self, link: FrameLink, *, now_ms: float | None = None, correlated: bool = True) -> StateReport:
         """This report expressed in `link.target_frame`.
 
         Both uncertainties compose. A peer's position in *our* frame is
@@ -401,6 +402,14 @@ class StateReport:
         be a poor coordination partner across a badly estimated frame
         boundary. Carrying only their covariance forward would hide
         exactly the error that matters.
+
+        The two are treated as possibly correlated by default, and for a
+        concrete reason rather than caution: frame links are very often
+        estimated *from* the observations of the robots they relate, so
+        the peer's localisation error and the link error are the same
+        error seen twice. Pass `correlated=False` only where the link came
+        from something the peer had no part in -- a surveyed fiducial, an
+        independent tracking system.
         """
         if link.source_frame != self.frame_id:
             raise FaspError("schema.invalid", f"Cannot express a {self.frame_id} report through a {link.source_frame} link.")
@@ -424,9 +433,12 @@ class StateReport:
         lever = matvec(rotation, self.position_m)
         lever_arm = [[0.0, -lever[2], lever[1]], [lever[2], 0.0, -lever[0]], [-lever[1], lever[0], 0.0]]
         rotation_contribution = matmul(matmul(lever_arm, link_rotation), transpose(lever_arm))
+        link_position = mat_add(link_translation, rotation_contribution)
+        own_position = [row[:3] for row in rotated[:3]]
+        combined_position = conservative_sum(own_position, link_position, correlated=correlated)
         for row in range(3):
             for column in range(3):
-                rotated[row][column] += link_translation[row][column] + rotation_contribution[row][column]
+                rotated[row][column] = combined_position[row][column]
 
         return StateReport(
             robot_id=self.robot_id,

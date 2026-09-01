@@ -241,6 +241,24 @@ class FrameGraphTests(unittest.TestCase):
         aged = self.graph.lookup("uav/enu", "site", now_ms=600_000.0)
         self.assertGreater(aged.position_sigma_m(), 25.0)
 
+    def test_hops_are_assumed_correlated_unless_independence_is_asserted(self) -> None:
+        """A frame graph is precisely where shared sensors hide: its whole
+        point is that links were measured by different parties at
+        different times, and nothing records which shared an anchor.
+        Assuming independence would be unsound in the dangerous direction.
+        """
+        cautious = self.graph.lookup("uav/enu", "site").position_sigma_m()
+        asserted = self.graph.lookup("uav/enu", "site", correlated=False).position_sigma_m()
+        self.assertGreater(cautious, asserted)
+        # Both remain worse than either hop alone.
+        self.assertGreater(asserted, self.first.position_sigma_m())
+
+    def test_asserting_independence_is_available_but_must_be_asked_for(self) -> None:
+        tight = self.first.compose(self.second, correlated=False)
+        cautious = self.first.compose(self.second, correlated=True)
+        self.assertGreater(cautious.position_sigma_m(), tight.position_sigma_m())
+        self.assertIs(self.first.compose(self.second).position_sigma_m() > tight.position_sigma_m(), True)
+
     def test_composed_drift_is_governed_by_the_weakest_member(self) -> None:
         composed = self.graph.lookup("uav/enu", "site")
         self.assertEqual(composed.drift.translation_m_per_s, self.second.drift.translation_m_per_s)

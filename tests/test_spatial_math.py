@@ -19,15 +19,18 @@ from hypothesis import strategies as st
 from fasp_harness.spatial.linalg import (
     NotPositiveSemidefinite,
     cholesky,
+    conservative_sum,
     det3,
     identity,
     inverse,
     jacobi_eigh,
+    mat_scale,
     matmul,
     max_eigenvalue,
     nearest_psd,
     svd3,
     symmetrize,
+    trace,
     transpose,
 )
 
@@ -132,6 +135,69 @@ class CovarianceGuardTests(unittest.TestCase):
     def test_max_eigenvalue_never_returns_a_negative_number(self) -> None:
         self.assertGreaterEqual(max_eigenvalue([[-1e-20, 0.0], [0.0, -1e-20]]), 0.0)
         self.assertFalse(math.isnan(math.sqrt(max_eigenvalue([[-1e-20, 0.0], [0.0, -1e-20]]))))
+
+
+class ConservativeSumTests(unittest.TestCase):
+    """Adding two covariances without assuming they share nothing.
+
+    The independent sum is the convenient choice and is unsound in the
+    dangerous direction: two frame links sharing a UWB anchor set are
+    correlated, and `P_a + P_b` understates the result exactly when it
+    matters.
+    """
+
+    def test_the_independent_sum_is_the_ordinary_one(self) -> None:
+        result = conservative_sum(mat_scale(identity(3), 1.0), mat_scale(identity(3), 2.0), correlated=False)
+        self.assertAlmostEqual(trace(result), 9.0, places=12)
+
+    def test_the_bound_covers_the_fully_correlated_case_exactly(self) -> None:
+        """The proof the bound is right and not merely large.
+
+        Two identical, perfectly correlated errors sum to four times one
+        of them. The bound must reach that and need not exceed it, so the
+        difference is positive semidefinite with a zero eigenvalue.
+        """
+        unit = mat_scale(identity(3), 1.0)
+        bound = conservative_sum(unit, unit, correlated=True)
+        worst_real_case = mat_scale(identity(3), 4.0)
+        difference = [[bound[row][column] - worst_real_case[row][column] for column in range(3)] for row in range(3)]
+        values, _ = jacobi_eigh(symmetrize(difference))
+        self.assertGreaterEqual(min(values), -1e-12)
+        self.assertAlmostEqual(min(values), 0.0, places=9)
+
+    def test_standard_deviations_add_linearly_rather_than_in_quadrature(self) -> None:
+        """Which is what fully correlated errors do, and why the bound has
+        to be able to reach it."""
+        first, second = mat_scale(identity(3), 4.0), mat_scale(identity(3), 9.0)
+        bound = conservative_sum(first, second, correlated=True)
+        self.assertAlmostEqual(math.sqrt(trace(bound) / 3.0), 2.0 + 3.0, places=9)
+
+    def test_the_cost_of_soundness_is_sqrt_two_on_sigma_for_equal_inputs(self) -> None:
+        unit = mat_scale(identity(3), 1.0)
+        independent = trace(conservative_sum(unit, unit, correlated=False))
+        correlated = trace(conservative_sum(unit, unit, correlated=True))
+        self.assertAlmostEqual(math.sqrt(correlated / independent), math.sqrt(2.0), places=9)
+
+    def test_the_bound_is_never_tighter_than_the_independent_sum(self) -> None:
+        first = [[2.0, 0.3, 0.0], [0.3, 1.0, 0.1], [0.0, 0.1, 0.5]]
+        second = [[0.4, 0.0, 0.0], [0.0, 3.0, -0.2], [0.0, -0.2, 1.5]]
+        independent = conservative_sum(first, second, correlated=False)
+        bound = conservative_sum(first, second, correlated=True)
+        difference = [[bound[row][column] - independent[row][column] for column in range(3)] for row in range(3)]
+        values, _ = jacobi_eigh(symmetrize(difference))
+        self.assertGreaterEqual(min(values), -1e-12)
+
+    def test_a_zero_covariance_contributes_nothing_and_does_not_divide_by_zero(self) -> None:
+        """A surveyed link with no error must not blow up the arithmetic."""
+        unit = mat_scale(identity(3), 1.0)
+        zero = [[0.0] * 3 for _ in range(3)]
+        self.assertAlmostEqual(trace(conservative_sum(unit, zero, correlated=True)), 3.0, places=12)
+        self.assertAlmostEqual(trace(conservative_sum(zero, unit, correlated=True)), 3.0, places=12)
+
+    def test_the_result_stays_a_valid_covariance(self) -> None:
+        first = [[2.0, 0.3, 0.0], [0.3, 1.0, 0.1], [0.0, 0.1, 0.5]]
+        second = [[0.4, 0.0, 0.0], [0.0, 3.0, -0.2], [0.0, -0.2, 1.5]]
+        cholesky(conservative_sum(first, second, correlated=True))
 
 
 class InverseTests(unittest.TestCase):

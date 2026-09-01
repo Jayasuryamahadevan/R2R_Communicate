@@ -51,6 +51,7 @@ from .clock import TimeInterval
 from .linalg import (
     Matrix,
     Vector,
+    conservative_sum,
     det3,
     identity,
     inverse,
@@ -286,25 +287,36 @@ class FrameLink:
             self.correspondences,
         )
 
-    def compose(self, other: FrameLink) -> FrameLink:
+    def compose(self, other: FrameLink, *, correlated: bool | None = None) -> FrameLink:
         """Chain `self` (a->b) with `other` (b->c) into a->c.
 
         Covariances add in the frame of the result, which is what the
-        adjoint is for. Two independent hops are therefore strictly less
-        certain than either alone -- the property that makes a long chain
-        of frame links visibly untrustworthy instead of invisibly so.
+        adjoint is for. Two hops are therefore strictly less certain than
+        either alone -- the property that makes a long chain of frame
+        links visibly untrustworthy instead of invisibly so.
 
-        Independence is assumed and is the honest weak point: two links
-        sharing a sensor are correlated, and this addition understates the
-        result. The composed link records the *worst* method and drift of
-        its inputs so the decay of the chain is governed by its weakest
+        By default the two hops are treated as **possibly correlated**,
+        and the sum is the bound that holds for any cross-covariance (see
+        `linalg.conservative_sum`). Assuming independence would be the
+        convenient choice and is unsound in the dangerous direction: two
+        links that share a UWB anchor set or a SLAM session are
+        correlated, and an independent sum understates the result exactly
+        when it matters. Pass `correlated=False` to assert independence
+        when the deployment can actually justify it -- two links from
+        genuinely separate sensors -- and get back the tighter sum. The
+        cost of the default is bounded: sqrt(2) on sigma for two equal
+        hops.
+
+        The composed link records the *worst* method and drift of its
+        inputs, so the decay of the chain is governed by its weakest
         member.
         """
         if self.target_frame != other.source_frame:
             raise FaspError("schema.invalid", f"Cannot compose {self.source_frame}->{self.target_frame} with {other.source_frame}->{other.target_frame}.")
         adjoint = self.transform.adjoint()
         moved = matmul(matmul(adjoint, symmetrize(other.covariance)), transpose(adjoint))
-        combined = nearest_psd(mat_add(symmetrize(self.covariance), moved))
+        assume_correlated = True if correlated is None else correlated
+        combined = nearest_psd(conservative_sum(symmetrize(self.covariance), moved, correlated=assume_correlated))
         worst_drift = DriftRate(
             max(self.drift.translation_m_per_s, other.drift.translation_m_per_s),
             max(self.drift.rotation_rad_per_s, other.drift.rotation_rad_per_s),
@@ -520,13 +532,18 @@ class FrameGraph:
                 queue.append(extended)
         return None
 
-    def lookup(self, source_frame: str, target_frame: str, *, now_ms: float | None = None) -> FrameLink:
+    def lookup(self, source_frame: str, target_frame: str, *, now_ms: float | None = None, correlated: bool = True) -> FrameLink:
         """The composed link from `source_frame` to `target_frame`.
 
         With `now_ms`, every hop is aged before composition, so a chain
         containing one stale link is wide even if the rest were measured a
         moment ago. That is the intended behaviour: a chain is only as
         current as its most neglected member.
+
+        `correlated` defaults to True because a graph is precisely where
+        shared sensors hide: the whole point of a frame graph is that
+        links were measured by different parties at different times, and
+        nothing in it records which of them shared an anchor.
         """
         route = self.path(source_frame, target_frame)
         if route is None:
@@ -538,6 +555,6 @@ class FrameGraph:
             hop = self._links[(start, end)]
             if now_ms is not None:
                 hop = hop.at(now_ms)
-            composed = hop if composed is None else composed.compose(hop)
+            composed = hop if composed is None else composed.compose(hop, correlated=correlated)
         assert composed is not None
         return composed

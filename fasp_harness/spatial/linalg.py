@@ -32,6 +32,7 @@ Vector = list[float]
 __all__ = [
     "Matrix",
     "Vector",
+    "conservative_sum",
     "identity",
     "transpose",
     "matmul",
@@ -325,3 +326,48 @@ def inverse(matrix: Matrix) -> Matrix:
                 continue
             augmented[row] = [value - factor * pivot_value for value, pivot_value in zip(augmented[row], augmented[column], strict=True)]
     return [row[size:] for row in augmented]
+
+
+def conservative_sum(left: Matrix, right: Matrix, *, correlated: bool) -> Matrix:
+    """Add two covariances, optionally without assuming they are independent.
+
+    With `correlated=False` this is the ordinary `P_a + P_b`, valid only
+    when the two error sources genuinely share nothing.
+
+    With `correlated=True` it returns a bound that holds for *any*
+    cross-covariance, which is what you need when two estimates might
+    share a sensor and you cannot say how much. For any w in (0,1):
+
+        Cov(A + B)  <=  (1/w) P_a + (1/(1-w)) P_b
+
+    which follows from `0 <= Cov(aA - (1/a)B)` expanded and rearranged.
+    Choosing w to minimise the trace has the closed form
+
+        w = sqrt(tr P_a) / (sqrt(tr P_a) + sqrt(tr P_b))
+
+    and gives a result whose trace is `(sqrt(tr P_a) + sqrt(tr P_b))^2` --
+    that is, the standard deviations add *linearly* rather than in
+    quadrature. Which is exactly right, and is the whole point: linear
+    addition is what fully correlated errors do, and a bound that must
+    cover the fully correlated case has to be able to reach it.
+
+    The price is bounded and worth stating: for two equal covariances the
+    result is twice the independent one, so sigma grows by sqrt(2). A 41%
+    wider two-hop chain is a fair exchange for a bound that is not simply
+    wrong whenever two frame links happen to share an anchor.
+
+    This is the same reasoning as covariance intersection (Julier and
+    Uhlmann, 1997), applied to a sum rather than to a fusion of two
+    estimates of one quantity.
+    """
+    if not correlated:
+        return symmetrize(mat_add(left, right))
+    left_trace, right_trace = max(trace(left), 0.0), max(trace(right), 0.0)
+    # A zero-trace covariance contributes nothing and would divide by zero.
+    if left_trace <= 0.0:
+        return symmetrize(right)
+    if right_trace <= 0.0:
+        return symmetrize(left)
+    left_root, right_root = math.sqrt(left_trace), math.sqrt(right_trace)
+    weight = left_root / (left_root + right_root)
+    return symmetrize(mat_add(mat_scale(left, 1.0 / weight), mat_scale(right, 1.0 / (1.0 - weight))))

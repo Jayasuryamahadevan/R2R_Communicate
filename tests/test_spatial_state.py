@@ -228,6 +228,15 @@ class FrameCompositionTests(unittest.TestCase):
         stale = _report().in_frame(link, now_ms=60_000.0).position_sigma_m()
         self.assertGreater(stale, fresh * 10.0)
 
+    def test_the_report_and_the_link_are_assumed_correlated_by_default(self) -> None:
+        """Frame links are very often estimated *from* the observations of
+        the robots they relate, so the peer's localisation error and the
+        link error can be the same error seen twice."""
+        link = self._link(0.3)
+        cautious = _report().in_frame(link).position_sigma_m()
+        asserted = _report().in_frame(link, correlated=False).position_sigma_m()
+        self.assertGreater(cautious, asserted)
+
     def test_a_link_from_the_wrong_frame_is_refused(self) -> None:
         with self.assertRaises(FaspError):
             _report(frame_id="uav/enu").in_frame(self._link(0.05))
