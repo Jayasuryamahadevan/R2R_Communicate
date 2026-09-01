@@ -60,6 +60,7 @@ from .guard import (
     coverage_factor,
     envelope_for,
 )
+from .reservation import reserve_occupancy, segment_from_envelope, segments_for_occupancy
 from .state import Aerial, ConstantVelocity, GroundVehicle, MotionModel, StateReport
 
 __all__ = [
@@ -91,6 +92,10 @@ __all__ = [
     "envelope_for",
     "check_separation",
     "coverage_factor",
+    # what space is claimed
+    "segment_from_envelope",
+    "segments_for_occupancy",
+    "reserve_occupancy",
     # who may act
     "Volume",
     "SpatialDelegation",
