@@ -9,3 +9,5 @@ opencode_bridge/plugin/node_modules/
 opencode_bridge/plugin/.aic/
 /.aic/
 
+build/
+dist/
