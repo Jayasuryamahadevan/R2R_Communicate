@@ -14,6 +14,7 @@ failing verdict, `--json` for machine consumption.
     hil              run the hardware-in-the-loop safety scenarios
     layers           print the layer model this build enforces
     guard-budget     what separation and resync rate does this link need?
+    abb-pilot-check  verify an ABB RWS mailbox before an operator enables it
 """
 
 from __future__ import annotations
@@ -288,6 +289,33 @@ def command_guard_budget(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def command_abb_pilot_check(args: argparse.Namespace) -> int:
+    """Read-only preflight for every ABB pilot configured in a node JSON."""
+
+    node = _load_node(args)
+    try:
+        reports = []
+        for fleet in node.registry.fleets:
+            adapter = node.registry.adapter(fleet)
+            preflight = getattr(adapter, "pilot_preflight", None)
+            if callable(preflight):
+                reports.append(preflight())
+        if not reports:
+            raise FaspError("capability.unavailable", "This node configuration has no abb-rws-pilot fleet.")
+        lines = ["ABB GoFa pilot preflight", "=" * 25, ""]
+        for report in reports:
+            lines.append(f"{report['fleet']}:{report['vehicle_id']}  observation={'READY' if report['observation_ready'] else 'NOT READY'}  command={'READY' if report['ready_for_noop'] else 'NOT READY'}")
+            for check in report["checks"]:
+                lines.append(f"  {'PASS' if check['ok'] else 'FAIL'}  {check['name']}: {check['detail']}")
+            lines.append("  NOTE  " + report["safety_claim"])
+            lines.append("")
+        _emit({"pilots": reports}, "\n".join(lines), args.json)
+        verdict = "ready_for_noop" if args.require_command_ready else "observation_ready"
+        return 0 if all(bool(report[verdict]) for report in reports) else 1
+    finally:
+        node.stop()
+
+
 def _morphology_choices() -> list[str]:
     from .spatial.guard import Morphology
 
@@ -344,6 +372,10 @@ def build_parser() -> argparse.ArgumentParser:
     budget.add_argument("--body-radius-m", type=float, default=0.45)
     budget.add_argument("--control-period-ms", type=float, default=100.0)
     budget.add_argument("--clearance-m", type=float, help="Available clearance; exit non-zero if a band exceeds it.")
+
+    abb = add("abb-pilot-check", "Read-only ABB RWS mailbox preflight from a node configuration.", command_abb_pilot_check)
+    abb.add_argument("--config", required=True, help="Node configuration JSON containing one or more abb-rws-pilot fleets.")
+    abb.add_argument("--require-command-ready", action="store_true", help="Fail unless the controller is locally ready for the pilot_noop command; default checks observation readiness only.")
     return parser
 
 

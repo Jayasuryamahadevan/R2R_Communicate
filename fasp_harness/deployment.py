@@ -26,6 +26,7 @@ simulator and report that everything is fine.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,7 +71,7 @@ class NodeConfig:
 
     # Layer 3 fleets
     fleets: list[dict[str, Any]] = field(default_factory=list)
-    """One entry per vendor: `{"kind": "vda5050"|"rest"|"simulated", ...}`."""
+    """One entry per vendor: vda5050, rest, simulated, or abb-rws-pilot."""
 
     # Site model / twin
     site_nodes: dict[str, list[float]] = field(default_factory=dict)
@@ -266,8 +267,32 @@ def _build_registry(config: NodeConfig) -> FleetRegistry:
             endpoints = EndpointSpec(base_url=str(declared["base_url"]), headers=dict(declared.get("headers", {})))
             fields = FieldMap(**declared.get("fields", {}))
             registry.register(RestFleetAdapter(name, endpoints, fields=fields, vendor=str(declared.get("vendor", "unknown"))))
+        elif kind == "abb-rws-pilot":
+            from .fleet.abb_rws import AbbRwsPilotAdapter, AbbRwsPilotConfig
+
+            password_env = str(declared.get("password_env", ""))
+            if not password_env:
+                raise FaspError("schema.invalid", "An abb-rws-pilot fleet needs `password_env`; credentials must not be stored in node JSON.")
+            password = os.environ.get(password_env)
+            if password is None:
+                raise FaspError("auth.not_authorized", f"ABB RWS password environment variable {password_env!r} is not set.")
+            rws = AbbRwsPilotConfig(
+                base_url=str(declared["base_url"]),
+                username=str(declared["username"]),
+                password=password,
+                vehicle_id=str(declared.get("vehicle_id", "gofa")),
+                expected_controller_name=str(declared["expected_controller_name"]) if declared.get("expected_controller_name") else None,
+                task=str(declared.get("task", "T_ROB1")),
+                module=str(declared.get("module", "FASP_Pilot")),
+                mechunit=str(declared.get("mechunit", "ROB_1")),
+                commanding_enabled=bool(declared.get("commanding_enabled", False)),
+                allowed_commands=frozenset(str(command) for command in declared.get("allowed_commands", ())),
+                allow_insecure_http=bool(declared.get("allow_insecure_http", False)),
+                timeout_s=float(declared.get("timeout_s", 5.0)),
+            )
+            registry.register(AbbRwsPilotAdapter(name, rws))
         else:
-            raise FaspError("schema.invalid", f"Unknown fleet kind {kind!r}; use 'vda5050', 'rest', or 'simulated'.")
+            raise FaspError("schema.invalid", f"Unknown fleet kind {kind!r}; use 'vda5050', 'rest', 'abb-rws-pilot', or 'simulated'.")
     return registry
 
 
@@ -329,6 +354,11 @@ def build_node(config: NodeConfig, *, adapter: Any = None, enforce_posture: bool
     health.register("audit-chain", lambda: (harness.audit.verify()[0], "hash chain verifies"), critical=False)
     if supervisor is not None:
         health.register("safety-controller", lambda: (supervisor.current_status().reachable, supervisor.current_status().detail or "controller reachable"))
+    for fleet in registry.fleets:
+        candidate = registry.adapter(fleet)
+        probe = getattr(candidate, "pilot_health", None)
+        if callable(probe):
+            health.register(f"fleet:{fleet}:pilot", probe)
     if lease is not None:
         # Leadership affects readiness, never liveness: a healthy standby
         # must not be restarted for the crime of being a standby.

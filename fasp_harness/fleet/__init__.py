@@ -14,7 +14,7 @@ namespace, so the scheduler above never learns which vendor a vehicle came
 from. Adding a vendor is a new `FleetManagerAdapter`, and nothing else
 changes.
 
-Three adapters ship:
+Four adapters ship:
 
 - `vda5050`   the VDA 5050 interface (orders, instant actions, state,
               connection, factsheet). The actual industry answer to this
@@ -25,6 +25,9 @@ Three adapters ship:
               than a new module.
 - `simulated` a deterministic in-memory fleet, used by the tests, the HIL
               bench, and the digital twin.
+- `abb_rws`   a deny-by-default GoFa/OmniCore pilot adapter. It observes RWS
+              state and may commit one locally allow-listed command to a
+              preloaded RAPID mailbox; it exposes no raw motion or safety API.
 
 Missions here are goal-level by construction (see `model.StepKind`): "go to
 node N and pick load L". Trajectories, speeds, and obstacle handling belong
@@ -34,11 +37,14 @@ is what keeps it that way.
 
 from __future__ import annotations
 
+from .abb_rws import AbbRwsPilotAdapter, AbbRwsPilotConfig
 from .adapter import FleetManagerAdapter, FleetRegistry
 from .model import Mission, MissionState, MissionStep, OperatingMode, Pose, StepKind, VehicleCapabilities, VehicleState
 from .simulated import SimulatedFleetManager
 
 __all__ = [
+    "AbbRwsPilotAdapter",
+    "AbbRwsPilotConfig",
     "FleetManagerAdapter",
     "FleetRegistry",
     "Mission",

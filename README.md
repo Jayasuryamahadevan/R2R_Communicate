@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-559%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-576%20passing-brightgreen">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime%20deps-5-brightgreen">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey"></a>
 </p>
@@ -392,7 +392,7 @@ Prometheus `/metrics`.
 | **Safety controllers** | Dependency-free Modbus/TCP client and server, vendor-neutral driver interface, two-channel E-stop evaluation with discrepancy detection and latching, **no write path to any safety-relevant address** |
 | **OPC UA** | Client abstraction, deterministic address-space simulator, optional `asyncua` binding, deny-by-default write allowlist |
 | **ROS 2** | Managed-node lifecycle state machine, DDS QoS Requested-vs-Offered compatibility, SROS 2 posture check treating `Permit` as critical |
-| **Multi-vendor fleets** | Neutral mission/vehicle model, registry multiplexing any number of vendors, VDA 5050 adapter with order sequencing and update rules enforced, declaratively configured REST adapter |
+| **Multi-vendor fleets** | Neutral mission/vehicle model, registry multiplexing any number of vendors, VDA 5050 adapter with order sequencing and update rules enforced, declaratively configured REST adapter, and a deny-by-default ABB GoFa/OmniCore RWS pilot adapter |
 | **Edge HA** | Leader election with fencing tokens that refuse a superseded coordinator *at the moment of effect*, plus separate startup/liveness/readiness/drain probes |
 | **Offline resilience** | Durable store-and-forward with per-destination ordering and dead lettering · seeded virtual-time network with loss, duplication, reordering, corruption and asymmetric partitions · store-carry-forward relaying validated across a 60 s hard partition |
 | **Hardware-in-the-loop** | A bench measuring response times against declared deadlines, emitting hash-chained signable evidence |
@@ -676,11 +676,12 @@ controllers and emergency stops for every physical actuator.**
 | [FASP_RUNTIME_PROFILES.md](FASP_RUNTIME_PROFILES.md) | cross-platform deployment profiles — Windows, Linux, macOS, Raspberry Pi, Android gateways, RTX-3050-class local inference, ROS 1, ROS 2 |
 | [FASP_MESSAGING_STREAMING.md](FASP_MESSAGING_STREAMING.md) | packet management and live streaming |
 | [FASP_TWO_ROBOT_PROFILE.md](FASP_TWO_ROBOT_PROFILE.md) | the minimal two-robot coordination profile |
+| [ABB_GOFA_PILOT.md](ABB_GOFA_PILOT.md) | GoFa/OmniCore RWS pilot, RAPID mailbox, commissioning, and acceptance boundary |
 
 ---
 
 <p align="center">
-  <sub><b>16k lines of Python · 559 tests · 5 runtime dependencies · Apache 2.0</b></sub>
+  <sub><b>17k lines of Python · 576 tests · 5 runtime dependencies · Apache 2.0</b></sub>
 </p>
 
 <p align="center">

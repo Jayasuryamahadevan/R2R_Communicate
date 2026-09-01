@@ -139,13 +139,16 @@ behind `fleet:vehicle_id`, so two vendors may both call a robot `AGV-01`
 and the scheduler never branches on vendor. A vendor whose manager is down
 degrades to *that fleet* being unavailable.
 
-Three adapters ship: **VDA 5050** (orders with the node/edge sequencing
+Four adapters ship: **VDA 5050** (orders with the node/edge sequencing
 rule, base/horizon split, and update rules enforced — building these wrong
 is how a vehicle rejects an order mid-aisle); a **declaratively configured
 REST** adapter, so most HTTP vendors need a config file rather than a
 module (the mapping language is dotted paths, with no expression
 evaluation, so a bad config can read the wrong field and nothing worse);
-and a deterministic **simulator**.
+an **ABB GoFa/OmniCore pilot** adapter which observes Robot Web Services and
+can commit one locally allow-listed command to a preloaded RAPID mailbox while
+exposing no motor-power, raw-motion, program-upload, or safety endpoint; and a
+deterministic **simulator**.
 
 Missions are goal-level by construction: `StepKind` has no member that
 could express a trajectory, a velocity, or a wheel command.
