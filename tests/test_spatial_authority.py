@@ -48,16 +48,30 @@ def _delegation(**overrides: object) -> SpatialDelegation:
 
 
 class VolumeTests(unittest.TestCase):
-    def test_a_sphere_must_fit_entirely_not_merely_its_centre(self) -> None:
+    def test_the_whole_band_must_fit_not_merely_its_centre(self) -> None:
         """Authorising on the point estimate authorises exactly the case
         where the robot turned out not to be at that point."""
         self.assertTrue(SITE.contains_point([19.9, 0.0, 0.0]))
-        self.assertFalse(SITE.contains_sphere([19.9, 0.0, 0.0], 1.0))
-        self.assertTrue(SITE.contains_sphere([0.0, 0.0, 0.0], 1.0))
+        self.assertFalse(SITE.contains_box([19.9, 0.0, 0.0], [1.0, 1.0, 1.0]))
+        self.assertTrue(SITE.contains_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+
+    def test_a_band_thin_in_one_axis_needs_headroom_only_where_it_is_thick(self) -> None:
+        """A ground vehicle's band is wide in plan and thin vertically.
+        Collapsing it to its worst axis would demand vertical headroom
+        nothing physically needs."""
+        tall_thin = Volume("site", [-20.0, -20.0, -0.6], [20.0, 20.0, 0.6])
+        self.assertFalse(tall_thin.contains_box([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+        self.assertTrue(tall_thin.contains_box([0.0, 0.0, 0.0], [1.0, 1.0, 0.5]))
 
     def test_clearance_reports_how_far_outside_a_refusal_was(self) -> None:
-        self.assertAlmostEqual(SITE.clearance_m([19.0, 0.0, 0.0], 0.5), 0.5, places=9)
-        self.assertAlmostEqual(SITE.clearance_m([19.0, 0.0, 0.0], 2.0), -1.0, places=9)
+        self.assertAlmostEqual(SITE.clearance_m([19.0, 0.0, 0.0], [0.5, 0.5, 0.5]), 0.5, places=9)
+        self.assertAlmostEqual(SITE.clearance_m([19.0, 0.0, 0.0], [2.0, 2.0, 2.0]), -1.0, places=9)
+
+    def test_clearance_is_governed_by_the_worst_axis(self) -> None:
+        """Roomy in plan, protruding through the ceiling: the vertical axis
+        decides, and by exactly how far it protrudes."""
+        self.assertAlmostEqual(SITE.clearance_m([0.0, 0.0, 4.0], [1.0, 1.0, 10.0]), -1.0, places=9)
+        self.assertAlmostEqual(SITE.clearance_m([0.0, 0.0, 0.0], [1.0, 1.0, 20.0]), -15.0, places=9)
 
     def test_a_degenerate_volume_is_refused(self) -> None:
         with self.assertRaises(FaspError):

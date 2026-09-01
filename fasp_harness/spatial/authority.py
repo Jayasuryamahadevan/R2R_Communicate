@@ -96,38 +96,39 @@ class Volume:
     def contains_point(self, point: Vector) -> bool:
         return all(low <= value <= high for value, low, high in zip(point, self.minimum_m, self.maximum_m, strict=True))
 
-    def contains_sphere(self, center: Vector, radius_m: float) -> bool:
-        """Whether the whole sphere fits, not merely its centre.
+    def contains_box(self, center: Vector, half_extents_m: Vector) -> bool:
+        """Whether the whole guard band fits, not merely its centre.
 
         This is the distinction the module exists to enforce: authorising
         on a point authorises exactly the case where the robot turned out
         not to be at that point.
 
-        Note the sphere is sized by the *worst* axis of the covariance, so
-        for a ground vehicle -- confident vertically, uncertain in plan --
-        it reaches further below the floor than any real doubt warrants. A
-        delegated volume must therefore be given honest vertical extent
-        rather than being clipped to the driving surface. Trading the
-        sphere for an ellipsoid would recover that headroom, at the cost
-        of a separation test with no closed form; the conservative shape
-        is the deliberate choice, and this is where to revisit it.
+        Takes the band per axis rather than as one radius, because that is
+        the shape it actually has. A ground vehicle's band is wide in plan
+        and thin vertically, and collapsing it to its worst axis would
+        demand vertical headroom in the delegated volume that nothing
+        physically needs.
         """
-        if radius_m < 0.0:
-            raise FaspError("schema.invalid", "A sphere radius cannot be negative.")
+        if len(half_extents_m) != 3 or any(extent < 0.0 for extent in half_extents_m):
+            raise FaspError("schema.invalid", "Half-extents must be three non-negative values.")
         return all(
-            low <= value - radius_m and value + radius_m <= high
-            for value, low, high in zip(center, self.minimum_m, self.maximum_m, strict=True)
+            low <= value - extent and value + extent <= high
+            for value, extent, low, high in zip(center, half_extents_m, self.minimum_m, self.maximum_m, strict=True)
         )
 
-    def clearance_m(self, center: Vector, radius_m: float) -> float:
-        """Signed slack: how much the sphere could grow and still fit.
+    def clearance_m(self, center: Vector, half_extents_m: Vector) -> float:
+        """Signed slack: how much the band could grow and still fit.
 
-        Negative when it already does not, by the amount it protrudes.
-        Returned so a refusal can say how far outside the delegation the
-        request was, rather than only that it was.
+        Negative when it already does not, by the amount it protrudes on
+        its worst axis. Returned so a refusal can say how far outside the
+        delegation the request was, rather than only that it was.
         """
-        margins = [min(value - low, high - value) for value, low, high in zip(center, self.minimum_m, self.maximum_m, strict=True)]
-        return min(margins) - radius_m
+        if len(half_extents_m) != 3 or any(extent < 0.0 for extent in half_extents_m):
+            raise FaspError("schema.invalid", "Half-extents must be three non-negative values.")
+        return min(
+            min(value - extent - low, high - value - extent)
+            for value, extent, low, high in zip(center, half_extents_m, self.minimum_m, self.maximum_m, strict=True)
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {"frame_id": self.frame_id, "minimum_m": list(self.minimum_m), "maximum_m": list(self.maximum_m)}
@@ -232,11 +233,12 @@ class SpatialDelegation:
                 remaining,
             )
 
-        clearance = self.volume.clearance_m(envelope.center_m, envelope.radius_m)
+        clearance = self.volume.clearance_m(envelope.center_m, envelope.half_extents_m)
         if clearance < 0.0:
+            extents = " x ".join(f"{extent:.3f}" for extent in envelope.half_extents_m)
             return Authorisation(
                 False,
-                f"the {envelope.radius_m:.3f} m uncertainty envelope protrudes {-clearance:.3f} m outside the delegated volume",
+                f"the {extents} m uncertainty envelope protrudes {-clearance:.3f} m outside the delegated volume",
                 clearance,
                 remaining,
             )

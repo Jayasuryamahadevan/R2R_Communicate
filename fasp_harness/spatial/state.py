@@ -91,6 +91,8 @@ class MotionModel(Protocol):
 
     def process_noise(self, dt_s: float, velocity_mps: Vector) -> Matrix: ...
 
+    def reach_mps(self, speed_limit_mps: float) -> Vector: ...
+
     def horizon_s(self) -> float: ...
 
     def to_dict(self) -> dict[str, Any]: ...
@@ -141,6 +143,10 @@ class ConstantVelocity:
     def process_noise(self, dt_s: float, velocity_mps: Vector) -> Matrix:
         return _white_acceleration_noise(dt_s, [self.acceleration_psd] * 3)
 
+    def reach_mps(self, speed_limit_mps: float) -> Vector:
+        """Isotropic: the neutral model assumes nothing about the medium."""
+        return [speed_limit_mps] * 3
+
     def horizon_s(self) -> float:
         return self.model_horizon_s
 
@@ -167,6 +173,10 @@ class GroundVehicle:
     along_track_psd: float = TYPICAL_WHEEL_SLIP_PSD
     heading_noise_rad_per_sqrt_s: float = 0.02
     vertical_psd: float = 0.001
+    # A wheeled robot changes altitude only as fast as the steepest ramp
+    # it can be on allows. A tenth of its ground speed corresponds to
+    # roughly a 1-in-10 gradient, which is steeper than most sites build.
+    gradient_fraction: float = 0.1
     model_horizon_s: float = DEFAULT_MODEL_HORIZON_S
 
     def transition(self, dt_s: float) -> Matrix:
@@ -193,6 +203,17 @@ class GroundVehicle:
                     noise[row][column] += lateral_block[row][column]
         return noise
 
+    def reach_mps(self, speed_limit_mps: float) -> Vector:
+        """Where a wheeled robot could get to, which is not upwards.
+
+        This is what keeps a ground vehicle's guard band out of the floor
+        and out of the airspace above it. Treating reachability as
+        isotropic makes a 2 m/s AMR look able to climb at 2 m/s, which
+        inflates its band vertically by metres and makes it conflict with
+        aircraft it can never touch.
+        """
+        return [speed_limit_mps, speed_limit_mps, speed_limit_mps * self.gradient_fraction]
+
     def horizon_s(self) -> float:
         return self.model_horizon_s
 
@@ -202,6 +223,7 @@ class GroundVehicle:
             "along_track_psd": self.along_track_psd,
             "heading_noise_rad_per_sqrt_s": self.heading_noise_rad_per_sqrt_s,
             "vertical_psd": self.vertical_psd,
+            "gradient_fraction": self.gradient_fraction,
             "model_horizon_s": self.model_horizon_s,
         }
 
@@ -222,6 +244,9 @@ class Aerial:
     kind: str = "aerial"
     gust_psd: float = TYPICAL_WIND_GUST_PSD
     vertical_psd: float = 0.5
+    # Rotorcraft climb and descend more slowly than they translate; half
+    # of horizontal speed is a conservative figure for most airframes.
+    climb_fraction: float = 0.5
     model_horizon_s: float = 3.0
 
     def transition(self, dt_s: float) -> Matrix:
@@ -230,11 +255,20 @@ class Aerial:
     def process_noise(self, dt_s: float, velocity_mps: Vector) -> Matrix:
         return _white_acceleration_noise(dt_s, [self.gust_psd, self.gust_psd, self.vertical_psd])
 
+    def reach_mps(self, speed_limit_mps: float) -> Vector:
+        return [speed_limit_mps, speed_limit_mps, speed_limit_mps * self.climb_fraction]
+
     def horizon_s(self) -> float:
         return self.model_horizon_s
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind, "gust_psd": self.gust_psd, "vertical_psd": self.vertical_psd, "model_horizon_s": self.model_horizon_s}
+        return {
+            "kind": self.kind,
+            "gust_psd": self.gust_psd,
+            "vertical_psd": self.vertical_psd,
+            "climb_fraction": self.climb_fraction,
+            "model_horizon_s": self.model_horizon_s,
+        }
 
 
 _MODEL_TYPES: dict[str, Any] = {"constant_velocity": ConstantVelocity, "ground_vehicle": GroundVehicle, "aerial": Aerial}

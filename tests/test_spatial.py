@@ -256,10 +256,12 @@ class AirGroundScenario(unittest.TestCase):
             envelope_for(self._drone([0.0, 0.0, 1.0]).in_frame(link), self.policy, 0.0, morphology=Morphology.AIR, body_radius_m=0.35),
         )
         payload = verdict.to_dict()
-        self.assertAlmostEqual(payload["margin_m"], payload["distance_m"] - payload["required_m"], places=9)
+        self.assertEqual(payload["margin_m"], max(payload["axis_margins_m"]))
+        self.assertEqual(len(payload["axis_margins_m"]), 3)
         self.assertEqual(payload["first"]["risk_alpha"], 1e-6)
-        self.assertIn(payload["first"]["basis"], {"statistical", "reachable"})
+        self.assertIn(payload["first"]["basis"], {"statistical", "reachable", "mixed"})
         self.assertEqual(payload["second"]["morphology"], "air")
+        self.assertEqual(len(payload["first"]["half_extents_m"]), 3)
 
 
 class GuardBudgetCommandTests(unittest.TestCase):
@@ -306,9 +308,17 @@ class GuardBudgetCommandTests(unittest.TestCase):
 
         def first_band(round_trip_ms: str) -> float:
             _, output = self._run("--round-trip-ms", round_trip_ms, "--speed-limit-mps", "2.0", "--json")
-            return json.loads(output)["bands"][0]["radius_m"]
+            return json.loads(output)["bands"][0]["lateral_m"]
 
         self.assertGreater(first_band("400"), first_band("20"))
+
+    def test_the_reported_band_is_anisotropic_for_a_ground_platform(self) -> None:
+        """The aisle cares about the lateral number; a wheeled robot cannot
+        climb at its ground speed, and reporting one figure hid that."""
+        _, output = self._run("--morphology", "ground", "--speed-limit-mps", "2.0", "--json")
+        band = json.loads(output)["bands"][-1]
+        self.assertLess(band["vertical_m"], band["lateral_m"] / 2.0)
+        self.assertEqual(len(band["half_extents_m"]), 3)
 
     def test_an_impossible_risk_is_reported_as_a_protocol_error(self) -> None:
         from fasp_harness import cli

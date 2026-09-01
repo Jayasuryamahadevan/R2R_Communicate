@@ -1,0 +1,57 @@
+{
+  "name": "aisle-coordinator",
+  "state_dir": ".fasp/coordinator",
+  "base_url": "http://127.0.0.1:8766",
+  "profile": "development",
+
+  "safety_controller": {"kind": "simulated"},
+  "safety_poll_hz": 20.0,
+  "safety_stale_after_s": 1.0,
+  "max_speed_mps": 1.5,
+  "safety_functions": [
+    {
+      "id": "sf-estop",
+      "description": "Category 0 stop on the perimeter E-stop loop",
+      "integrity_level": "PL d Cat 3",
+      "standard": "ISO 13849-1",
+      "implemented_by": "Pilz PNOZ s3 (certified safety relay)",
+      "response_time_ms": 20.0,
+      "demand_sources": ["panel E-stop", "pendant E-stop", "safety scanner zone 1"],
+      "verified_by": ["hil:estop-response-time", "site acceptance test 2026-03-11"]
+    },
+    {
+      "id": "sf-zone",
+      "description": "Protective stop on safety-rated lidar zone violation",
+      "integrity_level": "PL d Cat 3",
+      "standard": "ISO 13849-1",
+      "implemented_by": "SICK microScan3 + Flexi Soft",
+      "response_time_ms": 80.0,
+      "demand_sources": ["scanner zone 1", "scanner zone 2"],
+      "verified_by": ["hil:controller-unreachable-fails-safe"]
+    }
+  ],
+
+  "fleets": [
+    {
+      "kind": "simulated",
+      "fleet": "acme",
+      "nodes": {"start": [0, 0], "dock-7": [20, 0], "charger": [5, 10]},
+      "vehicles": [
+        {"id": "AGV1", "pose": [0, 0], "battery": 0.92},
+        {"id": "AGV2", "pose": [20, 0], "battery": 0.61}
+      ]
+    }
+  ],
+
+  "site_nodes": {"start": [0, 0], "dock-7": [20, 0], "charger": [5, 10]},
+  "blocked_regions": [[2.0, 3.0, 4.0, 6.0]],
+  "grid_resolution_m": 0.5,
+  "twin_tolerance_m": 1.0,
+
+  "ha_enabled": true,
+  "lease_name": "fleet-coordinator",
+  "lease_ttl_s": 15.0,
+  "node_id": "edge-a",
+  "reconcile_hz": 1.0,
+  "control_plane_watchdog_s": 10.0
+}

@@ -5,18 +5,37 @@ to the only question that matters operationally -- *may these two machines
 proceed* -- and it answers it with a stated risk rather than an implied
 certainty.
 
-A guard band is the radius around a robot's predicted position that must
-stay clear. It is computed two ways, and the larger wins:
+A guard band is the clear space around a robot's predicted position. It is
+an **axis-aligned box, not a sphere**, and that is not a detail. A sphere
+has one radius, so it must be sized by the worst axis of the covariance --
+which for a ground vehicle, confident vertically and uncertain in plan,
+means a band reaching metres below the floor it is driving on. Every
+consumer then has to be told to ignore the vertical, and a bound nobody
+believes is a bound nobody keeps.
 
-    statistical   k * sigma(P propagated to now)
+The box is tight rather than merely convenient. The k-sigma ellipsoid
+`{x : x' P^-1 x <= k^2}` has support `k * sqrt(P_ii)` in axis `i`, so the
+box with those half-extents is its exact axis-aligned bound. It is smaller
+than the enclosing sphere in every axis and equal in the worst one, so
+nothing is given up by using it.
+
+Each half-extent is computed two ways, and the larger wins:
+
+    statistical   k * sqrt(P_ii propagated to now)
                   Believes the motion model. Tight, and correct while the
                   robot is doing what it said it would.
 
-    reachable     k * sigma(P at the report) + v_max * horizon
+    reachable     k * sqrt(P_ii at the report) + v_max_i * horizon
                   Believes only the speed limit. Covers the case the
                   statistical bound cannot see at all: the peer received a
                   new command we never heard, and is no longer following
                   the trajectory it last told us about.
+
+`v_max_i` is per-axis and comes from the motion model, because the model
+is what knows the medium. A wheeled robot's vertical reach is set by the
+steepest ramp it could be on, not by its ground speed -- treating
+reachability as isotropic makes a 2 m/s AMR look able to climb at 2 m/s,
+which is what put the old spherical band through the floor.
 
 They are taken as a maximum, never a sum. Adding them double-counts the
 motion since the report -- once through the propagated covariance and
@@ -39,14 +58,19 @@ dimensions the same risk needs about 5.54, and using the planar figure for
 a volumetric problem quietly buys a worse guarantee than the one written
 down -- so the dimension is a parameter, not an assumption.
 
+Separation between two boxes is the separating-axis test, which is exact:
+they are apart if and only if some axis separates them. That the test
+names *which* axis is not decoration -- "cleared by 18.6 m of altitude" and
+"cleared by 0.2 m laterally" are different operational situations, and a
+verdict that reports only a scalar margin cannot tell them apart.
+
 Morphology is the cross-domain piece. Conflict is a predicate over *pairs*
 of morphologies, not a universal overlap test: an aerial robot and a
 subsurface one are separated by the water column no matter what their
 horizontal coordinates say, and testing them against each other wastes
 work and invents conflicts. Pairs that genuinely can meet -- air with
 ground during landing, surface with subsurface beneath a hull -- fall
-through to the ordinary 3D test, which handles the altitude separation on
-its own.
+through to the ordinary geometric test, which handles altitude on its own.
 """
 
 from __future__ import annotations
@@ -68,7 +92,10 @@ __all__ = [
     "envelope_for",
     "check_separation",
     "MORPHOLOGY_INTERACTS",
+    "AXIS_NAMES",
 ]
+
+AXIS_NAMES = ("east", "north", "up")
 
 
 class Morphology(Enum):
@@ -187,20 +214,42 @@ class GuardPolicy:
 
 @dataclass(frozen=True)
 class Envelope:
-    """A sphere that must stay clear, and the reasoning that sized it."""
+    """An axis-aligned box that must stay clear, and the reasoning behind it."""
 
     robot_id: str
     frame_id: str
     morphology: Morphology
     center_m: list[float]
-    radius_m: float
+    half_extents_m: list[float]
     basis: str
-    statistical_radius_m: float
-    reachable_radius_m: float
+    statistical_half_extents_m: list[float]
+    reachable_half_extents_m: list[float]
     body_radius_m: float
     horizon_s: float
     risk_alpha: float
     beyond_model: bool
+
+    def __post_init__(self) -> None:
+        if len(self.center_m) != 3 or len(self.half_extents_m) != 3:
+            raise FaspError("schema.invalid", "An envelope is three-dimensional.")
+        if any(extent < 0.0 or not math.isfinite(extent) for extent in self.half_extents_m):
+            raise FaspError("schema.invalid", "Envelope half-extents must be finite and non-negative.")
+
+    @property
+    def radius_m(self) -> float:
+        """The enclosing sphere, for reporting and for scalar comparisons.
+
+        Kept as a derived value rather than the primary one: it is the
+        number to put in a summary line, never the number to make a
+        decision with, because it is the worst axis applied to all three.
+        """
+        return max(self.half_extents_m)
+
+    def minimum_m(self) -> list[float]:
+        return [value - extent for value, extent in zip(self.center_m, self.half_extents_m, strict=True)]
+
+    def maximum_m(self) -> list[float]:
+        return [value + extent for value, extent in zip(self.center_m, self.half_extents_m, strict=True)]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -208,10 +257,11 @@ class Envelope:
             "frame_id": self.frame_id,
             "morphology": self.morphology.value,
             "center_m": list(self.center_m),
+            "half_extents_m": list(self.half_extents_m),
             "radius_m": self.radius_m,
             "basis": self.basis,
-            "statistical_radius_m": self.statistical_radius_m,
-            "reachable_radius_m": self.reachable_radius_m,
+            "statistical_half_extents_m": list(self.statistical_half_extents_m),
+            "reachable_half_extents_m": list(self.reachable_half_extents_m),
             "body_radius_m": self.body_radius_m,
             "horizon_s": self.horizon_s,
             "risk_alpha": self.risk_alpha,
@@ -226,12 +276,18 @@ class Separation:
     `clear` is the answer; the rest is the reason. A separation decision
     that cannot be explained after the fact is not usable evidence in a
     safety case, and this is the record an audit entry would carry.
+
+    `separating_axis` names the axis that proves the pair apart, or is
+    None when none does. "Cleared by 18.6 m of altitude" and "cleared by
+    0.2 m laterally" are different operational situations, and a verdict
+    reporting only a scalar cannot distinguish them.
     """
 
     clear: bool
     distance_m: float
-    required_m: float
     margin_m: float
+    separating_axis: str | None
+    axis_margins_m: list[float]
     reason: str
     first: Envelope
     second: Envelope
@@ -240,8 +296,9 @@ class Separation:
         return {
             "clear": self.clear,
             "distance_m": self.distance_m,
-            "required_m": self.required_m,
             "margin_m": self.margin_m,
+            "separating_axis": self.separating_axis,
+            "axis_margins_m": list(self.axis_margins_m),
             "reason": self.reason,
             "first": self.first.to_dict(),
             "second": self.second.to_dict(),
@@ -256,12 +313,12 @@ def envelope_for(
     morphology: Morphology,
     body_radius_m: float = 0.0,
 ) -> Envelope:
-    """Size the clear-space sphere around `report` as of `now_ms`.
+    """Size the clear-space box around `report` as of `now_ms`.
 
-    The centre is the propagated mean. The radius is the larger of the two
-    bounds described in the module docstring, plus the robot's own physical
-    radius -- because a guard band around a point is a band around a point,
-    and machines are not points.
+    The centre is the propagated mean. Each half-extent is the larger of
+    the two bounds described in the module docstring, plus the robot's own
+    physical radius -- because a guard band around a point is a band around
+    a point, and machines are not points.
     """
     if body_radius_m < 0.0 or not math.isfinite(body_radius_m):
         raise FaspError("schema.invalid", "Body radius must be finite and non-negative.")
@@ -269,23 +326,33 @@ def envelope_for(
     propagated = report.propagated_to(now_ms)
     horizon_s = report.age_s(now_ms) + policy.decision_margin_s
     coverage = policy.coverage_k
+    # Reachability is per-axis and comes from the motion model, because
+    # the model is what knows the medium. A ground vehicle cannot climb at
+    # its ground speed, and pretending it can inflates its band vertically
+    # by metres and conflicts it with aircraft it can never touch.
+    reach_m = [rate * horizon_s for rate in report.motion.reach_mps(report.speed_limit_mps)]
 
-    statistical = coverage * propagated.position_sigma_m()
+    # k * sqrt(P_ii) is the exact support of the k-sigma ellipsoid along
+    # axis i, so these half-extents bound it tightly rather than loosely.
+    statistical = [coverage * math.sqrt(max(propagated.covariance[axis][axis], 0.0)) for axis in range(3)]
     # The reachable bound starts from the uncertainty at the *report*, not
     # the propagated one: the motion since is accounted for by the speed
     # limit term, and using the propagated sigma here would double-count it.
-    reachable = coverage * report.position_sigma_m() + report.speed_limit_mps * horizon_s
-    radius = max(statistical, reachable)
+    reachable = [coverage * math.sqrt(max(report.covariance[axis][axis], 0.0)) + reach_m[axis] for axis in range(3)]
+
+    half_extents = [max(a, b) + body_radius_m for a, b in zip(statistical, reachable, strict=True)]
+    dominant = ["statistical" if a >= b else "reachable" for a, b in zip(statistical, reachable, strict=True)]
+    basis = dominant[0] if len(set(dominant)) == 1 else "mixed"
 
     return Envelope(
         robot_id=report.robot_id,
         frame_id=propagated.frame_id,
         morphology=morphology,
         center_m=list(propagated.position_m),
-        radius_m=radius + body_radius_m,
-        basis="statistical" if statistical >= reachable else "reachable",
-        statistical_radius_m=statistical,
-        reachable_radius_m=reachable,
+        half_extents_m=half_extents,
+        basis=basis,
+        statistical_half_extents_m=statistical,
+        reachable_half_extents_m=reachable,
         body_radius_m=body_radius_m,
         horizon_s=horizon_s,
         risk_alpha=policy.risk_alpha,
@@ -295,6 +362,10 @@ def envelope_for(
 
 def check_separation(first: Envelope, second: Envelope) -> Separation:
     """Whether two envelopes are provably apart at their stated risk.
+
+    The separating-axis test on two axis-aligned boxes, which is exact:
+    they are apart if and only if some axis separates them, and the margin
+    is the widest such gap.
 
     Refuses to compare envelopes expressed in different frames. That is
     not pedantry: two positions in different frames are two different
@@ -313,31 +384,39 @@ def check_separation(first: Envelope, second: Envelope) -> Separation:
         raise FaspError("schema.invalid", "A robot does not need separation from itself.")
 
     distance = math.sqrt(math.fsum((a - b) ** 2 for a, b in zip(first.center_m, second.center_m, strict=True)))
-    required = first.radius_m + second.radius_m
+    axis_margins = [
+        abs(a - b) - (extent_a + extent_b)
+        for a, b, extent_a, extent_b in zip(first.center_m, second.center_m, first.half_extents_m, second.half_extents_m, strict=True)
+    ]
 
     pair = frozenset({first.morphology, second.morphology})
     if not MORPHOLOGY_INTERACTS.get(pair, True):
         return Separation(
             clear=True,
             distance_m=distance,
-            required_m=0.0,
             margin_m=distance,
+            separating_axis="medium",
+            axis_margins_m=axis_margins,
             reason=f"{first.morphology.value} and {second.morphology.value} are separated by the medium and cannot meet",
             first=first,
             second=second,
         )
 
-    margin = distance - required
+    margin = max(axis_margins)
+    index = axis_margins.index(margin)
     if margin > 0.0:
-        reason = f"separated by {margin:.3f} m beyond the {required:.3f} m required at residual risk {first.risk_alpha:g}"
-    else:
-        reason = f"envelopes overlap by {-margin:.3f} m; {distance:.3f} m apart with {required:.3f} m required"
+        axis = AXIS_NAMES[index]
+        reason = f"separated by {margin:.3f} m along {axis} at residual risk {first.risk_alpha:g}"
+        return Separation(True, distance, margin, axis, axis_margins, reason, first, second)
+
+    overlaps = ", ".join(f"{AXIS_NAMES[axis]} {-value:.3f} m" for axis, value in enumerate(axis_margins))
     return Separation(
-        clear=margin > 0.0,
+        clear=False,
         distance_m=distance,
-        required_m=required,
         margin_m=margin,
-        reason=reason,
+        separating_axis=None,
+        axis_margins_m=axis_margins,
+        reason=f"no axis separates the pair; envelopes overlap on all three ({overlaps})",
         first=first,
         second=second,
     )

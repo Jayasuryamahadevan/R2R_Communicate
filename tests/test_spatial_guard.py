@@ -86,24 +86,59 @@ class EnvelopeSizingTests(unittest.TestCase):
         of anything, and the more the speed limit is all that is known."""
         report = _ugv([0.0, 0.0, 0.0], limit=3.0)
         late = envelope_for(report, self.policy, 8_000.0, morphology=Morphology.GROUND)
-        self.assertEqual(late.basis, "reachable")
-        self.assertGreater(late.reachable_radius_m, late.statistical_radius_m)
+        self.assertGreater(late.reachable_half_extents_m[0], late.statistical_half_extents_m[0])
 
-    def test_the_two_bounds_are_maximised_never_summed(self) -> None:
+    def test_the_two_bounds_are_maximised_per_axis_never_summed(self) -> None:
         """Summing double-counts the motion since the report and trains
         operators to switch the guard off."""
         envelope = envelope_for(_ugv([0.0, 0.0, 0.0]), self.policy, 1_000.0, morphology=Morphology.GROUND, body_radius_m=0.4)
-        self.assertAlmostEqual(envelope.radius_m, max(envelope.statistical_radius_m, envelope.reachable_radius_m) + 0.4, places=12)
+        for axis in range(3):
+            expected = max(envelope.statistical_half_extents_m[axis], envelope.reachable_half_extents_m[axis]) + 0.4
+            self.assertAlmostEqual(envelope.half_extents_m[axis], expected, places=12)
+
+    def test_the_band_is_a_box_bounding_the_ellipsoid_not_its_enclosing_sphere(self) -> None:
+        """k*sqrt(P_ii) is the exact support of the k-sigma ellipsoid along
+        axis i, so the box is tight in every axis where a sphere is loose
+        in all but the worst one."""
+        report = _ugv([0.0, 0.0, 0.0], speed=0.001, limit=0.001)
+        envelope = envelope_for(report, GuardPolicy(latency_margin_s=0.0, control_period_s=0.0), 0.0, morphology=Morphology.GROUND)
+        propagated = report.propagated_to(0.0)
+        coverage = coverage_factor(1e-6, 3)
+        for axis in range(3):
+            self.assertAlmostEqual(
+                envelope.statistical_half_extents_m[axis],
+                coverage * math.sqrt(propagated.covariance[axis][axis]),
+                places=9,
+            )
+        # Strictly tighter than the sphere it replaced in at least one axis.
+        self.assertLess(min(envelope.statistical_half_extents_m), max(envelope.statistical_half_extents_m))
+
+    def test_a_ground_vehicle_cannot_reach_upwards_at_its_ground_speed(self) -> None:
+        """The failure that put the old spherical band through the floor.
+
+        Treating reachability as isotropic makes a 2 m/s AMR look able to
+        climb at 2 m/s, inflating its band vertically by metres and
+        conflicting it with aircraft it can never touch.
+        """
+        envelope = envelope_for(_ugv([0.0, 0.0, 0.0], limit=2.0), self.policy, 2_000.0, morphology=Morphology.GROUND)
+        self.assertLess(envelope.half_extents_m[2], envelope.half_extents_m[0] / 2.0)
+        self.assertAlmostEqual(envelope.half_extents_m[0], envelope.half_extents_m[1], places=9)
+
+    def test_an_aerial_platform_reaches_vertically_but_climbs_slower_than_it_flies(self) -> None:
+        envelope = envelope_for(_uav([0.0, 0.0, 5.0]), self.policy, 2_000.0, morphology=Morphology.AIR)
+        self.assertLess(envelope.half_extents_m[2], envelope.half_extents_m[0])
+        self.assertGreater(envelope.half_extents_m[2], envelope.half_extents_m[0] / 4.0)
 
     def test_a_faster_platform_needs_a_wider_band_for_the_same_silence(self) -> None:
         slow = envelope_for(_ugv([0.0, 0.0, 0.0], speed=0.5, limit=1.0), self.policy, 2_000.0, morphology=Morphology.GROUND)
         fast = envelope_for(_ugv([0.0, 0.0, 0.0], speed=0.5, limit=6.0), self.policy, 2_000.0, morphology=Morphology.GROUND)
-        self.assertGreater(fast.radius_m, slow.radius_m)
+        self.assertGreater(fast.half_extents_m[0], slow.half_extents_m[0])
 
     def test_the_body_radius_is_added_because_machines_are_not_points(self) -> None:
         bare = envelope_for(_ugv([0.0, 0.0, 0.0]), self.policy, 0.0, morphology=Morphology.GROUND)
         bulky = envelope_for(_ugv([0.0, 0.0, 0.0]), self.policy, 0.0, morphology=Morphology.GROUND, body_radius_m=0.75)
-        self.assertAlmostEqual(bulky.radius_m - bare.radius_m, 0.75, places=12)
+        for axis in range(3):
+            self.assertAlmostEqual(bulky.half_extents_m[axis] - bare.half_extents_m[axis], 0.75, places=12)
 
     def test_a_report_past_its_model_horizon_is_flagged_on_the_envelope(self) -> None:
         envelope = envelope_for(_uav([0.0, 0.0, 5.0]), self.policy, 9_000.0, morphology=Morphology.AIR)
@@ -194,14 +229,39 @@ class SeparationTests(unittest.TestCase):
             check_separation(envelope, envelope)
 
     def test_the_verdict_carries_every_number_that_produced_it(self) -> None:
+        first, second = _ugv([0.0, 0.0, 0.0]), _ugv([3.0, 0.0, 0.0], robot_id="ugv-2")
+        verdict = check_separation(self._envelope(first, Morphology.GROUND), self._envelope(second, Morphology.GROUND))
+        payload = verdict.to_dict()
+        self.assertEqual(payload["margin_m"], max(payload["axis_margins_m"]))
+        self.assertAlmostEqual(
+            payload["axis_margins_m"][0],
+            3.0 - verdict.first.half_extents_m[0] - verdict.second.half_extents_m[0],
+            places=12,
+        )
+        self.assertEqual(payload["first"]["robot_id"], "ugv-1")
+
+    def test_the_verdict_names_the_axis_that_proves_separation(self) -> None:
+        """"Cleared by 18 m of altitude" and "cleared by 0.2 m laterally"
+        are different operational situations, and a scalar margin cannot
+        tell them apart."""
+        vertical = check_separation(
+            self._envelope(_ugv([0.0, 0.0, 0.0]), Morphology.GROUND),
+            self._envelope(_uav([0.0, 0.0, 30.0]), Morphology.AIR),
+        )
+        self.assertEqual(vertical.separating_axis, "up")
+        lateral = check_separation(
+            self._envelope(_ugv([0.0, 0.0, 0.0]), Morphology.GROUND),
+            self._envelope(_ugv([40.0, 0.0, 0.0], robot_id="ugv-2"), Morphology.GROUND),
+        )
+        self.assertEqual(lateral.separating_axis, "east")
+
+    def test_an_overlapping_pair_names_no_separating_axis(self) -> None:
         verdict = check_separation(
             self._envelope(_ugv([0.0, 0.0, 0.0]), Morphology.GROUND),
-            self._envelope(_ugv([3.0, 0.0, 0.0], robot_id="ugv-2"), Morphology.GROUND),
+            self._envelope(_ugv([0.5, 0.0, 0.0], robot_id="ugv-2"), Morphology.GROUND),
         )
-        payload = verdict.to_dict()
-        self.assertAlmostEqual(payload["margin_m"], payload["distance_m"] - payload["required_m"], places=12)
-        self.assertAlmostEqual(payload["required_m"], verdict.first.radius_m + verdict.second.radius_m, places=12)
-        self.assertEqual(payload["first"]["robot_id"], "ugv-1")
+        self.assertFalse(verdict.clear)
+        self.assertIsNone(verdict.separating_axis)
 
 
 if __name__ == "__main__":

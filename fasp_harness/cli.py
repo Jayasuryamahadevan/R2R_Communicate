@@ -179,7 +179,10 @@ def command_guard_budget(args: argparse.Namespace) -> int:
     """What separation does this link and platform actually require?
 
     The question an integrator asks once the radio is chosen and before
-    the aisle width is fixed. Everything here is arithmetic over numbers
+    the aisle width is fixed. Bands are reported lateral and vertical
+    separately because they are genuinely different numbers -- a wheeled
+    robot cannot climb at its ground speed -- and the aisle only ever
+    cared about the lateral one. Everything here is arithmetic over numbers
     they already have -- a measured round trip, a speed limit, a crystal
     tolerance -- and the point is to make the trade visible: a slower
     radio is a wider guard band is a wider aisle, and that chain is
@@ -232,13 +235,18 @@ def command_guard_budget(args: argparse.Namespace) -> int:
     rows = []
     for age_ms in (0.0, 250.0, 500.0, 1_000.0, 2_000.0, 5_000.0):
         envelope = envelope_for(report, policy, age_ms, morphology=morphology, body_radius_m=args.body_radius_m)
+        lateral = max(envelope.half_extents_m[0], envelope.half_extents_m[1])
         rows.append(
             {
                 "age_ms": age_ms,
+                "half_extents_m": list(envelope.half_extents_m),
+                "lateral_m": lateral,
+                "vertical_m": envelope.half_extents_m[2],
                 "radius_m": envelope.radius_m,
                 "basis": envelope.basis,
                 "beyond_model": envelope.beyond_model,
-                "fits_clearance": None if args.clearance_m is None else envelope.radius_m <= args.clearance_m,
+                # Clearance is a lateral question: aisle width, not headroom.
+                "fits_clearance": None if args.clearance_m is None else lateral <= args.clearance_m,
             }
         )
 
@@ -263,18 +271,18 @@ def command_guard_budget(args: argparse.Namespace) -> int:
         lines.append(f"  resync every         {resync_s:.1f} s to hold {args.clock_tolerance_ms:g} ms at {args.clock_ppm:g} ppm")
     else:
         lines.append(f"  resync               cannot hold {args.clock_tolerance_ms:g} ms: the link's own bound already exceeds it")
-    lines += ["", "  message age    guard radius    sized by", "  " + "-" * 44]
+    lines += ["", "  message age     lateral    vertical    sized by", "  " + "-" * 56]
     for row in rows:
         flag = ""
         if row["fits_clearance"] is False:
             flag = "  EXCEEDS CLEARANCE"
         elif row["beyond_model"]:
             flag = "  (past model horizon)"
-        lines.append(f"  {row['age_ms']:>8.0f} ms    {row['radius_m']:>8.3f} m    {row['basis']:<12}{flag}")
+        lines.append(f"  {row['age_ms']:>8.0f} ms  {row['lateral_m']:>8.3f} m  {row['vertical_m']:>8.3f} m    {row['basis']:<11}{flag}")
 
     failed = args.clearance_m is not None and any(row["fits_clearance"] is False for row in rows)
     if args.clearance_m is not None:
-        lines += ["", f"  available clearance  {args.clearance_m:g} m"]
+        lines += ["", f"  available clearance  {args.clearance_m:g} m (compared against the lateral half-extent)"]
         lines.append("  verdict              " + ("a band exceeds the clearance before 5 s of silence" if failed else "every band fits within 5 s of silence"))
     _emit(payload, "\n".join(lines), args.json)
     return 1 if failed else 0
