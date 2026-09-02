@@ -6,6 +6,11 @@ teaches the only routines that loop accepts.  FASP may then commit one locally
 allow-listed command by writing its data first and a monotonically increasing
 sequence number last.
 
+Writes target RobotWare 7 / RWS 2.0, which refuses a RAPID symbol write from a
+client holding no mastership.  One block of writes takes RAPID Edit mastership
+once and releases it again, which is also what stops another RWS client
+interleaving a write between the payload and the commit.
+
 No endpoint for motor power, jogging, joint targets, program upload, safety I/O,
 or controller configuration exists in this module.  Cancellation is a
 cooperative request to RAPID, never an emergency-stop claim.
@@ -21,7 +26,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -85,7 +91,8 @@ class AbbRwsPilotConfig:
 def urllib_rws_http(config: AbbRwsPilotConfig, *, ssl_context: ssl.SSLContext | None = None) -> RwsHttp:
     """Create a stateful Digest/Basic authenticated RWS transport.
 
-    ABB RWS 2.0 normally uses Digest authentication.  The cookie processor
+    RWS 1.0 challenges with Digest and RWS 2.0 with Basic, so both handlers are
+    registered and the controller's own challenge selects one.  The cookie processor
     keeps the controller session stable; its mastership and subscription limits
     are session-scoped.  TLS verification stays enabled unless the caller
     deliberately supplies a different SSL context.
@@ -201,14 +208,40 @@ class AbbRwsPilotAdapter:
         return parse_rws_xhtml(raw)
 
     def _symbol_path(self, name: str) -> str:
+        # RWS 2.0 shape: the symbol sits inside the URL and the resource is
+        # `/data`.  RobotWare 7 removed the RWS 1.0 `/symbol/data/<sym>?action=set`
+        # form entirely, so the older spelling 404s rather than degrading.
         symbol = self._SYMBOLS[name]
-        return f"/rw/rapid/symbol/data/RAPID/{self.config.task}/{self.config.module}/{symbol}"
+        return f"/rw/rapid/symbol/RAPID/{self.config.task}/{self.config.module}/{symbol}/data"
 
     def _read_symbol(self, name: str) -> str:
         return _unquote_rapid(self._request("GET", self._symbol_path(name)).get("value", ""))
 
     def _set_symbol(self, name: str, rapid_value: str) -> None:
-        self._request("POST", self._symbol_path(name) + "?action=set", {"value": rapid_value})
+        self._request("POST", self._symbol_path(name), {"value": rapid_value})
+
+    @contextmanager
+    def _edit_mastership(self) -> Iterator[None]:
+        """Hold RAPID Edit mastership for exactly one block of writes.
+
+        RWS 2.0 defaults its `mastership` parameter to `explicit`, so a symbol
+        write from a client holding nothing is refused.  Taking it once around
+        the whole block rather than per call is deliberate: it is what stops a
+        second RWS client writing between the payload and the commit sequence.
+
+        Mastership left held is mastership the FlexPendant cannot take back, so
+        release runs on both paths -- and on the failing path a release error is
+        suppressed rather than replacing the failure that caused it.
+        """
+
+        self._request("POST", "/rw/mastership/edit/request", {})
+        try:
+            yield
+        except BaseException:
+            with suppress(FaspError):
+                self._request("POST", "/rw/mastership/edit/release", {})
+            raise
+        self._request("POST", "/rw/mastership/edit/release", {})
 
     def _controller_identity(self) -> dict[str, str]:
         if self._identity is None:
@@ -228,7 +261,8 @@ class AbbRwsPilotAdapter:
         return mapped, raw
 
     def _controller_state(self) -> str:
-        values = self._request("GET", "/rw/panel/ctrlstate")
+        # RWS 2.0 hyphenates the path; the field inside it did not change.
+        values = self._request("GET", "/rw/panel/ctrl-state")
         return values.get("ctrlstate", values.get("ctrl-state", "unknown")).lower()
 
     def _execution_state(self) -> str:
@@ -439,12 +473,13 @@ class AbbRwsPilotAdapter:
             next_seq = max(command_seq, ack_seq) + 1
             # Transaction by ordering: the RAPID loop watches command_seq, so
             # no partial set of earlier writes can execute.  Commit is last.
-            self._set_symbol("mission_id", _rapid_string(mission.mission_id))
-            self._set_symbol("command", _rapid_string(command))
-            self._set_symbol("detail", _rapid_string("queued"))
-            self._set_symbol("result", _rapid_string("QUEUED"))
-            self._set_symbol("cancel", "FALSE")
-            self._set_symbol("command_seq", str(next_seq))
+            with self._edit_mastership():
+                self._set_symbol("mission_id", _rapid_string(mission.mission_id))
+                self._set_symbol("command", _rapid_string(command))
+                self._set_symbol("detail", _rapid_string("queued"))
+                self._set_symbol("result", _rapid_string("QUEUED"))
+                self._set_symbol("cancel", "FALSE")
+                self._set_symbol("command_seq", str(next_seq))
             self._states[mission.mission_id] = MissionState.ASSIGNED
             return {"interface": "ABB RWS mailbox v1", "vendor_mission_id": mission.mission_id, "sequence": next_seq, "idempotent": False}
 
@@ -466,7 +501,8 @@ class AbbRwsPilotAdapter:
                 self._require_commandable()
                 if self._read_symbol("mission_id") != mission_id:
                     return False
-                self._set_symbol("cancel", "TRUE")
+                with self._edit_mastership():
+                    self._set_symbol("cancel", "TRUE")
                 return True
             except FaspError:
                 return False
@@ -478,7 +514,8 @@ class AbbRwsPilotAdapter:
         with self._lock:
             try:
                 self._require_commandable()
-                self._set_symbol("cancel", "TRUE")
+                with self._edit_mastership():
+                    self._set_symbol("cancel", "TRUE")
                 return True
             except FaspError:
                 return False
