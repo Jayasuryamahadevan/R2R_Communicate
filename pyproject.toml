@@ -22,7 +22,7 @@ include = ["fasp_harness*"]
 # anyway, which is exactly why it went unnoticed -- tests/test_packaging.py
 # now asserts they are discoverable.
 [tool.setuptools.package-data]
-fasp_harness = ["storage/migrations/*.sql"]
+fasp_harness = ["storage/migrations/*.sql", "fleet/abb_twin/modules/*.mod"]
 
 [tool.ruff]
 line-length = 140

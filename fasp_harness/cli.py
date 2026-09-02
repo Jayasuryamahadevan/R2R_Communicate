@@ -15,12 +15,15 @@ failing verdict, `--json` for machine consumption.
     layers           print the layer model this build enforces
     guard-budget     what separation and resync rate does this link need?
     abb-pilot-check  verify an ABB RWS mailbox before an operator enables it
+    abb-twin         run a simulated OmniCore controller to rehearse against
+    abb-conformance  run every ABB pilot scenario and print what each proves
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -316,6 +319,91 @@ def command_abb_pilot_check(args: argparse.Namespace) -> int:
         node.stop()
 
 
+def command_abb_twin(args: argparse.Namespace) -> int:
+    """Serve a simulated OmniCore controller for rehearsal before robot time."""
+
+    import secrets
+    import time
+
+    from .fleet.abb_twin import OmniCoreTwin, TwinServer
+    from .fleet.abb_twin.scenarios import MODULE_PATH
+
+    module = Path(args.module) if args.module else MODULE_PATH
+    password = os.environ.get(args.password_env) or secrets.token_urlsafe(12)
+    controller = OmniCoreTwin.from_module_file(module, name=args.controller_name)
+    if not args.motors_off:
+        controller.set_controller_state("motoron")
+        if not args.task_stopped:
+            controller.start_task()
+    server = TwinServer(controller, host=args.host, port=args.port, username=args.username, password=password, tls=args.tls).start()
+
+    node = {
+        "fleets": [{
+            "kind": "abb-rws-pilot", "fleet": "abb-twin", "base_url": server.base_url,
+            "username": args.username, "password_env": args.password_env,
+            "expected_controller_name": args.controller_name,
+            "commanding_enabled": False, "allowed_commands": ["pilot_noop"],
+            **({} if args.tls else {"allow_insecure_http": True}),
+        }]
+    }
+    summary = {
+        "base_url": server.base_url,
+        "username": args.username,
+        "password_env": args.password_env,
+        "password_was_generated": os.environ.get(args.password_env) is None,
+        "controller": controller.snapshot(),
+        "node_config": node,
+        "warning": "A simulated controller. Passing here is not evidence about a real robot, motion, or any safety function.",
+    }
+    lines = [
+        "ABB OmniCore twin (simulated controller -- not ABB firmware)",
+        "=" * 59,
+        f"  RWS 2.0 endpoint : {server.base_url}",
+        f"  module           : {module}",
+        f"  controller name  : {controller.name}",
+        f"  operating mode   : {controller.operation_mode} / {controller.controller_state} / RAPID {controller.execution_state}",
+        f"  username         : {args.username}",
+        f"  password         : {password}" + ("" if os.environ.get(args.password_env) else f"  (generated; export {args.password_env} to pin it)"),
+        "",
+        "Point a node at it:",
+        json.dumps(node, indent=2),
+        "",
+        "Then: python -m fasp_harness abb-pilot-check --config <that file>",
+        "Ctrl-C to stop.",
+    ]
+    _emit(summary, "\n".join(lines), args.json)
+    if args.once:
+        server.stop()
+        controller.stop_task()
+        return 0
+    try:
+        while True:
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        server.stop()
+        controller.stop_task()
+
+
+def command_abb_conformance(args: argparse.Namespace) -> int:
+    """Run every ABB pilot scenario against the twin and report what each proves."""
+
+    from .fleet.abb_twin import NOT_PROVEN, run_all
+
+    results = run_all(include_tls=not args.no_tls)
+    passed = sum(result.ok for result in results)
+    lines = ["ABB GoFa pilot conformance", "=" * 26, ""]
+    for result in results:
+        lines.append(f"  {'PASS' if result.ok else 'FAIL'}  {result.name}")
+        lines.append(f"        claim: {result.claim}")
+        lines.append(f"        run:   {result.detail}")
+    lines += ["", f"{passed}/{len(results)} scenarios passed against a simulated controller.", "", "Not established by any of this:"]
+    lines += [f"  - {item}" for item in NOT_PROVEN]
+    _emit({"passed": passed, "total": len(results), "scenarios": [item.to_dict() for item in results], "not_proven": list(NOT_PROVEN)}, "\n".join(lines), args.json)
+    return 0 if passed == len(results) else 1
+
+
 def _morphology_choices() -> list[str]:
     from .spatial.guard import Morphology
 
@@ -376,6 +464,21 @@ def build_parser() -> argparse.ArgumentParser:
     abb = add("abb-pilot-check", "Read-only ABB RWS mailbox preflight from a node configuration.", command_abb_pilot_check)
     abb.add_argument("--config", required=True, help="Node configuration JSON containing one or more abb-rws-pilot fleets.")
     abb.add_argument("--require-command-ready", action="store_true", help="Fail unless the controller is locally ready for the pilot_noop command; default checks observation readiness only.")
+
+    twin = add("abb-twin", "Serve a simulated OmniCore controller running the pilot RAPID module.", command_abb_twin)
+    twin.add_argument("--module", help="RAPID module to execute (default: examples/abb_gofa/FASP_Pilot.mod).")
+    twin.add_argument("--host", default="127.0.0.1")
+    twin.add_argument("--port", type=int, default=0, help="0 picks a free port.")
+    twin.add_argument("--controller-name", default="GOFA-TWIN-01")
+    twin.add_argument("--username", default="fasp-pilot")
+    twin.add_argument("--password-env", default="FASP_TWIN_PASSWORD", help="Environment variable holding the RWS password; one is generated and printed if unset.")
+    twin.add_argument("--tls", action="store_true", help="Serve HTTPS with a self-signed certificate, as an OmniCore controller does.")
+    twin.add_argument("--motors-off", action="store_true", help="Start with motors off, so a refusal path can be rehearsed.")
+    twin.add_argument("--task-stopped", action="store_true", help="Start without the RAPID mailbox running.")
+    twin.add_argument("--once", action="store_true", help="Print the connection details and exit instead of serving.")
+
+    conformance = add("abb-conformance", "Run every ABB pilot scenario against the twin and state what each proves.", command_abb_conformance)
+    conformance.add_argument("--no-tls", action="store_true", help="Skip the TLS scenarios.")
     return parser
 
 

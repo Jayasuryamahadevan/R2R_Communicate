@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-577%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-604%20passing-brightgreen">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime%20deps-5-brightgreen">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey"></a>
 </p>
@@ -16,6 +16,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
+  <a href="#talking-to-a-real-robot-the-abb-gofa-pilot">ABB GoFa pilot</a> ·
   <a href="#operator-commands">Operator commands</a> ·
   <a href="#what-this-is-not">What this is not</a>
 </p>
@@ -325,6 +326,130 @@ drift apart — a nasty failure because both halves look right alone.
 
 ---
 
+## Talking to a real robot: the ABB GoFa pilot
+
+An ABB GoFa CRB 15000 speaks **Robot Web Services 2.0** — an HTTP REST
+interface served by its own OmniCore controller, published by ABB as an
+OpenAPI 3.0 specification. RWS can turn motors on, jog, load programs and
+write joint targets. An integration built on those calls is a motion
+controller reachable over TCP, which is exactly the thing this repository
+exists not to be.
+
+[`fleet/abb_rws.py`](fasp_harness/fleet/abb_rws.py) takes the other road. An
+authorised ABB programmer preloads a small RAPID module and starts it *from
+the pendant*; the network may then commit **one locally allow-listed word**
+into a mailbox of `PERS` variables. Nothing else.
+
+```mermaid
+flowchart LR
+    M["<b>signed mission</b><br/>one custom step"] --> A["local allowlist<br/><i>pilot_noop only</i>"]
+    A --> E["take RAPID<br/>Edit mastership"]
+    E --> W["5 payload writes<br/><i>mission · command · detail<br/>result · cancel</i>"]
+    W --> C["<b>fasp_command_seq</b><br/><i>written last</i>"]
+    C --> R["preloaded RAPID loop<br/><i>watches seq &gt; ack</i>"]
+    R --> T["one taught branch<br/><i>terminal result, then ack</i>"]
+
+    style M fill:#1f6feb22,stroke:#1f6feb
+    style A fill:#1f6feb22,stroke:#1f6feb
+    style C fill:#9e6a0322,stroke:#9e6a03,stroke-width:2px
+    style R fill:#1f6feb22,stroke:#1f6feb
+    style T fill:#1f6feb22,stroke:#1f6feb
+```
+
+> **The sequence number is the transaction.** Because the RAPID loop watches
+> only `fasp_command_seq`, and that is written after every payload variable, a
+> network failure part-way through leaves a mailbox that was half-written and
+> never read. There is no partial command the robot can act on. A restart with
+> the sequence still unacknowledged fails the mission `restart_refused_replay`
+> rather than replaying it.
+
+The command word never becomes a procedure name. RAPID's `%late binding%`
+would turn a network string into an arbitrary call; the module uses an
+explicit comparison and rejects everything else. Adding a real motion routine
+takes two edits — the RAPID branch and the Python allowlist — and both are
+local.
+
+| The adapter provides | The adapter has no endpoint for |
+|:--|:--|
+| observe controller identity, mode, motors, RAPID execution | motor power · jogging |
+| commit one allow-listed mailbox command | joint or Cartesian motion targets |
+| cooperative cancel — a *request*, never a stop claim | program upload · RAPID start |
+| read the arm TCP as **vendor telemetry** | safety I/O · safety reset |
+
+That last row is load-bearing. RWS reports the tool centre point in the
+*arm's* base frame; the LiDAR base reports a pose in a *map* frame. Publishing
+the first as the second would silently corrupt every spatial reservation
+above, so `vehicle_state()` returns `pose=None` on purpose and a test holds it
+there. **The mobile base is a separate control system and needs its own
+adapter.**
+
+### A controller to argue with, before there is a robot
+
+[`fleet/abb_twin/`](fasp_harness/fleet/abb_twin/) is a simulated OmniCore
+controller assembled from ABB's published RWS 2.0 specification. It executes
+the real [`FASP_Pilot.mod`](examples/abb_gofa/FASP_Pilot.mod) through a RAPID
+interpreter — the file an ABB programmer loads, not a Python reimplementation
+of it — and the unmodified adapter talks to it over a real socket.
+
+```bash
+python -m fasp_harness abb-conformance          # 24 scenarios, ~14 s, exits non-zero on failure
+python -m fasp_harness abb-twin --port 8811     # then point a real node at it
+python -m fasp_harness abb-pilot-check --config twin-node.json
+```
+
+A lenient simulator is worse than none, because it manufactures confidence.
+This one enforces the controller's own refusal order — grant, then operating
+mode, then mastership, then value — and answers `404` to the RWS 1.0 path
+spellings, `406` to an unversioned `Accept`, `403` to a write without the
+`UAS_RAPID_CURRVALUE` grant or without Edit mastership, and `409` to a second
+session requesting held mastership. Eleven endpoints the pilot promises never
+to call are armed as tripwires that record any attempt.
+
+<details>
+<summary><b>The 24 scenarios, and what a green run still does not prove</b></summary>
+
+<br/>
+
+Lifecycle · preflight with zero writes, noop dispatch to terminal state,
+commit ordering inside one mastership hold, duplicate delivery executing once,
+an untaught command refused by RAPID, measured poll cost.
+
+Refusals, each leaving the mailbox untouched · allowlist refusal before any
+socket opens, manual mode, motors off, emergency stop, a stopped mailbox, a
+wrong controller identity, a missing UAS grant, mastership held elsewhere.
+
+Faults · a write failing mid-block still releasing mastership and committing
+nothing, a controller restart refusing to replay, the RAPID cancel branch,
+cooperative cancel, network loss surfacing as a transport error.
+
+Protocol and boundary · RWS 1.0 spellings rejected, media-type versioning,
+TLS with a trusted controller CA and refusal without one, and a full lifecycle
+touching no forbidden endpoint.
+
+**The suite prints its own limits every run, rather than leaving them to prose
+somebody can skip:**
+
+- It is **not ABB firmware**. RobotWare's undocumented behaviour is not
+  modelled and cannot be. Only ABB's RobotStudio Virtual Controller runs the
+  real image.
+- **No robot moved.** `pilot_noop` has no motion, so nothing here is evidence
+  about trajectories, singularities, payload, or tool behaviour.
+- **No safety function was exercised.** The E-stop, protective scanner and
+  SafeMove configuration are outside this software and remain the integrator's
+  responsibility.
+- **Timing is not real-time**, and **the mobile base is absent entirely**.
+
+Passing means the pilot is worth taking to a RobotStudio virtual controller.
+It does not mean the cell is ready.
+
+</details>
+
+Commissioning — licence options, firewall, the controller certificate, the
+least-privilege user, mastership, and the acceptance evidence to keep — is in
+[ABB_GOFA_PILOT.md](ABB_GOFA_PILOT.md).
+
+---
+
 ## What is implemented
 
 <table>
@@ -393,6 +518,7 @@ Prometheus `/metrics`.
 | **OPC UA** | Client abstraction, deterministic address-space simulator, optional `asyncua` binding, deny-by-default write allowlist |
 | **ROS 2** | Managed-node lifecycle state machine, DDS QoS Requested-vs-Offered compatibility, SROS 2 posture check treating `Permit` as critical |
 | **Multi-vendor fleets** | Neutral mission/vehicle model, registry multiplexing any number of vendors, VDA 5050 adapter with order sequencing and update rules enforced, declaratively configured REST adapter, and a deny-by-default ABB GoFa/OmniCore RWS pilot adapter |
+| **ABB conformance twin** | A simulated OmniCore controller built from ABB's published RWS 2.0 specification, executing the real `FASP_Pilot.mod` through a RAPID interpreter · session-scoped mastership, UAS grants, media-type versioning and RWS 1.0 rejection enforced · eleven forbidden endpoints armed as tripwires · 24 scenarios over a real socket and real TLS, each stating the claim it supports and the suite stating what it cannot |
 | **Edge HA** | Leader election with fencing tokens that refuse a superseded coordinator *at the moment of effect*, plus separate startup/liveness/readiness/drain probes |
 | **Offline resilience** | Durable store-and-forward with per-destination ordering and dead lettering · seeded virtual-time network with loss, duplication, reordering, corruption and asymmetric partitions · store-carry-forward relaying validated across a 60 s hard partition |
 | **Hardware-in-the-loop** | A bench measuring response times against declared deadlines, emitting hash-chained signable evidence |
@@ -417,11 +543,29 @@ python -m fasp_harness safety-case     --config examples/node.json
 python -m fasp_harness security-report --config examples/node.json
 python -m fasp_harness posture         --profile production --host 0.0.0.0
 python -m fasp_harness guard-budget    --round-trip-ms 40 --speed-limit-mps 2 --clearance-m 3
+python -m fasp_harness abb-twin        # a simulated OmniCore controller to rehearse against
+python -m fasp_harness abb-conformance # every ABB pilot scenario, and what each one proves
+python -m fasp_harness abb-pilot-check --config abb-node.json
 ```
 
-> `safety-case`, `security-report`, `posture`, `hil` and `guard-budget` **exit
-> non-zero on a failing verdict**, so they work as pipeline gates rather than
-> as reports nobody reads.
+> `safety-case`, `security-report`, `posture`, `hil`, `guard-budget`,
+> `abb-conformance` and `abb-pilot-check` **exit non-zero on a failing
+> verdict**, so they work as pipeline gates rather than as reports nobody
+> reads.
+
+`abb-conformance` is the one that refuses to flatter itself. It runs the pilot
+against a simulated OmniCore controller executing the real RAPID module, and
+then prints what a fully green run still does *not* establish — that it is not
+ABB firmware, that no robot moved, that no safety function was exercised:
+
+```
+  24/24 scenarios passed against a simulated controller.
+
+  Not established by any of this:
+    - This is not ABB firmware...
+    - No robot moved. `pilot_noop` has no motion...
+    - No safety function was exercised...
+```
 
 `guard-budget` answers the question an integrator asks once the radio is chosen
 and before the aisle width is fixed, making an otherwise invisible chain
@@ -681,7 +825,7 @@ controllers and emergency stops for every physical actuator.**
 ---
 
 <p align="center">
-  <sub><b>17k lines of Python · 577 tests · 5 runtime dependencies · Apache 2.0</b></sub>
+  <sub><b>19k lines of Python · 604 tests · 5 runtime dependencies · Apache 2.0</b></sub>
 </p>
 
 <p align="center">

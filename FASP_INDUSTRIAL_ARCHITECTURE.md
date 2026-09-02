@@ -150,6 +150,15 @@ can commit one locally allow-listed command to a preloaded RAPID mailbox while
 exposing no motor-power, raw-motion, program-upload, or safety endpoint; and a
 deterministic **simulator**.
 
+The ABB adapter ships with a conformance twin: a simulated OmniCore
+controller built from ABB's published RWS 2.0 specification, executing the
+real RAPID mailbox module through an interpreter rather than a Python
+reimplementation of it. It is strict where a lenient simulator would agree
+with a bug -- RWS 1.0 paths, unversioned media types, missing grants and
+unheld mastership are all refused as the controller refuses them -- and the
+endpoints the pilot promises not to call are armed as tripwires. It is not
+firmware, and the suite says so in its own output.
+
 Missions are goal-level by construction: `StepKind` has no member that
 could express a trajectory, a velocity, or a wheel command.
 

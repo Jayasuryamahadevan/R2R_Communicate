@@ -13,7 +13,7 @@ import sys
 from . import cli, discovery
 from .transport import asgi_server
 
-INDUSTRIAL_COMMANDS = {"rt-probe", "layers", "safety-case", "security-report", "posture", "sbom", "hil", "zones", "guard-budget", "abb-pilot-check"}
+INDUSTRIAL_COMMANDS = {"rt-probe", "layers", "safety-case", "security-report", "posture", "sbom", "hil", "zones", "guard-budget", "abb-pilot-check", "abb-twin", "abb-conformance"}
 
 
 def main() -> int:

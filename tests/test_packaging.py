@@ -35,6 +35,31 @@ EXPECTED_TABLES = {
 }
 
 
+class AbbTwinPackagingTests(unittest.TestCase):
+    """The twin must ship the RAPID module it executes, and it must be the same
+    module the commissioning document tells an ABB programmer to load. Two
+    copies that drift would mean the twin proves something about a file nobody
+    runs."""
+
+    def test_the_pilot_module_is_packaged_with_the_twin(self) -> None:
+        from fasp_harness.fleet.abb_twin.scenarios import MODULE_PATH
+
+        self.assertTrue(MODULE_PATH.exists(), f"{MODULE_PATH} is not being packaged; the twin cannot run from a wheel.")
+        self.assertIn("FASP_PilotMain", MODULE_PATH.read_text(encoding="utf-8"))
+
+    def test_the_packaged_module_matches_the_one_operators_are_given(self) -> None:
+        from fasp_harness.fleet.abb_twin.scenarios import MODULE_PATH
+
+        operator_copy = Path(__file__).resolve().parents[1] / "examples" / "abb_gofa" / "FASP_Pilot.mod"
+        if not operator_copy.exists():  # a wheel install has no examples/ tree
+            self.skipTest("running outside a source checkout")
+        self.assertEqual(
+            MODULE_PATH.read_bytes(),
+            operator_copy.read_bytes(),
+            "The packaged RAPID module has drifted from examples/abb_gofa/FASP_Pilot.mod; the twin would test a module nobody loads.",
+        )
+
+
 class PackagingTests(unittest.TestCase):
     def test_migrations_are_discoverable_from_the_installed_package(self) -> None:
         migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))

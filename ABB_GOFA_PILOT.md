@@ -16,10 +16,16 @@ signed FASP mission
 local policy + one-command allowlist
         |
         v
+RAPID Edit mastership taken for one write block
+        |
+        v
 ABB RWS writes: mission, command, status, cancel=FALSE
         |
         v
 command sequence written last (commit)
+        |
+        v
+mastership released, on success and on failure
         |
         v
 preloaded RAPID FASP_PilotMain
@@ -59,16 +65,31 @@ implementation depends on the base make, model, and safety scanner integration.
 1. Obtain written approval from the college lab owner and identify the GoFa
    model, OmniCore model, RobotWare version, controller name, mobile-base model,
    LiDAR model, and existing risk assessment.
-2. Run the complete flow against an ABB RobotStudio virtual controller first.
+2. Rehearse the complete flow twice before touching the cell. First against
+   the bundled conformance twin, which costs nothing and needs no licence:
+
+   ```bash
+   python -m fasp_harness abb-conformance          # 24 scenarios, exits non-zero on failure
+   python -m fasp_harness abb-twin --port 8811     # then point a node at it
+   python -m fasp_harness abb-pilot-check --config twin-node.json
+   ```
+
+   Then against an ABB RobotStudio virtual controller, which runs real
+   RobotWare. The twin is built from ABB's published RWS 2.0 specification and
+   finds protocol and lifecycle faults cheaply; only RobotStudio exercises the
+   firmware. Neither is evidence about motion or safety.
 3. On the real cell, confirm that the E-stop, protective scanner, SafeMove
    configuration, tool, payload, work objects, and speed limits have been
    validated by the responsible integrator. FASP does not validate or replace
    any of them.
 4. Create the least-privilege RWS user the installed RobotWare version permits.
-   It needs controller/RAPID reads and mailbox-variable updates; do not grant
-   safety configuration or I/O privileges. Because ABB privileges may be
-   broader than one symbol, also restrict the account by network policy and the
-   adapter's fixed endpoint set.
+   The mailbox needs exactly one write capability: the RobotWare 7 grant
+   `UAS_RAPID_CURRVALUE`, which modifies the current value of RAPID data.
+   Reads generally need no grant. Do not grant `UAS_RAPID_EXECUTE`,
+   `UAS_REMOTE_START_STOP_IN_AUTO`, `UAS_RAPID_LOADPROGRAM`, `UAS_IO_WRITE`, or
+   anything under `UAS_SAFETY_*`. Because ABB privileges are broader than one
+   symbol, also restrict the account by network policy and the adapter's fixed
+   endpoint set.
 5. Use HTTPS and trust the controller/site CA. Plain HTTP requires the explicit
    `allow_insecure_http` switch and is limited to an isolated lab VLAN.
 6. Load `FASP_Pilot.mod` through the authorised ABB workflow. Call
@@ -83,6 +104,22 @@ implementation depends on the base make, model, and safety scanner integration.
 9. Test duplicate delivery, wrong controller identity, manual mode, motors off,
    RAPID stopped, network loss, cancellation, and controller restart. All must
    refuse, fail visibly, or reach one terminal result without unintended motion.
+
+## Mastership
+
+RWS 2.0 refuses a RAPID symbol write from a client that holds no mastership:
+its `mastership` parameter defaults to `explicit`. The adapter therefore takes
+RAPID Edit mastership immediately before a write block and releases it
+afterwards, on the failing path as well as the succeeding one. It is taken once
+per block rather than per write, so no second RWS client can land a write
+between the payload and the commit sequence.
+
+Two consequences during commissioning. A dispatch fails with an authorisation
+error while something else already holds Edit mastership -- RobotStudio
+connected to the same controller is the usual cause, so disconnect it before
+the supervised test. And if a FASP process is killed between the request and
+the release, the controller's own Edit mastership timeout is what frees it;
+confirm on the FlexPendant that mastership is free before retrying.
 
 ## Python setup
 
@@ -139,6 +176,28 @@ restart the FASP process. A valid first mission has exactly one custom step:
 }
 ```
 
+## Rehearsal twin
+
+`fasp_harness.fleet.abb_twin` is a simulated OmniCore controller: it executes
+this profile's own `FASP_Pilot.mod` through a RAPID interpreter, behind a Robot
+Web Services 2.0 endpoint built from ABB's published specification. It is
+deliberately strict, because a lenient simulator manufactures confidence --
+RWS 1.0 paths answer 404, an unversioned media type answers 406, a write
+without `UAS_RAPID_CURRVALUE` or without Edit mastership answers 403, and
+eleven endpoints this profile promises never to call are armed as tripwires
+that record any attempt.
+
+`abb-conformance` runs 24 scenarios against it over a real socket, including
+manual mode, motors off, emergency stop, a stopped mailbox, a wrong controller
+identity, mastership contention, a write that fails mid-block, a controller
+restart with an unacknowledged command, network loss, and TLS with and without
+a trusted controller certificate. Each scenario prints the claim it supports.
+
+It is not ABB firmware and cannot become ABB firmware. It models no
+undocumented RobotWare behaviour, moves no robot, exercises no safety function,
+and bounds no timing. Passing it means the pilot is worth taking to a
+RobotStudio virtual controller; it does not mean the cell is ready.
+
 ## Acceptance evidence
 
 Keep the RWS/FASP audit record and a video of the cell for each run. Record:
@@ -146,9 +205,12 @@ Keep the RWS/FASP audit record and a video of the cell for each run. Record:
 - controller and RobotWare versions, RAPID module digest, local allowlist, and
   operator/test supervisor;
 - mission ID, command sequence, acknowledgement sequence, and terminal result;
+- the Edit mastership request and its matching release for every write block;
 - FASP and controller timestamps plus observed network interruption;
 - confirmation that no motor-on, program-upload, motion-target, I/O, or safety
   endpoint was invoked; and
+- the `abb-conformance --json` run for the build under test, and its
+  `not_proven` list quoted verbatim in any summary shown to an approver; and
 - the independent mobile-base/LiDAR log when that adapter is added.
 
 Passing `pilot_noop` proves the authenticated command lifecycle and refusal
