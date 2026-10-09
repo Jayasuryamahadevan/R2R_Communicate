@@ -6,10 +6,15 @@
 
 <p align="center">
   <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://codecov.io/gh/Jayasuryamahadevan/R2R_Communicate"><img alt="Coverage" src="https://img.shields.io/codecov/c/github/Jayasuryamahadevan/R2R_Communicate?label=coverage&style=flat-square"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-604%20passing-brightgreen">
+  <img alt="Tests" src="https://img.shields.io/badge/tests-606%20passing-brightgreen">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime%20deps-5-brightgreen">
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/Jayasuryamahadevan/R2R_Communicate"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/Jayasuryamahadevan/R2R_Communicate"><img alt="OpenSSF Scorecard" src="https://api.securityscorecards.dev/projects/github.com/Jayasuryamahadevan/R2R_Communicate"></a>
+  <img alt="deps.dev" src="https://img.shields.io/endpoint?url=https://api.deps.dev/v3alpha/systems/PYPI/packages/fasp-harness">
+  <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/Jayasuryamahadevan/R2R_Communicate?style=social"></a>
 </p>
 
 <p align="center">
@@ -120,7 +125,8 @@ uv venv .venv && source .venv/bin/activate
 uv pip install -e ".[test,dev]"
 
 ruff check fasp_harness tests
-python3 -m unittest discover -s tests -v
+coverage run -m unittest discover -s tests -v
+coverage report
 
 python3 -m fasp_harness serve \
   --host 0.0.0.0 --port 8766 \
@@ -825,7 +831,7 @@ controllers and emergency stops for every physical actuator.**
 ---
 
 <p align="center">
-  <sub><b>19k lines of Python · 604 tests · 5 runtime dependencies · Apache 2.0</b></sub>
+  <sub><b>19k lines of Python · 606 tests · 85% statement / 82% branch coverage · 5 runtime dependencies · Apache 2.0</b></sub>
 </p>
 
 <p align="center">

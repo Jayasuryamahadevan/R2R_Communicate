@@ -21,7 +21,31 @@ jobs:
       - name: Lint
         run: ruff check fasp_harness tests
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        run: coverage run -m unittest discover -s tests -v
+
+      # fail_under lives in pyproject.toml, so the gate is the same number
+      # locally and in CI. A regression fails the build instead of quietly
+      # moving the badge in the README.
+      - name: Coverage gate
+        run: |
+          coverage report
+          coverage xml
+
+      # Only the 3.12 leg uploads: three identical reports would triple-count
+      # the same lines and make the trend chart lie.
+      #
+      # This repository is public, so Codecov's tokenless upload is used and no
+      # secret is required -- adding CODECOV_TOKEN to the repository secrets
+      # makes the action prefer it automatically. fail_ci_if_error is off
+      # because a third-party outage must not turn a green safety build red;
+      # the coverage gate above is the thing that actually fails the build.
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12'
+        uses: codecov/codecov-action@v5
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+          verbose: true
 
       # The operator gates, run as gates. Each exits non-zero on a failing
       # verdict, so a regression in the safety argument or the timing

@@ -10,7 +10,7 @@ requires-python = ">=3.11"
 dependencies = ["cryptography>=42", "starlette>=0.37", "uvicorn>=0.30", "rfc8785==0.1.4", "websockets>=13"]
 
 [project.optional-dependencies]
-test = ["pytest>=8.0", "hypothesis>=6.100", "httpx2>=2.0"]
+test = ["pytest>=8.0", "hypothesis>=6.100", "httpx2>=2.0", "coverage[toml]>=7.6"]
 dev = ["ruff>=0.16"]
 
 [tool.setuptools.packages.find]
@@ -31,3 +31,21 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "B", "UP", "I"]
 ignore = ["E501"]
+
+[tool.coverage.run]
+source = ["fasp_harness"]
+branch = true
+omit = ["*/__main__.py", "*/__pycache__/*"]
+
+[tool.coverage.report]
+# Measured at 82% branch coverage on the ABB branch (85% statement). The floor
+# is deliberately below that so it catches a real regression instead of turning
+# every unrelated change into a red build -- nobody trusts a gate that cries
+# wolf.
+fail_under = 80
+show_missing = true
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+]
