@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
+    # ABB carries the active work. Without it here, a push to ABB builds
+    # nothing and the coverage gate below never runs.
+    branches: [main, master, ABB]
   pull_request:
 
 jobs:
