@@ -114,8 +114,13 @@ a build enforces.
 
 ## Quick start
 
+Requires Python 3.11 or newer, Git, and `uv`. Run these commands in a POSIX
+shell; the editable install and test discovery use the repository root.
+
 ```bash
-uv venv .venv && source .venv/bin/activate
+git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
+cd R2R_Communicate
+uv venv --python 3.11 .venv && source .venv/bin/activate
 uv pip install -e ".[test,dev]"
 
 ruff check fasp_harness tests
