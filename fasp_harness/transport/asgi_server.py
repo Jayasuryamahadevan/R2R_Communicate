@@ -40,8 +40,8 @@ def load_adapter(reference: str | None) -> object | None:
         raise SystemExit(f"Cannot load --adapter {reference!r}: {exc}") from exc
 
 
-def build_asgi_app(harness: FaspHarness, ip_rate_limit_per_second: float = 20.0, ip_rate_limit_burst: int = 40, health=None):
-    return IPRateLimitMiddleware(create_app(harness, health), ip_rate_limit_per_second, ip_rate_limit_burst)
+def build_asgi_app(harness: FaspHarness, ip_rate_limit_per_second: float = 20.0, ip_rate_limit_burst: int = 40, health=None, before_close=None):
+    return IPRateLimitMiddleware(create_app(harness, health, before_close), ip_rate_limit_per_second, ip_rate_limit_burst)
 
 
 def _tls13_only_context_factory(config: uvicorn.Config, default_factory):
@@ -221,7 +221,11 @@ def main() -> None:
             node.stop()
         raise SystemExit(f"Bluetooth listener failed: {error}") from error
 
-    app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst, health)
+    def close_radios() -> None:
+        for listener in radio_listeners:
+            listener.close()
+
+    app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst, health, close_radios)
 
     print(f"FASP harness for {harness.identity.system_id}")
     print(f"Profile: {base_url}/profile  ({profile.value} security profile)")
@@ -246,8 +250,7 @@ def main() -> None:
     try:
         uvicorn.Server(server_config).run()
     finally:
-        for listener in radio_listeners:
-            listener.close()
+        close_radios()
         if node is not None:
             node.stop()
 

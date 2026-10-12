@@ -200,7 +200,7 @@ def default_health(harness: FaspHarness) -> HealthRegistry:
     return health
 
 
-def create_app(harness: FaspHarness, health: HealthRegistry | None = None) -> Starlette:
+def create_app(harness: FaspHarness, health: HealthRegistry | None = None, before_close: Callable[[], None] | None = None) -> Starlette:
     catching = _catching(harness)
     health = health or default_health(harness)
 
@@ -383,10 +383,14 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None) -> St
         try:
             yield
         finally:
-            # Graceful drain (ss15 #5/#6): let in-flight adapter calls
-            # finish on their own rather than abandoning them mid-call the
-            # moment the process is asked to stop.
-            await run_in_threadpool(harness.close)
+            try:
+                if before_close is not None:
+                    await run_in_threadpool(before_close)
+            finally:
+                # Graceful drain (ss15 #5/#6): let in-flight adapter calls
+                # finish on their own rather than abandoning them mid-call the
+                # moment the process is asked to stop.
+                await run_in_threadpool(harness.close)
 
     return Starlette(
         lifespan=lifespan,
