@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sys
 
-from . import cli, discovery
+from . import agent_cli, cli, discovery
 from .transport import asgi_server
 
 INDUSTRIAL_COMMANDS = {"rt-probe", "layers", "safety-case", "security-report", "posture", "sbom", "hil", "zones", "guard-budget"}
@@ -24,9 +24,12 @@ def main() -> int:
         return 0
     if command in INDUSTRIAL_COMMANDS:
         return cli.main(sys.argv[1:])
+    if command in agent_cli.AGENT_COMMANDS:
+        return agent_cli.main(sys.argv[1:])
     if command in {"-h", "--help", "help"}:
         cli.build_parser().print_help()
-        print("\nAlso available: serve (the default), discover. Run `python -m fasp_harness serve --help` for server options.")
+        print("\nAgent commands: init, register, approve, peers, communicate, send, drain, outbox, task-status.")
+        print("Also available: serve (the default), discover. Run `python -m fasp_harness serve --help` for server options.")
         return 0
     if command == "serve":
         sys.argv.pop(1)

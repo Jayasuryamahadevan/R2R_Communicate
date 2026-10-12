@@ -184,9 +184,34 @@ class Outbox:
                 )
         return claimed
 
-    def mark_sent(self, row_id: int) -> None:
+    def mark_sent(self, row_id: int, response: dict[str, Any] | None = None) -> None:
         with self.db.write() as conn:
-            conn.execute("UPDATE outbox SET state = 'sent', updated_at = ?, last_error = NULL WHERE row_id = ?", (stamp(), row_id))
+            conn.execute(
+                "UPDATE outbox SET state = 'sent', updated_at = ?, last_error = NULL, response_json = ? WHERE row_id = ?",
+                (stamp(), json.dumps(response) if response is not None else None, row_id),
+            )
+
+    def mark_dead(self, row_id: int, error: str, response: dict[str, Any] | None = None) -> None:
+        """Terminal rejection: do not repeatedly retry an authorization failure."""
+        with self.db.write() as conn:
+            conn.execute(
+                "UPDATE outbox SET state = 'dead', last_error = ?, updated_at = ?, response_json = ? WHERE row_id = ?",
+                (error[:400], stamp(), json.dumps(response) if response is not None else None, row_id),
+            )
+
+    def get(self, message_id: str) -> dict[str, Any] | None:
+        row = self.db.read_one(
+            "SELECT message_id, destination, kind, state, attempts, expires_at_ms, last_error, response_json FROM outbox WHERE message_id = ?",
+            (message_id,),
+        )
+        if row is None:
+            return None
+        return {
+            "message_id": row["message_id"], "destination": row["destination"],
+            "kind": row["kind"], "state": row["state"], "attempts": int(row["attempts"]),
+            "expires_at_ms": row["expires_at_ms"], "last_error": row["last_error"],
+            "response": json.loads(row["response_json"]) if row["response_json"] else None,
+        }
 
     def mark_failed(self, row_id: int, error: str, *, now_ms: int | None = None) -> dict[str, Any]:
         """Record a delivery failure and schedule the retry, or dead-letter."""
