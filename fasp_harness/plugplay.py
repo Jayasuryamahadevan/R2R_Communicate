@@ -14,7 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request
 
-from .core import FaspError, FaspHarness, JsonState, sign, verify
+from .core import FaspError, FaspHarness, JsonState, verify
 
 DEFAULT_STATE = Path(".fasp")
 DEFAULT_CAPABILITIES = ("observe.system.status.v1", "coordinate.chat.v1")
