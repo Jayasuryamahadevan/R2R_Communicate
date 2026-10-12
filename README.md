@@ -16,6 +16,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="PRODUCTION_READINESS.md">Production readiness</a> ·
+  <a href="AGENT_CLI.md">Agent CLI</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
   <a href="#operator-commands">Operator commands</a> ·
@@ -118,6 +119,20 @@ work at the machine. Run `python -m fasp_harness layers` to print exactly what
 a build enforces.
 
 ---
+
+## Agent CLI — `fasp`
+
+Install the package with `pip install -e .`, then use `fasp init`,
+`fasp register`, `fasp approve`, `fasp communicate`, and
+`fasp drain --watch` to exchange signed agent messages over a durable
+outbox. Registration requires explicit two-sided approval; calls never
+bypass local FASP capability policies. See the full
+[CLI setup, pairing, and retry guide](AGENT_CLI.md).
+
+```bash
+fasp init --name demo-agent --state-dir ~/.fasp-agent
+fasp peers --state-dir ~/.fasp-agent
+```
 
 ## Quick start
 

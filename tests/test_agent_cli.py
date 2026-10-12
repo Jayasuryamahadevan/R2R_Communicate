@@ -132,7 +132,7 @@ class AgentCliTests(unittest.TestCase):
     def test_remote_http_requires_explicit_development_opt_in(self):
         with self.assertRaises(Exception) as raised:
             agent_cli._base_url("http://10.0.0.12:8766", False)
-        self.assertIn("transport.tls_required", str(raised.exception))
+        self.assertEqual(raised.exception.code, "transport.tls_required")
         self.assertEqual(agent_cli._base_url("http://10.0.0.12:8766", True), "http://10.0.0.12:8766")
 
 

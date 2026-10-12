@@ -130,6 +130,16 @@ through FASP, but arbitrary external device effects still require adapter
 idempotency. The outbox does not currently include an automatically
 scheduled HTTP delivery worker; the caller must supply and supervise it.
 
+## Agent command-line integration
+
+`fasp register` performs a signed two-party handshake but **does not
+approve a peer**. `fasp approve` requires an out-of-band checked
+fingerprint. `fasp communicate` and `fasp drain` persist and retry
+signed messages; they cannot extend the original two-minute envelope
+expiry or guarantee exactly-once external device effects. Use mTLS,
+protected persistent state, and a supervised drain loop. See
+[AGENT_CLI.md](AGENT_CLI.md) for commands and boundaries.
+
 ## Operations and site acceptance checklist
 
 - Threat model: record data sensitivity, identity lifetimes, dangerous

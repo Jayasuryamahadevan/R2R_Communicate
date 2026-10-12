@@ -444,6 +444,14 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def main_entry() -> int:
+    # Keep the existing node server CLI available under the installed
+    # "fasp" executable without changing its established flag parser.
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        from .transport.asgi_server import main as serve
+
+        sys.argv.pop(1)
+        serve()
+        return 0
     return main()
 
 
