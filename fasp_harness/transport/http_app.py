@@ -208,6 +208,12 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None) -> St
     async def get_profile(request: Request) -> JSONResponse:
         return _json_ok(await run_in_threadpool(harness.id_card))
 
+    async def get_openapi(request: Request) -> JSONResponse:
+        del request
+        from .openapi import schema
+
+        return _json_ok(schema())
+
     @catching
     async def get_health(request: Request) -> JSONResponse:
         return _json_ok({"ok": True, "fasp": PROTOCOL, "system_id": harness.identity.system_id})
@@ -385,6 +391,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None) -> St
     return Starlette(
         lifespan=lifespan,
         routes=[
+            Route("/openapi.json", get_openapi, methods=["GET"]),
             Route("/profile", get_profile, methods=["GET"]),
             Route("/.well-known/fasp/id-card.json", get_profile, methods=["GET"]),
             Route("/health", get_health, methods=["GET"]),
