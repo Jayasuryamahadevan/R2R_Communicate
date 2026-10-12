@@ -51,6 +51,14 @@ One implementation may hold more than one role.
 | **Witness** | Optional audit, approval, or safety authority. |
 | **Relay** | Store-and-forward transport only; it is not trusted to authorize or interpret work. |
 
+The reference deployment groups these roles into a node, a local control
+function, and an optional store-and-forward relay. They may be co-located;
+they are not required to be separate services. Relay confidentiality requires
+the end-to-end encryption specified by this protocol; the current harness does
+not implement that encryption or a production relay. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the deployment model and implementation
+status.
+
 ### 2.2 Terms
 
 - **Intent:** a requested outcome with explicit scope, limits, and success
@@ -105,7 +113,11 @@ organization-approved issuer. Pairing records MUST contain:
 ```
 
 Pairing MUST require a human or an existing trusted issuer for any capability
-above `observe.*`. A system MUST expose a local, recoverable revocation path.
+outside the `observe.` scope. A system MUST expose a local, recoverable
+revocation path.
+Capability prefixes MUST match complete dot-delimited segments: `fleet.mission.v1`
+covers that name and descendants, but not `fleet.mission.v10`. `*` has no
+wildcard meaning, and an empty scope grants nothing.
 
 ### 3.4 Channel and message protection
 
@@ -231,20 +243,28 @@ or current state; it MUST NOT repeat an external or physical side effect.
 ### 7.2 State machine
 
 ```text
-PROPOSED → ACCEPTED → RUNNING → {COMPLETED | FAILED | CANCELLED}
-     │          │          └────→ CANCEL_PENDING ───→ CANCELLED | TOO_LATE
-     └──────────┴───────────────────────────────→ REJECTED | EXPIRED
+queued → running → {succeeded | failed | cancelled}
 ```
 
-- `intent.accept` is a commitment to attempt the bounded work, not a success.
+- A work item is recorded as `queued` before its effect can begin. `running`
+  means the executor has started it; domain progress such as `preflight` or
+  `assigned` is carried separately in `phase`.
 - An executor MUST acknowledge an accepted intent within the requested or
   advertised acknowledgement window.
 - Long work MUST publish progress with a lease renewal before the lease ends.
-- `task.result` and `task.fail` are terminal and immutable.
-- A cancel request received before commitment to an irreversible step MUST
-  produce `task.cancelled`. Otherwise the executor MUST produce `task.too_late`
-  with the completed or safe-stop state. “Cancellation requested” is not the
-  same as “cancelled”.
+- `task.result`, `task.fail`, and `task.cancelled` are terminal and immutable.
+- Queued work may be cancelled before execution starts. Running work becomes
+  `cancelled` only after the executor confirms the stop. If work has completed
+  or the executor cannot stop it, the caller receives `task.too_late` with the
+  current outcome. A cancellation request alone does not change a running
+  item into a cancelled one.
+- A running intent whose lease expires after a restart becomes `failed`; the
+  executor MUST NOT blindly repeat a possibly completed side effect.
+
+All executable work, including fleet missions, uses this same lifecycle.
+Mission-specific progress is reported in `phase`; it does not add new
+lifecycle states. See [WORK_ITEMS.md](WORK_ITEMS.md) for the storage and
+service architecture.
 
 ### 7.3 Receipts and UI semantics
 
@@ -478,7 +498,8 @@ Build in this order:
 
 1. Ed25519 identity, pairing, profile validation, canonical signing, and replay
    cache.
-2. Envelope parser with size limits and the intent/idempotency state machine.
+2. Envelope parser with size limits and the shared work-item lifecycle
+   ([WORK_ITEMS.md](WORK_ITEMS.md)).
 3. Scoped grants, risk classes, receipts, durable inbox cursor, retries, and
    cancellation semantics.
 4. Artifact references, audit chain, revocation, and operator UI state mapping.

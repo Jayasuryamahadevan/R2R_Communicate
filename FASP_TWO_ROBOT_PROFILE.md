@@ -87,7 +87,7 @@ ROS 2 exposes reliability, durability, deadline, lifespan, and liveliness QoS
 policies; its documentation specifically notes that lossy wireless links may
 need best-effort while other paths need reliable delivery. [ROS 2 QoS settings](https://docs.ros.org/en/humble/Concepts/Intermediate/About-Quality-of-Service-Settings.html)
 
-Every FASP stream includes `sent_monotonic_ns`, sequence, checksum, credit
+Every FASP stream includes `sent_monotonic_ms`, sequence, checksum, credit
 window, and deadline. A UI displays stale pose as stale; it never extrapolates a
 missing live feed as fact.
 

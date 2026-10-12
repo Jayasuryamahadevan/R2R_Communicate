@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fasp_harness.core import DefaultSafeAdapter, FaspError, FaspHarness
+from fasp_harness.policy.capabilities import allows as capability_allowed
 
 
 class _ReversibleAdapter(DefaultSafeAdapter):
@@ -41,6 +42,14 @@ class PolicyConformanceTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def test_capability_scopes_match_dot_segments_and_default_deny(self) -> None:
+        self.assertTrue(capability_allowed("fleet.mission.v1", ["fleet.mission."]))
+        self.assertTrue(capability_allowed("fleet.mission.v1.inspect", ["fleet.mission.v1"]))
+        self.assertFalse(capability_allowed("fleet.mission.v10", ["fleet.mission.v1"]))
+        self.assertFalse(capability_allowed("fleet.mission.v1", []))
+        self.assertFalse(capability_allowed("fleet.mission.v1", [""]))
+        self.assertFalse(capability_allowed("fleet.mission.v1", ["*"]))
 
     def _draft_envelope(self, grant_id: str | None, key: str = "draft-1") -> dict[str, Any]:
         payload: dict[str, Any] = {

@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..protocol.errors import FaspError
 from ..storage.grants_repo import GrantsRepo
 from ..timestamps import now, parse_stamp
+from .capabilities import allows as capability_allowed
 
 
 def validate_grant_if_required(
@@ -19,6 +20,7 @@ def validate_grant_if_required(
     capability: str,
     grant_id: str | None,
     require_grant: bool,
+    expected_purpose: str | None = None,
 ) -> None:
     """Raise FaspError unless a referenced grant (when required) is valid.
 
@@ -38,5 +40,7 @@ def validate_grant_if_required(
         raise FaspError("auth.grant_expired", "Referenced grant has been revoked.")
     if parse_stamp(grant["expires_at"]) <= now():
         raise FaspError("auth.grant_expired", "Referenced grant has expired.")
-    if not any(capability.startswith(prefix) for prefix in grant["capability_prefixes"]):
+    if expected_purpose is not None and grant["purpose"] != expected_purpose:
+        raise FaspError("auth.not_authorized", "Referenced grant was issued for a different purpose.")
+    if not capability_allowed(capability, grant["capability_prefixes"]):
         raise FaspError("auth.not_authorized", "Referenced grant does not cover this capability.")

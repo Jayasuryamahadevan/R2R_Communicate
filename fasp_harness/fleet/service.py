@@ -42,6 +42,7 @@ from ..robotics import ReservationBook
 from ..safety.interlock import SafetySupervisor
 from ..storage.db import Database
 from ..storage.missions_repo import MissionsRepo
+from ..storage.work_items_repo import WorkItemsRepo
 from ..timestamps import stamp
 from ..twin.kinematic import SiteModel
 from ..twin.preflight import PreflightResult, preflight_mission
@@ -66,6 +67,7 @@ class MissionService:
         twin: TwinSync | None = None,
         reservations: ReservationBook | None = None,
         lease: LeaderLease | None = None,
+        work_items: WorkItemsRepo | None = None,
         minimum_battery: float = 0.15,
         reserve_battery: float = 0.10,
     ) -> None:
@@ -79,7 +81,7 @@ class MissionService:
         self.lease = lease
         self.minimum_battery = minimum_battery
         self.reserve_battery = reserve_battery
-        self.missions = MissionsRepo(db)
+        self.missions = MissionsRepo(db, work_items)
         self._lock = threading.RLock()
         self._reserved: dict[str, str] = {}
 
@@ -128,19 +130,47 @@ class MissionService:
         # 7. Fence check at the moment of effect, then dispatch.
         if self.lease is not None and operation is not None:
             self.lease.guard(operation)
+        if not self.missions.prepare_dispatch(
+            mission.mission_id,
+            address,
+            fleet,
+            operation.fence if operation else None,
+            preflight.to_dict() if preflight else None,
+        ):
+            current = self.missions.get(mission.mission_id)
+            self._release_reservation(mission.mission_id)
+            if current is not None and current["state"] == "CANCELLED":
+                return {"type": "mission.cancelled", **self._render(current), "cancelled_at_vendor": False}
+            if current is not None and current["state"] in {"COMPLETED", "FAILED", "REJECTED"}:
+                return {"type": "mission.too_late", **self._render(current)}
+            raise FaspError("task.state_conflict", "Mission was no longer queued when dispatch began.")
         try:
             vendor = self.registry.dispatch(mission, address)
         except FaspError:
             self._release_reservation(mission.mission_id)
             raise
 
-        self.missions.assign(mission.mission_id, address, fleet, operation.fence if operation else None, preflight.to_dict() if preflight else None)
+        if not self.missions.mark_assigned(mission.mission_id):
+            current = self.missions.get(mission.mission_id)
+            if current is not None and current["state"] == "CANCELLED":
+                self._release_reservation(mission.mission_id)
+                return {"type": "mission.cancelled", **self._render(current), "cancelled_at_vendor": True}
+            if current is None or current["status"] != "running":
+                self._release_reservation(mission.mission_id)
+                if current is not None and current["status"] in {"succeeded", "failed"}:
+                    return {"type": "mission.too_late", **self._render(current)}
+                raise FaspError("task.state_conflict", "Mission left the running state during dispatch.")
         self._audit("mission.dispatched", mission.requested_by, {"mission_id": mission.mission_id, "vehicle": address, "fence": operation.fence if operation else None})
+        current = self.missions.get(mission.mission_id)
+        state = current["state"] if current is not None else MissionState.ASSIGNED.value
+        phase = current["phase"] if current is not None else "assigned"
         return {
             "type": "mission.accepted",
             "duplicate": False,
             "mission_id": mission.mission_id,
-            "state": MissionState.ASSIGNED.value,
+            "state": state,
+            "status": "running",
+            "phase": phase,
             "vehicle": address,
             "vendor": vendor,
             "preflight": preflight.to_dict() if preflight else None,
@@ -228,17 +258,35 @@ class MissionService:
         if record["requested_by"] != requested_by:
             raise FaspError("auth.not_authorized", "Only the requesting peer may cancel this mission.")
         if record["state"] in {"COMPLETED", "FAILED", "CANCELLED", "REJECTED"}:
-            return {"type": "mission.too_late", "mission_id": mission_id, "state": record["state"]}
+            return {"type": "mission.too_late", "mission_id": mission_id, "state": record["state"], "status": record["status"], "phase": record["phase"]}
         cancelled_at_vendor = False
-        if record["fleet"]:
+        cancelled_before_dispatch = self.missions.transition(
+            mission_id,
+            {"ACCEPTED", "PREFLIGHT"},
+            MissionState.CANCELLED.value,
+            result_json={"cancelled_at_vendor": False},
+        )
+        if not cancelled_before_dispatch:
+            current = self.missions.get(mission_id) or record
+            if current["state"] == "CANCELLED":
+                cancelled_at_vendor = bool((current["result"] or {}).get("cancelled_at_vendor"))
+                return {"type": "mission.cancelled", **self._render(current), "cancelled_at_vendor": cancelled_at_vendor}
+            if current["state"] in {"COMPLETED", "FAILED", "REJECTED"} or not current["fleet"]:
+                return {"type": "mission.too_late", **self._render(current), "cancelled_at_vendor": False}
             try:
-                cancelled_at_vendor = self.registry.cancel(record["fleet"], mission_id)
+                cancelled_at_vendor = self.registry.cancel(current["fleet"], mission_id)
             except FaspError:
                 cancelled_at_vendor = False
-        self.missions.finish(mission_id, MissionState.CANCELLED.value, result={"cancelled_at_vendor": cancelled_at_vendor})
+            if not cancelled_at_vendor:
+                current = self.missions.get(mission_id) or current
+                return {"type": "mission.too_late", **self._render(current), "cancelled_at_vendor": False}
+            if not self.missions.finish(mission_id, MissionState.CANCELLED.value, result={"cancelled_at_vendor": True}):
+                current = self.missions.get(mission_id) or current
+                if current["state"] != "CANCELLED":
+                    return {"type": "mission.too_late", **self._render(current), "cancelled_at_vendor": True}
         self._release_reservation(mission_id)
         self._audit("mission.cancelled", requested_by, {"mission_id": mission_id, "at_vendor": cancelled_at_vendor})
-        return {"type": "mission.cancelled", "mission_id": mission_id, "cancelled_at_vendor": cancelled_at_vendor}
+        return {"type": "mission.cancelled", "mission_id": mission_id, "status": "cancelled", "phase": "cancelled", "cancelled_at_vendor": cancelled_at_vendor}
 
     def status(self, mission_id: str) -> dict[str, Any]:
         record = self.missions.get(mission_id)
@@ -249,10 +297,12 @@ class MissionService:
     @staticmethod
     def _render(record: dict[str, Any] | None) -> dict[str, Any]:
         if record is None:
-            return {"mission_id": None, "state": "REJECTED"}
+            return {"mission_id": None, "state": "REJECTED", "status": "failed", "phase": "rejected"}
         return {
             "mission_id": record["mission_id"],
             "state": record["state"],
+            "status": record["status"],
+            "phase": record["phase"],
             "vehicle": record["vehicle_id"],
             "preflight": record["preflight"],
             "result": record["result"],
@@ -284,8 +334,8 @@ class MissionService:
                 summary["updated"] += 1
                 self._release_reservation(mission_id)
                 summary["released"] += 1
-            elif state.value != record["state"]:
-                self.missions.transition(mission_id, {record["state"]}, state.value)
+            elif state.value != record["state"] or record["phase"] == "dispatching":
+                self.missions.transition(mission_id, {record["state"]}, state.value, expected_phases={record["phase"]})
                 summary["updated"] += 1
 
         if self.twin is not None:

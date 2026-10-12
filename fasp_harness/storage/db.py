@@ -2,8 +2,9 @@
 
 One physical file per system: `<state_dir>/fasp.db`, WAL mode. Schema
 evolves through numbered migration files in `storage/migrations/`, applied
-in order and tracked via SQLite's own `PRAGMA user_version` -- atomic with
-the database file itself, so no separate version table is needed.
+in order and tracked via SQLite's own `PRAGMA user_version`. Each migration
+and its version bump commit together, so an interrupted schema change is
+rolled back and retried as a whole.
 
 Deliberately synchronous: the harness itself doesn't move onto asyncio
 until the transport replatform (Starlette/uvicorn) lands. All access is
@@ -53,8 +54,17 @@ class Database:
         for index, migration in enumerate(sorted(MIGRATIONS_DIR.glob("*.sql")), start=1):
             if index <= current:
                 continue
-            self.connection.executescript(migration.read_text(encoding="utf-8"))
-            self.connection.execute(f"PRAGMA user_version = {index}")
+            script = (
+                "BEGIN IMMEDIATE;\n"
+                + migration.read_text(encoding="utf-8")
+                + f"\nPRAGMA user_version = {index};\nCOMMIT;"
+            )
+            try:
+                self.connection.executescript(script)
+            except BaseException:
+                if self.connection.in_transaction:
+                    self.connection.execute("ROLLBACK")
+                raise
 
     def read(self, sql: str, parameters: tuple = ()) -> list[sqlite3.Row]:
         with self.lock:

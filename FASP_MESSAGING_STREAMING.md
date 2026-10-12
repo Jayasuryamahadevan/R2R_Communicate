@@ -23,14 +23,14 @@ OPEN_REQUEST → OPEN → ACTIVE → {DRAINING → CLOSED | EXPIRED | FAILED}
                          └────→ PAUSED (backpressure or local safety)
 ```
 
-1. Sender sends signed `stream.open` with capability, purpose, content type,
-   maximum packet size, delivery mode, rate/duration/retention limits, and
-   lease expiry.
+1. Sender sends signed `stream.open` with capability, purpose, recipient,
+   declared fields, content type, delivery mode, rate/duration/retention
+   limits, bounded packet/window sizes, and an absolute lease expiry.
 2. Receiver validates paired identity, grant/capability prefix, local policy,
    resource limits, and data contract. It returns the accepted window and
    stream ID.
-3. Sender emits signed `stream.packet` envelopes for the HTTP baseline, or
-   packet frames bound to the authenticated session for a realtime profile.
+3. Sender emits signed `stream.packet` envelopes for the HTTP baseline or
+   WebSocket channel. Other realtime transport profiles are future extensions.
 4. Receiver sends `stream.ack` credit updates. It may pause or close the stream
    at any time for policy, resource, safety, or expiry reasons.
 5. Sender sends signed `stream.close`; receiver returns `stream.closed`.
@@ -44,18 +44,33 @@ the producer locally. A stream is never an implied right to keep sensing.
 {
   "stream_id": "optional-uuid",
   "capability": "observe.environment.temperature.v1",
-  "purpose": "Show one room temperature chart to the paired operator.",
+  "purpose": "room-temperature-dashboard",
+  "recipient": "fasp:system:receiver-id",
+  "fields": ["temperature_c"],
   "content_type": "application/json",
   "delivery": "reliable",
   "max_payload_bytes": 40960,
   "window": 32,
   "max_rate_hz": 2,
   "duration_s": 300,
+  "expires_at": "2026-10-12T12:05:00Z",
   "retention_packets": 32,
-  "retention": "bounded-local",
-  "stop_condition": "lease expiry or explicit close"
+  "forward_to": [],
+  "grant": {"id": "grant-…", "digest": "sha-256:…"}
 }
 ```
+
+The receiver checks this declaration against its paired-peer capability
+scope, grant, and local `stream_sharing` rule. For `application/json`, a packet
+must contain one complete UTF-8 object; its top-level keys must be a subset of
+`fields`. Duplicate keys, non-finite numbers, invalid JSON, fragmented JSON,
+and undeclared top-level keys are rejected before storage or forwarding.
+Nested JSON values are not recursively filtered, and the generic byte
+transport cannot inspect fields inside binary media. A schema-aware producer
+adapter must validate nested data and serialize only approved binary content.
+`forward_to` is an explicit list of downstream peer IDs; forwarding is denied
+unless both the local rule and contract allow the recipient and that
+recipient's authorization checks pass.
 
 `delivery` is exactly one of:
 
@@ -77,7 +92,7 @@ are encoded in the session frame.
   "stream_id": "stream-uuid",
   "epoch": 0,
   "sequence": 41,
-  "sent_monotonic_ns": 123456789,
+  "sent_monotonic_ms": 123456789,
   "content_type": "application/json",
   "frame_id": "frame-uuid",
   "fragment_index": 0,
@@ -90,9 +105,10 @@ are encoded in the session frame.
 - `epoch` changes only after explicit resume/rekey; consumers discard packets
   from a retired epoch.
 - `sequence` starts at zero for an epoch and is never reused.
-- `sent_monotonic_ns` enables local jitter/age estimates; it is not wall-clock
+- `sent_monotonic_ms` enables local jitter/age estimates; it is not wall-clock
   evidence or a security timestamp.
-- `frame_id` plus fragments permit bounded reassembly of any byte payload.
+- `frame_id` plus fragments permit bounded reassembly of opaque byte payloads;
+  each JSON record must fit in one packet.
 - `checksum` detects corruption independently of transport encryption.
 
 The reference harness caps raw payloads at 40 KiB so base64 and signed-envelope
@@ -138,16 +154,20 @@ out-of-window, expired, checksum-failed, or stale-epoch frames are rejected.
 | `mqtt-dds-bridge` | IoT/ROS 2 environments | topic ACLs plus end-to-end FASP identity and capability checks |
 | `serial-cbor` | microcontrollers and robots | CBOR/COSE frames, fixed windows, local watchdog |
 
-The included harness implements `http-baseline`, plus an optional live-push
-layer on top of it: a paired peer may open `/fasp/v1/channel` (a websocket
+The included harness implements the signed HTTP baseline and a WebSocket
+channel, plus an optional live-push layer on top: a paired peer may open `/fasp/v1/channel` (a websocket
 carrying the identical signed-envelope protocol, frame for frame, as the HTTP
 baseline) and send `stream.subscribe` for a stream_id to receive that stream's
 future packets pushed the moment they arrive, instead of polling `stream.pull`.
 This is push for latency only -- `stream.pull` by sequence number remains the
-durable, resumable source of truth, since a subscription is live-session state
-that does not survive a reconnect (the subscriber simply re-subscribes and, if
-it needs anything sent while disconnected, pulls it). Realtime transports MUST
-bind their session to the paired FASP identities, stream ID, epoch, capability
+durable, resumable source of truth. A subscription is held in memory by the
+forwarding node; it survives a WebSocket reconnect while that node process
+stays up, but not a process restart. If it needs packets missed while
+disconnected, the subscriber pulls them by sequence. Before every push, the
+forwarding node rechecks the recipient's pairing, capability scope, sharing
+policy, grant expiry, and revocation status. It removes a stale subscription;
+already delivered packets cannot be recalled. Realtime transports MUST bind
+their session to the paired FASP identities, stream ID, epoch, capability
 grant, and expiry. A relay/broker is never an authorization authority.
 
 ## 7. Data classes and safety
@@ -195,6 +215,8 @@ the operator explicitly passes `--insecure-http` for an isolated development LAN
 - `stream.backpressure`: sender exceeded credit; slow down or wait for ack.
 - `stream.out_of_order`: reliable sender must retransmit the expected sequence.
 - `stream.checksum_mismatch`: discard frame; retransmit only for reliable mode.
+- `stream.invalid_json`: discard JSON packet; send one complete valid object
+  that fits the accepted packet bound.
 - `stream.invalid_fragment`: discard entire frame and record a bounded audit
   event.
 - `stream.not_open`: do not retry; open/renew a valid stream first.

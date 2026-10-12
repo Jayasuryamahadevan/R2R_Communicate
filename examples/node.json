@@ -53,5 +53,6 @@
   "lease_ttl_s": 15.0,
   "node_id": "edge-a",
   "reconcile_hz": 1.0,
-  "control_plane_watchdog_s": 10.0
+  "control_plane_watchdog_s": 10.0,
+  "stream_sharing": []
 }

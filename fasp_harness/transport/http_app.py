@@ -119,14 +119,43 @@ def _live_gauges(harness: FaspHarness) -> dict[str, int]:
     tracked incrementally -- these change on their own (a lease expiring,
     a stream closing) independent of any request coming through here."""
     gauges: dict[str, int] = {}
-    for row in harness.db.read("SELECT state, COUNT(*) AS n FROM tasks GROUP BY state"):
-        gauges[f'fasp_tasks{{state="{row["state"]}"}}'] = row["n"]
+    legacy_task_states = {
+        "queued": "PROPOSED",
+        "running": "RUNNING",
+        "succeeded": "COMPLETED",
+        "failed": "FAILED",
+        "cancelled": "CANCELLED",
+    }
+    rows = harness.db.read(
+        "SELECT kind, state, phase, COUNT(*) AS n FROM work_items GROUP BY kind, state, phase"
+    )
+    for row in rows:
+        kind, state, phase, count = row["kind"], row["state"], row["phase"], row["n"]
+        generic_key = f'fasp_work_items{{kind="{kind}",state="{state}"}}'
+        gauges[generic_key] = gauges.get(generic_key, 0) + count
+        if kind == "intent":
+            legacy_state = legacy_task_states[state]
+            if phase == "rejected":
+                legacy_state = "REJECTED"
+            elif phase == "cancel_requested":
+                legacy_state = "CANCEL_PENDING"
+            key = f'fasp_tasks{{state="{legacy_state}"}}'
+            gauges[key] = gauges.get(key, 0) + count
+        elif kind == "mission":
+            if state == "succeeded":
+                legacy_state = "COMPLETED"
+            elif state == "cancelled":
+                legacy_state = "CANCELLED"
+            elif state == "failed":
+                legacy_state = "REJECTED" if phase == "rejected" else "FAILED"
+            else:
+                legacy_state = str(phase or ("accepted" if state == "queued" else "running")).upper()
+            key = f'fasp_missions{{state="{legacy_state}"}}'
+            gauges[key] = gauges.get(key, 0) + count
     active_streams = harness.db.read_one("SELECT COUNT(*) AS n FROM streams WHERE state = 'open'")
     gauges["fasp_active_streams"] = active_streams["n"] if active_streams else 0
     active_reservations = harness.db.read_one("SELECT COUNT(*) AS n FROM reservations WHERE state = 'granted'")
     gauges["fasp_active_reservations"] = active_reservations["n"] if active_reservations else 0
-    for row in harness.db.read("SELECT state, COUNT(*) AS n FROM missions GROUP BY state"):
-        gauges[f'fasp_missions{{state="{row["state"]}"}}'] = row["n"]
     for row in harness.db.read("SELECT state, COUNT(*) AS n FROM outbox GROUP BY state"):
         gauges[f'fasp_outbox{{state="{row["state"]}"}}'] = row["n"]
     if harness.supervisor is not None:

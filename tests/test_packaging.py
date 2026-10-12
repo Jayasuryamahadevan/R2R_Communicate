@@ -9,16 +9,18 @@ because the files were on disk regardless.
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from fasp_harness.storage.db import MIGRATIONS_DIR, Database
+from fasp_harness.storage.work_items_repo import WorkItemsRepo
 
 EXPECTED_TABLES = {
     "peers",
     "envelopes_inbox",
-    "tasks",
+    "work_items",
     "grants",
     "revocations",
     "audit_log",
@@ -30,7 +32,6 @@ EXPECTED_TABLES = {
     "safety_events",
     "leases",
     "outbox",
-    "missions",
     "twin_observations",
 }
 
@@ -62,6 +63,38 @@ class PackagingTests(unittest.TestCase):
             first.connection.execute("INSERT INTO leases (name, holder, fence, acquired_at, renewed_at, expires_at_ms) VALUES ('x', 'n', 1, 'a', 'b', 1)")
             second = Database(path)
             self.assertEqual(second.read_one("SELECT COUNT(*) AS n FROM leases")["n"], 1)
+
+    def test_unified_work_migration_preserves_intents_and_missions(self) -> None:
+        """The lifecycle consolidation must upgrade existing node databases."""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "fasp.db"
+            connection = sqlite3.connect(path)
+            migrations = sorted(MIGRATIONS_DIR.glob("*.sql"))
+            for version, migration in enumerate(migrations[:7], start=1):
+                connection.executescript(
+                    "BEGIN IMMEDIATE;\n"
+                    + migration.read_text(encoding="utf-8")
+                    + f"\nPRAGMA user_version = {version};\nCOMMIT;"
+                )
+            connection.execute(
+                "INSERT INTO tasks (idempotency_key, intent_id, capability, from_peer, state, error_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                ("intent-1", "request-1", "observe.status.v1", "peer-1", "REJECTED", '{"code":"denied"}', "2026-01-01T00:00:00Z", "2026-01-01T00:00:01Z"),
+            )
+            connection.execute(
+                "INSERT INTO missions (mission_id, requested_by, state, priority, definition_json, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                ("mission-1", "peer-2", "COMPLETED", 2, '{"destination":"dock-7"}', "2026-01-01T00:00:00Z", "2026-01-01T00:01:00Z"),
+            )
+            connection.commit()
+            connection.close()
+
+            db = Database(path)
+            work_items = WorkItemsRepo(db)
+            intent = work_items.get("intent:intent-1", "intent")
+            mission = work_items.get("mission:mission-1", "mission")
+            self.assertEqual((intent["state"], intent["phase"], intent["error"]), ("failed", "rejected", {"code": "denied"}))
+            self.assertEqual((mission["state"], mission["payload"], mission["priority"]), ("succeeded", {"destination": "dock-7"}, 2))
 
 
 if __name__ == "__main__":

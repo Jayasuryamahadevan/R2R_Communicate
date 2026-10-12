@@ -7,13 +7,14 @@
 <p align="center">
   <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml/badge.svg"></a>
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-559%20passing-brightgreen">
+  <img alt="Test cases" src="https://img.shields.io/badge/test%20cases-571-blue">
   <img alt="Dependencies" src="https://img.shields.io/badge/runtime%20deps-5-brightgreen">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey"></a>
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
+  <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
   <a href="#operator-commands">Operator commands</a> ·
@@ -197,6 +198,16 @@ distinct.** A slow capability's synchronous wait is capped at its own declared
 either polls `task.status` or — if connected over `/fasp/v1/channel` — is
 pushed the eventual result the moment it completes.
 
+Intent requests and fleet missions use one durable work-item lifecycle and
+one status model. Read [WORK_ITEMS.md](WORK_ITEMS.md) for how task status,
+mission phases, idempotency, and recovery fit together.
+
+The deployment architecture follows a node-first mesh model: each node owns
+its identity, local policy, and durable work. Direct HTTP and WebSocket links
+are implemented; a production relay for unreachable peers is a separate
+extension. See [ARCHITECTURE.md](ARCHITECTURE.md) for the deployment diagram,
+stream-sharing boundaries, and implementation status.
+
 ---
 
 ## Spatial coordination
@@ -350,15 +361,16 @@ widens it.
 </td></tr>
 <tr><th align="left">Execution</th><td>
 
-Full `PROPOSED → RUNNING → {COMPLETED | FAILED | CANCELLED}` state machine with
-real cancellation racing · a startup sweep resolving tasks stuck `RUNNING` by a
-prior crash to a safe terminal state instead of replaying them · bounded worker
-pool with a real wall-clock timeout and durable backpressure.
+Shared `queued → running → succeeded | failed | cancelled` lifecycle for
+capability work and fleet missions · mission progress such as preflight and
+assignment is kept in `phase` · stale intent leases fail safely after restart
+instead of replaying a possibly completed effect · bounded worker pool with a
+real wall-clock timeout and durable backpressure. See [WORK_ITEMS.md](WORK_ITEMS.md).
 
 </td></tr>
 <tr><th align="left">Durability</th><td>
 
-SQLite (WAL), one `fasp.db` per system, 7 versioned migrations · durable
+SQLite (WAL), one `fasp.db` per system, versioned migrations · durable
 inbox/replay cache · content-addressed artifacts referenced by digest instead
 of inflating an envelope past its 64 KiB cap · tamper-evident hash-chained
 audit log, verifiable with `AuditChain.verify()`.
@@ -376,7 +388,8 @@ always a latency optimization over durable state, never a replacement for it.
 
 Reliable/latest modes, sequence windows, fragmentation, integrity checks,
 acknowledgements, backpressure, and an opt-in `stream.subscribe` push channel
-on top of durable `stream.pull`.
+on top of durable `stream.pull` · JSON top-level field enforcement · live
+recipient grant and peer revalidation before each forwarded packet.
 
 </td></tr>
 <tr><th align="left">Hardening</th><td>

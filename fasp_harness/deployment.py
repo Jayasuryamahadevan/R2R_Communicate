@@ -39,6 +39,7 @@ from .fleet.model import Pose
 from .fleet.service import MissionService
 from .fleet.simulated import SimulatedFleetManager
 from .layers import LayerGuard
+from .policy.sharing import StreamSharingPolicy
 from .protocol.errors import FaspError
 from .realtime.scheduler import CyclicExecutor, OverrunPolicy
 from .realtime.watchdog import DeadlineWatchdog
@@ -87,6 +88,9 @@ class NodeConfig:
     # Loops
     reconcile_hz: float = 1.0
     control_plane_watchdog_s: float = 10.0
+
+    # Explicit per-peer stream allowlist. Empty means no remote data streams.
+    stream_sharing: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_file(cls, path: Path) -> NodeConfig:
@@ -308,7 +312,15 @@ def build_node(config: NodeConfig, *, adapter: Any = None, enforce_posture: bool
     # The harness owns the database, so anything that needs durable state
     # is built after it and handed its connection -- one file, one lock,
     # one set of migrations.
-    harness = FaspHarness(config.state_dir, config.name, config.base_url, adapter, supervisor=supervisor, layer_guard=LayerGuard())
+    harness = FaspHarness(
+        config.state_dir,
+        config.name,
+        config.base_url,
+        adapter,
+        supervisor=supervisor,
+        layer_guard=LayerGuard(),
+        stream_sharing=StreamSharingPolicy.from_config(config.stream_sharing),
+    )
     lease = LeaderLease(harness.db, config.lease_name, node_id=config.node_id, ttl_s=config.lease_ttl_s) if config.ha_enabled else None
     outbox = Outbox(harness.db)
 
@@ -321,6 +333,7 @@ def build_node(config: NodeConfig, *, adapter: Any = None, enforce_posture: bool
         twin=twin,
         reservations=harness.reservations,
         lease=lease,
+        work_items=harness.work_items,
     )
     harness.missions = missions
 

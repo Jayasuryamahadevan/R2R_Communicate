@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import threading
@@ -30,8 +31,10 @@ from .layers import CapabilityDeclaration, LayerGuard, describe_layers
 from .observability.metrics import MetricsRegistry
 from .platforms import runtime_profile
 from .policy import capability as capability_policy
+from .policy.capabilities import allows as capability_allowed
 from .policy.grants import validate_grant_if_required
 from .policy.ratelimit import TokenBucketLimiter
+from .policy.sharing import StreamSharingPolicy
 from .robotics import LocalSafetyGate, ReservationBook
 from .safety.interlock import SafetySupervisor
 from .storage.db import Database
@@ -42,6 +45,7 @@ from .storage.reservations_repo import ReservationsRepo
 from .storage.revocations_repo import RevocationsRepo
 from .storage.streams_repo import StreamsRepo
 from .storage.tasks_repo import TERMINAL_STATES, TasksRepo
+from .storage.work_items_repo import WorkItemsRepo
 from .streaming import StreamRegistry
 from .timestamps import now, parse_stamp, stamp
 
@@ -94,12 +98,14 @@ def _task_response(task: dict[str, Any]) -> dict[str, Any]:
         return {"type": "task.cancelled", "idempotency_key": task["idempotency_key"]}
     if state == "REJECTED":
         error = task["error"] or {}
-        return {"type": "task.fail", "intent_id": task["intent_id"], "idempotency_key": task["idempotency_key"], "status": "rejected", "error": error, "completed_at": task["updated_at"]}
-    # PROPOSED / RUNNING / CANCEL_PENDING: not yet resolved to a terminal
-    # outcome. This reference harness's synchronous adapter model makes
-    # observing one of these from a second caller rare, but not impossible
-    # under real thread concurrency (see tests/test_cancellation.py).
-    return {"type": "task.progress", "idempotency_key": task["idempotency_key"], "status": state.lower()}
+        return {"type": "task.fail", "intent_id": task["intent_id"], "idempotency_key": task["idempotency_key"], "status": "failed", "phase": "rejected", "error": error, "completed_at": task["updated_at"]}
+    # The legacy task view projects PROPOSED to queued and CANCEL_PENDING to
+    # the running phase `cancel_requested`.
+    status = "queued" if state == "PROPOSED" else "running"
+    response = {"type": "task.progress", "idempotency_key": task["idempotency_key"], "status": status}
+    if state == "CANCEL_PENDING":
+        response["phase"] = "cancel_requested"
+    return response
 
 
 def _plain_json(value: Any) -> bytes:
@@ -198,9 +204,10 @@ class FaspHarness:
         supervisor: SafetySupervisor | None = None,
         missions: MissionService | None = None,
         layer_guard: LayerGuard | None = None,
+        stream_sharing: StreamSharingPolicy | None = None,
     ) -> None:
         # JsonState still backs receipts.json and the admin_token file --
-        # everything else (peers, tasks, grants, streams, reservations,
+        # everything else (peers, work items, grants, streams, reservations,
         # artifacts) is on SQLite as of Phase 7.
         self.state = JsonState(state_dir)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
@@ -208,7 +215,8 @@ class FaspHarness:
         self.audit = AuditChain(self.db, self.identity.system_id)
         self.peers = PeersRepo(self.db, self.audit)
         self.inbox = InboxRepo(self.db)
-        self.tasks = TasksRepo(self.db, self.audit)
+        self.work_items = WorkItemsRepo(self.db, self.audit)
+        self.tasks = TasksRepo(self.db, self.audit, self.work_items)
         self.grants = GrantsRepo(self.db, self.audit)
         self.revocations = RevocationsRepo(self.db, self.audit)
         self.artifacts = ArtifactStore(self.db, state_dir)
@@ -223,6 +231,7 @@ class FaspHarness:
         self.layer_guard = layer_guard or LayerGuard()
         self.capability_declarations = {declaration.id: declaration for declaration in self.layer_guard.validate_adapter(self.adapter.capabilities())}
         self.streams = StreamRegistry(StreamsRepo(self.db))
+        self.stream_sharing = stream_sharing or StreamSharingPolicy()
         self.reservations = ReservationBook(ReservationsRepo(self.db))
         self.safety_gate = safety_gate
         # Layers 1-3 integration, all optional: a plain coordination node
@@ -237,7 +246,7 @@ class FaspHarness:
         # a hung thread, but it can stop waiting on one), a hard concurrency
         # bound (adapter_concurrency workers, not one thread per in-flight
         # HTTP request), and durable admission control: max_inflight_tasks
-        # is enforced against the `tasks` table itself (see
+        # is enforced against the shared work-item store (see
         # TasksRepo.count_inflight), so the backlog bound survives a
         # restart instead of living only in process memory.
         self._executor = ThreadPoolExecutor(max_workers=adapter_concurrency, thread_name_prefix="fasp-adapter")
@@ -492,17 +501,17 @@ class FaspHarness:
         capability = intent.get("capability", "")
         if not isinstance(key, str) or not key or not isinstance(capability, str):
             raise FaspError("schema.invalid", "Intent requires idempotency_key and capability.")
-        if not any(capability.startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+        if not capability_allowed(capability, peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Paired peer is not granted this capability prefix.")
 
-        # Durable backpressure (ss15 #8): the `tasks` table itself is this
+        # Durable backpressure (ss15 #8): the shared work-item store is this
         # queue's depth counter, so the bound holds across a restart rather
         # than resetting with an in-memory one -- a saturated backlog is
         # rejected up front instead of growing without limit.
         if self.tasks.count_inflight() >= self.max_inflight_tasks:
             raise FaspError("resource.exhausted", "Task queue is at capacity; retry later.")
 
-        # Creation of the PROPOSED row is what makes this idempotent (ss7.1):
+        # Creation of the queued work item is what makes this idempotent (ss7.1):
         # a duplicate of the same idempotency_key can never race past this
         # point twice, and a duplicate arriving on a later request always
         # finds the first one already terminal (or still genuinely in
@@ -538,8 +547,8 @@ class FaspHarness:
         max_runtime_s = capabilities[capability].get("max_runtime_s")
         lease_seconds = float(max_runtime_s) if isinstance(max_runtime_s, (int, float)) and max_runtime_s > 0 else DEFAULT_TASK_LEASE.total_seconds()
         if not self.tasks.start_running(key, stamp(now() + timedelta(seconds=lease_seconds)), stamp()):
-            # Lost a race to a concurrent task.cancel that reached the row
-            # first (PROPOSED -> CANCELLED); report that outcome, not ours.
+            # Lost a race to a concurrent task.cancel; report the stored
+            # outcome rather than starting the adapter call.
             return _task_response(self.tasks.get(key))
 
         return self._run_adapter_bounded(key, intent, envelope["from"], lease_seconds)
@@ -666,7 +675,11 @@ class FaspHarness:
 
         if task["state"] == "CANCELLED":
             return {"type": "task.cancelled", "idempotency_key": key}
-        return {"type": "task.too_late", "idempotency_key": key, "status": task["state"].lower(), "outcome": _task_response(task)}
+        status = "queued" if task["state"] == "PROPOSED" else "running" if task["state"] in {"RUNNING", "CANCEL_PENDING"} else task["state"].lower()
+        response = {"type": "task.too_late", "idempotency_key": key, "status": status, "outcome": _task_response(task)}
+        if task["state"] == "CANCEL_PENDING":
+            response["phase"] = "cancel_requested"
+        return response
 
     def _handle_task_status(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         """Poll an intent.propose's outcome by idempotency_key (ss7.1, ss15
@@ -706,9 +719,126 @@ class FaspHarness:
         return {"ok": True}
 
     def _authorize_stream(self, envelope: dict[str, Any], peer: dict[str, Any]) -> None:
-        capability = envelope["payload"].get("capability", "observe.stream.v1")
-        if not isinstance(capability, str) or not any(capability.startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+        capability = envelope["payload"].get("capability")
+        if not isinstance(capability, str) or not capability_allowed(capability, peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Paired peer is not authorized for this stream capability.")
+
+    def _validate_stream_grant(
+        self,
+        peer_id: str,
+        contract: dict[str, Any],
+        grant_ref: Any,
+        require_grant: bool,
+    ) -> None:
+        grant_id: str | None = None
+        grant = None
+        if grant_ref is not None:
+            if not isinstance(grant_ref, dict) or set(grant_ref) != {"id", "digest"}:
+                raise FaspError("schema.invalid", "Stream grant must contain exactly id and digest.")
+            grant_id = grant_ref.get("id")
+            if not isinstance(grant_id, str) or not grant_id:
+                raise FaspError("schema.invalid", "Stream grant id is invalid.")
+            grant = self.grants.get(grant_id)
+            if grant is None or grant_ref.get("digest") != grant["digest"]:
+                raise FaspError("auth.invalid_grant", "Stream grant digest is invalid.")
+        validate_grant_if_required(
+            self.grants,
+            peer_id,
+            contract["capability"],
+            grant_id,
+            require_grant,
+            expected_purpose=contract["purpose"],
+        )
+        if grant is None:
+            return
+        constraints = grant["constraints"] or {}
+        if not isinstance(constraints, dict):
+            raise FaspError("auth.not_authorized", "Stream grant constraints are invalid.")
+        for name, contract_field in (("fields", "fields"), ("forward_to", "forward_to")):
+            if name in constraints:
+                allowed = constraints[name]
+                if not isinstance(allowed, list) or any(not isinstance(item, str) for item in allowed):
+                    raise FaspError("auth.not_authorized", "Stream grant constraints are invalid.")
+                if not set(contract[contract_field]) <= set(allowed):
+                    raise FaspError("auth.not_authorized", f"Stream {name} exceed the grant constraints.")
+        if "delivery_modes" in constraints:
+            allowed_modes = constraints["delivery_modes"]
+            if not isinstance(allowed_modes, list) or any(not isinstance(item, str) for item in allowed_modes) or contract["delivery"] not in allowed_modes:
+                raise FaspError("auth.not_authorized", "Stream delivery mode exceeds the grant constraints.")
+        for limit_name, field in (
+            ("max_rate_hz", "max_rate_hz"),
+            ("max_duration_s", "duration_s"),
+            ("max_payload_bytes", "max_payload_bytes"),
+            ("max_window", "window"),
+            ("max_retention_packets", "retention_packets"),
+        ):
+            if limit_name in constraints:
+                limit = constraints[limit_name]
+                if (
+                    isinstance(limit, bool)
+                    or not isinstance(limit, (int, float))
+                    or not math.isfinite(limit)
+                    or limit < 0
+                ):
+                    raise FaspError("auth.not_authorized", "Stream grant constraints are invalid.")
+                if contract[field] > limit:
+                    raise FaspError("auth.not_authorized", f"Stream {field} exceeds the grant constraints.")
+
+    def _authorize_existing_stream(self, envelope: dict[str, Any], peer: dict[str, Any], stream_id: Any) -> dict[str, Any]:
+        if not isinstance(stream_id, str):
+            raise FaspError("schema.invalid", "Stream operation requires stream_id.")
+        stream = self.streams.repo.get(stream_id)
+        if stream is None or stream["state"] != "open":
+            raise FaspError("stream.not_open", "Stream is not available.")
+        expires_at = stream.get("expires_at")
+        if not isinstance(expires_at, str) or parse_stamp(expires_at) <= now():
+            self.streams.expire(stream_id)
+            raise FaspError("lease.expired", "Stream lease has expired.")
+        contract = stream["contract"]
+        capability = envelope["payload"].get("capability", contract["capability"])
+        if capability != contract["capability"] or not capability_allowed(capability, peer["allowed_capability_prefixes"]):
+            raise FaspError("auth.not_authorized", "Peer is not authorized for this stream capability.")
+        rule, current_contract = self.stream_sharing.authorize_open(stream["owner"], self.identity.system_id, contract)
+        for key in ("capability", "purpose", "fields", "content_type", "delivery", "max_rate_hz", "duration_s", "expires_at", "max_payload_bytes", "window", "retention_packets", "forward_to", "recipient"):
+            if current_contract.get(key) != contract.get(key):
+                raise FaspError("auth.not_authorized", "Stream contract no longer matches local sharing policy.")
+
+        is_owner = envelope["from"] == stream["owner"]
+        if is_owner:
+            self._validate_stream_grant(stream["owner"], contract, contract.get("grant"), rule.require_grant)
+        else:
+            if envelope["from"] not in contract["forward_to"]:
+                raise FaspError("auth.not_authorized", "Stream owner did not authorize this recipient.")
+            recipient_contract = dict(contract)
+            recipient_contract["forward_to"] = []
+            self._validate_stream_grant(envelope["from"], recipient_contract, envelope["payload"].get("grant"), True)
+        return stream
+
+    def _stream_subscriber_is_authorized(
+        self,
+        stream: dict[str, Any],
+        subscriber_id: str,
+        grant_ref: dict[str, str],
+    ) -> bool:
+        """Recheck recipient consent and peer state immediately before forwarding."""
+        envelope = {
+            "from": subscriber_id,
+            "payload": {
+                "stream_id": stream["stream_id"],
+                "capability": stream["contract"]["capability"],
+                "grant": grant_ref,
+            },
+        }
+        try:
+            peer = self._peer(subscriber_id)
+            self._authorize_existing_stream(envelope, peer, stream["stream_id"])
+        except FaspError:
+            # A stale subscription must not block the producer's packet. Drop
+            # this recipient and leave durable pull available if they later
+            # obtain new consent and subscribe again.
+            self.streams.unsubscribe(subscriber_id, stream["stream_id"])
+            return False
+        return True
 
     def stream_open(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="stream.open")
@@ -716,7 +846,12 @@ class FaspHarness:
 
     def _handle_stream_open(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         self._authorize_stream(envelope, peer)
-        return self.streams.open(envelope["from"], envelope["payload"])
+        rule, contract = self.stream_sharing.authorize_open(envelope["from"], self.identity.system_id, envelope["payload"])
+        self._validate_stream_grant(envelope["from"], contract, envelope["payload"].get("grant"), rule.require_grant)
+        grant_ref = envelope["payload"].get("grant")
+        if grant_ref is not None:
+            contract["grant"] = dict(grant_ref)
+        return self.streams.open(envelope["from"], contract)
 
     def stream_packet(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="stream.packet")
@@ -725,6 +860,7 @@ class FaspHarness:
     def _handle_stream_packet(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         self._authorize_stream(envelope, peer)
         payload = envelope["payload"]
+        self._authorize_existing_stream(envelope, peer, payload.get("stream_id"))
         ack = self.streams.packet(envelope["from"], payload)
         # Live push (ss13 streaming profile): a genuinely new (non-
         # duplicate, non-retransmit) packet is fanned out immediately to
@@ -733,8 +869,25 @@ class FaspHarness:
         # notification, or a subscriber with no open channel, misses.
         if not ack["duplicate"]:
             stream_id = payload["stream_id"]
-            message = {"fasp": PROTOCOL, "type": "stream.push", "stream_id": stream_id, "packet": payload}
-            for subscriber in self.streams.subscribers_of(stream_id):
+            stream = self.streams.repo.get(stream_id)
+            if stream is None:
+                return ack
+            for subscriber, grant_ref in self.streams.subscription_grants_of(stream_id).items():
+                if not self._stream_subscriber_is_authorized(stream, subscriber, grant_ref):
+                    continue
+                message = sign(
+                    {
+                        "fasp": PROTOCOL,
+                        "type": "stream.push",
+                        "stream_id": stream_id,
+                        "origin_peer": envelope["from"],
+                        "forwarder_peer": self.identity.system_id,
+                        "recipient_peer": subscriber,
+                        "packet": payload,
+                    },
+                    self.identity.private,
+                    self.identity.kid,
+                )
                 self.channels.push(subscriber, message)
         return ack
 
@@ -745,8 +898,7 @@ class FaspHarness:
     def _handle_stream_pull(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         self._authorize_stream(envelope, peer)
         payload = envelope["payload"]
-        if not isinstance(payload.get("stream_id"), str):
-            raise FaspError("schema.invalid", "stream.pull requires stream_id.")
+        self._authorize_existing_stream(envelope, peer, payload.get("stream_id"))
         return self.streams.pull(envelope["from"], payload["stream_id"], int(payload.get("after_sequence", -1)))
 
     def stream_subscribe(self, envelope: dict[str, Any]) -> dict[str, Any]:
@@ -760,9 +912,8 @@ class FaspHarness:
         never an error, and `stream.pull` always still works regardless."""
         self._authorize_stream(envelope, peer)
         payload = envelope["payload"]
-        if not isinstance(payload.get("stream_id"), str):
-            raise FaspError("schema.invalid", "stream.subscribe requires stream_id.")
-        return self.streams.subscribe(envelope["from"], payload["stream_id"])
+        self._authorize_existing_stream(envelope, peer, payload.get("stream_id"))
+        return self.streams.subscribe(envelope["from"], payload["stream_id"], payload["grant"])
 
     def stream_unsubscribe(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="stream.unsubscribe")
@@ -791,7 +942,7 @@ class FaspHarness:
         return response
 
     def _handle_reservation_request(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
-        if not any("fleet.reserve.v1".startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+        if not capability_allowed("fleet.reserve.v1", peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Peer is not authorized for fleet reservations.")
         return self.reservations.request(envelope["from"], envelope["payload"])
 
@@ -800,7 +951,7 @@ class FaspHarness:
         return response
 
     def _handle_reservation_release(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
-        if not any("fleet.reserve.v1".startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+        if not capability_allowed("fleet.reserve.v1", peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Peer is not authorized for fleet reservations.")
         reservation_id = envelope["payload"].get("reservation_id")
         if not isinstance(reservation_id, str):
@@ -878,7 +1029,7 @@ class FaspHarness:
         return self.supervisor.evidence()
 
     def _require_prefix(self, peer: dict[str, Any], capability: str) -> None:
-        if not any(capability.startswith(prefix) for prefix in peer["allowed_capability_prefixes"]):
+        if not capability_allowed(capability, peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", f"Paired peer is not authorized for {capability!r}.")
 
     def mission_dispatch(self, envelope: dict[str, Any]) -> dict[str, Any]:

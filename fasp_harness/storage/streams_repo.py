@@ -20,22 +20,44 @@ class StreamsRepo:
         row = self.db.read_one("SELECT * FROM streams WHERE stream_id = ?", (stream_id,))
         return _row_to_stream(row) if row is not None else None
 
-    def open(self, stream_id: str, owner: str, delivery: str, content_type: str, max_payload_bytes: int, window: int, retention_packets: int) -> dict[str, Any]:
+    def open(self, stream_id: str, owner: str, contract: dict[str, Any]) -> dict[str, Any]:
         with self.db.write() as conn:
             conn.execute(
-                "INSERT INTO streams (stream_id, owner, state, delivery, content_type, max_payload_bytes, window, retention_packets, next_expected, last_sequence, opened_at_monotonic_ns) "
-                "VALUES (?, ?, 'open', ?, ?, ?, ?, ?, 0, -1, ?)",
-                (stream_id, owner, delivery, content_type, max_payload_bytes, window, retention_packets, time.monotonic_ns()),
+                "INSERT INTO streams (stream_id, owner, state, delivery, content_type, max_payload_bytes, window, retention_packets, next_expected, last_sequence, opened_at_monotonic_ns, contract_json, expires_at) "
+                "VALUES (?, ?, 'open', ?, ?, ?, ?, ?, 0, -1, ?, ?, ?)",
+                (
+                    stream_id,
+                    owner,
+                    contract["delivery"],
+                    contract["content_type"],
+                    contract["max_payload_bytes"],
+                    contract["window"],
+                    contract["retention_packets"],
+                    time.monotonic_ns(),
+                    json.dumps(contract, sort_keys=True, separators=(",", ":")),
+                    contract["expires_at"],
+                ),
             )
         stream = self.get(stream_id)
         assert stream is not None
         return stream
 
-    def advance(self, stream_id: str, next_expected: int, last_sequence: int, retained_packet: dict[str, Any] | None, retention_packets: int) -> None:
+    def advance(
+        self,
+        stream_id: str,
+        next_expected: int,
+        last_sequence: int,
+        retained_packet: dict[str, Any] | None,
+        retention_packets: int,
+        received_at: str,
+    ) -> None:
         """Advance a stream's sequence state and, if retention is enabled,
         append + prune the retained-packet window in the same transaction."""
         with self.db.write() as conn:
-            conn.execute("UPDATE streams SET next_expected = ?, last_sequence = ? WHERE stream_id = ?", (next_expected, last_sequence, stream_id))
+            conn.execute(
+                "UPDATE streams SET next_expected = ?, last_sequence = ?, last_packet_at = ? WHERE stream_id = ?",
+                (next_expected, last_sequence, received_at, stream_id),
+            )
             if retained_packet is not None and retention_packets:
                 conn.execute(
                     "INSERT INTO stream_packets (stream_id, sequence, packet_json) VALUES (?, ?, ?)",
@@ -73,4 +95,7 @@ def _row_to_stream(row: Any) -> dict[str, Any]:
         "retention_packets": row["retention_packets"],
         "next_expected": row["next_expected"],
         "last_sequence": row["last_sequence"],
+        "contract": json.loads(row["contract_json"]),
+        "expires_at": row["expires_at"],
+        "last_packet_at": row["last_packet_at"],
     }
