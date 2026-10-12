@@ -27,6 +27,11 @@ jobs:
           python -m pip wheel --no-deps --wheel-dir dist .
           python -m venv /tmp/fasp-wheel-verify
           /tmp/fasp-wheel-verify/bin/python -m pip install dist/fasp_harness-*.whl
+          # Exercise the actual installed agent binary, not only Python imports.
+          /tmp/fasp-wheel-verify/bin/fasp --help | grep -q 'communicate'
+          /tmp/fasp-wheel-verify/bin/fasp serve --help | grep -q 'state-dir'
+          /tmp/fasp-wheel-verify/bin/fasp init --name wheel-ci --state-dir /tmp/fasp-cli-verify > /tmp/fasp-cli-init.json
+          /tmp/fasp-wheel-verify/bin/fasp peers --state-dir /tmp/fasp-cli-verify | grep -q '"peers":\[\]'
           cd /tmp
           /tmp/fasp-wheel-verify/bin/python - <<'CHECK'
           from pathlib import Path
