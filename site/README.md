@@ -7,9 +7,15 @@ Plain static HTML with a small, dependency-free generator. There is no
 entire toolchain.
 
 ```bash
-node site/build.mjs      # site/pages -> docs/
-node site/check-links.mjs # fail on a dead page, anchor, asset or repo path
+node site/build.mjs        # site/pages -> docs/
+node site/check-links.mjs  # dead page, anchor, asset or repo path
+node site/audit-layout.mjs # overflow, overlap, clipped text, misaligned cards
+node site/audit-contrast.mjs # WCAG AA, and band visibility per theme
 ```
+
+The two audits drive a real headless Chrome over the built site at eight
+viewport widths in both themes. They start their own server and browser, so
+they need no setup. Set `CHROME_BIN` if Chrome is not on `PATH`.
 
 To preview locally:
 
@@ -32,6 +38,9 @@ page is one file rather than seven edits.
 | `site/layout.mjs` | The HTML shell: head, header, sidebar, pager, footer, search dialog. |
 | `site/nav.mjs` | Site constants and the primary navigation order. |
 | `site/check-links.mjs` | Link and anchor checker, run in CI and before deploy. |
+| `site/audit-harness.mjs` | Shared server + headless browser harness for the audits. |
+| `site/audit-layout.mjs` | Overflow, overlap, clipping and card-alignment checks. |
+| `site/audit-contrast.mjs` | WCAG AA contrast and section-band visibility. |
 | `site/pages/*.html` | **All content lives here.** One file per page. |
 | `site/assets/` | `styles.css`, `script.js`, icons. Copied verbatim. |
 | `site/static/` | Pass-through files such as `.nojekyll`. |
@@ -84,6 +93,16 @@ facts:
   with hard-coded colours.
 - **The site works without JavaScript.** Search, scroll-spy and the theme toggle
   are enhancements; navigation and content do not depend on them.
+- **Components must not inherit page-level prose spacing.** Headings inside a
+  component are reset by the component, never by a later page-level rule. The
+  page-level defaults use `:where()` so their specificity is zero; otherwise
+  `.home h3` silently wins over `.card h3` and a row of cards falls apart.
+- **The band is an override layer, defined last.** `.band-dark` recolours a
+  whole region, so it sits at the end of the stylesheet rather than relying on
+  selector specificity. Add an entry there for any component colour.
+- **Both themes live in one token block** using `light-dark()`. The theme toggle
+  only sets `color-scheme`. Do not add a second dark palette block — that is
+  how the two themes drift apart.
 
 ## Regenerating the social card
 

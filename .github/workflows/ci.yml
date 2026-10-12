@@ -26,6 +26,14 @@ jobs:
       - name: Verify internal links resolve
         run: node site/check-links.mjs
 
+      # Rendered checks. These catch the failures unit tests cannot see:
+      # text overlapping text, content escaping the viewport, and contrast
+      # that silently breaks when a colour token changes.
+      - name: Verify layout
+        run: node site/audit-layout.mjs
+      - name: Verify colour contrast
+        run: node site/audit-contrast.mjs
+
   test:
     runs-on: ubuntu-latest
     strategy:

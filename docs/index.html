@@ -165,12 +165,12 @@
         <p><code>ACTUATE</code> appears in no permitted set for any layer. A peer can ask for a goal, a halt, or an observation. It cannot ask for an action, because the word does not exist on the wire.</p>
       </article>
       <article class="card">
-        <p class="card-kicker">Rule 2 · semantic deny list</p>
+        <p class="card-kicker">Rule 2 · deny list</p>
         <h3>Meaning is checked, not names.</h3>
         <p>A declaration is exactly what a mistake gets wrong, so capabilities whose <em>meaning</em> is a Layer 1 function are refused whatever layer they declare — <code>estop.clear</code>, <code>safety.zone.mute</code>, <code>brake.release</code>, <code>motor.setpoint</code>.</p>
       </article>
       <article class="card">
-        <p class="card-kicker">Rule 3 · no clear message</p>
+        <p class="card-kicker">Rule 3 · one-way halt</p>
         <h3>Halt is one-way.</h3>
         <p>There is no <code>safety.clear</code> envelope kind. <code>safety.halt</code> can be requested over a network; clearing it is local, physical work at the machine.</p>
       </article>

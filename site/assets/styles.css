@@ -2,30 +2,44 @@
 
 /* ============================================================ design tokens */
 
+/* One declaration per token, both themes in the same place.
+   light-dark() follows `color-scheme`, so the theme toggle only has to set
+   color-scheme below. Duplicating the dark palette in a second block is how
+   the two themes drift apart. */
 :root {
-  --ink: #16222a;
-  --ink-2: #3d4d55;
-  --muted: #63717b;
-  --faint: #8c989e;
-  --paper: #f3f5f1;
-  --surface: #ffffff;
-  --surface-2: #f8faf7;
-  --line: #dbe3de;
-  --line-soft: #e8eeea;
-  --accent: #1e7b63;
-  --accent-soft: #e6f4ec;
-  --accent-line: #a8d9c2;
+  color-scheme: light dark;
+
+  --ink: light-dark(#16222a, #e7efea);
+  --ink-2: light-dark(#3d4d55, #c2d0c8);
+  --muted: light-dark(#57646c, #93a49c);
+  --faint: light-dark(#626c74, #879690);
+  --paper: light-dark(#f3f5f1, #0d1519);
+  --surface: light-dark(#ffffff, #131e22);
+  --surface-2: light-dark(#f8faf7, #182429);
+  --line: light-dark(#dbe3de, #24343a);
+  --line-soft: light-dark(#e8eeea, #1d2a2f);
+
+  --accent: light-dark(#1e7b63, #5fd3ac);
+  --accent-soft: light-dark(#e6f4ec, #10261f);
+  --accent-line: light-dark(#a8d9c2, #1f4b3d);
   --mint: #89f1ca;
-  --deep: #101b24;
-  --deep-2: #16272c;
-  --on-deep: #e9f2eb;
-  --on-deep-muted: #9db2a8;
-  --amber: #a2681a;
-  --amber-soft: #fdf2e2;
-  --amber-line: #e8cfa4;
-  --rose: #9b3d32;
-  --rose-soft: #fbecea;
-  --rose-line: #e9c3bd;
+
+  /* Code surfaces. The band is the alternating section colour and must stay
+     visibly different from --paper in BOTH themes, or the section rhythm
+     silently disappears in dark mode. */
+  --deep: light-dark(#101b24, #080e11);
+  --deep-2: light-dark(#16272c, #101a1e);
+  --band: light-dark(#101b24, #1c2e35);
+  --band-2: light-dark(#16272c, #223840);
+  --on-band: light-dark(#e9f2eb, #e3efea);
+  --on-band-muted: light-dark(#9db2a8, #9db2a8);
+
+  --amber: light-dark(#8a5310, #e2b071);
+  --amber-soft: light-dark(#fdf2e2, #241a0e);
+  --amber-line: light-dark(#e8cfa4, #4a3417);
+  --rose: light-dark(#9b3d32, #f0948a);
+  --rose-soft: light-dark(#fbecea, #25120f);
+  --rose-line: light-dark(#e9c3bd, #4d2420);
 
   --mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
   --display: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
@@ -35,70 +49,15 @@
   --radius: 10px;
   --radius-sm: 6px;
   --header-h: 68px;
-  --shadow-sm: 0 1px 2px rgb(18 40 32 / 6%), 0 2px 8px rgb(18 40 32 / 4%);
-  --shadow-md: 0 4px 12px rgb(18 40 32 / 8%), 0 12px 32px rgb(18 40 32 / 6%);
-  --shadow-lg: 0 8px 24px rgb(18 40 32 / 10%), 0 24px 60px rgb(18 40 32 / 8%);
+  --shadow-sm: light-dark(0 1px 2px rgb(18 40 32 / 6%), 0 1px 2px rgb(0 0 0 / 40%)), 0 2px 8px rgb(18 40 32 / 4%);
+  --shadow-md: light-dark(0 4px 12px rgb(18 40 32 / 8%), 0 4px 12px rgb(0 0 0 / 45%)), 0 12px 32px rgb(18 40 32 / 6%);
+  --shadow-lg: light-dark(0 8px 24px rgb(18 40 32 / 10%), 0 8px 24px rgb(0 0 0 / 50%)), 0 24px 60px rgb(18 40 32 / 8%);
   --font-optical: 'opsz' 16;
 }
 
-html[data-theme='dark'] {
-  --ink: #e7efea;
-  --ink-2: #c2d0c8;
-  --muted: #93a49c;
-  --faint: #74857e;
-  --paper: #0d1519;
-  --surface: #131e22;
-  --surface-2: #182429;
-  --line: #24343a;
-  --line-soft: #1d2a2f;
-  --accent: #5fd3ac;
-  --accent-soft: #10261f;
-  --accent-line: #1f4b3d;
-  --mint: #89f1ca;
-  --deep: #080e11;
-  --deep-2: #101a1e;
-  --on-deep: #dfeae4;
-  --on-deep-muted: #8b9e96;
-  --amber: #e2b071;
-  --amber-soft: #241a0e;
-  --amber-line: #4a3417;
-  --rose: #f0948a;
-  --rose-soft: #25120f;
-  --rose-line: #4d2420;
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
-  --shadow-md: 0 4px 12px rgb(0 0 0 / 45%);
-  --shadow-lg: 0 8px 24px rgb(0 0 0 / 50%), 0 24px 60px rgb(0 0 0 / 40%);
-}
-
-@media (prefers-color-scheme: dark) {
-  html[data-theme='auto'] {
-    --ink: #e7efea;
-    --ink-2: #c2d0c8;
-    --muted: #93a49c;
-    --faint: #74857e;
-    --paper: #0d1519;
-    --surface: #131e22;
-    --surface-2: #182429;
-    --line: #24343a;
-    --line-soft: #1d2a2f;
-    --accent: #5fd3ac;
-    --accent-soft: #10261f;
-    --accent-line: #1f4b3d;
-    --deep: #080e11;
-    --deep-2: #101a1e;
-    --on-deep: #dfeae4;
-    --on-deep-muted: #8b9e96;
-    --amber: #e2b071;
-    --amber-soft: #241a0e;
-    --amber-line: #4a3417;
-    --rose: #f0948a;
-    --rose-soft: #25120f;
-    --rose-line: #4d2420;
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
-    --shadow-md: 0 4px 12px rgb(0 0 0 / 45%);
-    --shadow-lg: 0 8px 24px rgb(0 0 0 / 50%), 0 24px 60px rgb(0 0 0 / 40%);
-  }
-}
+/* The toggle only needs to steer colour-scheme; every token follows. */
+html[data-theme='light'] { color-scheme: light; }
+html[data-theme='dark'] { color-scheme: dark; }
 
 /* ================================================================== resets */
 
@@ -369,9 +328,12 @@ kbd {
 }
 
 .doc-body h2 { margin-bottom: 20px; font-size: clamp(27px, 3vw, 36px); letter-spacing: -0.04em; }
-.doc-body h3 { margin: 36px 0 12px; font-size: 20px; letter-spacing: -0.025em; }
-.doc-body h4 { margin: 26px 0 8px; font-size: 15px; letter-spacing: -0.01em; }
-.doc-body h3 + p, .doc-body h4 + p { margin-top: 0; }
+/* :where() keeps these page-level prose defaults at zero specificity, so a
+   component rule such as `.card h3` always wins. Without it a heading inside
+   a card inherits the 36px prose margin and the row of cards falls apart. */
+.doc-body :where(h3) { margin: 36px 0 12px; font-size: 20px; letter-spacing: -0.025em; }
+.doc-body :where(h4) { margin: 26px 0 8px; font-size: 15px; letter-spacing: -0.01em; }
+.doc-body :where(h3) + p, .doc-body :where(h4) + p { margin-top: 0; }
 .doc-body p { margin: 0 0 17px; color: var(--ink-2); }
 .doc-body > section > p:first-of-type { font-size: 17px; color: var(--ink-2); }
 
@@ -604,6 +566,10 @@ code {
   border-radius: 4px;
   background: var(--surface-2);
   color: var(--ink);
+  /* A long identifier must break rather than push a card wider than its
+     column. break-word only breaks when the token genuinely cannot fit, so
+     ordinary identifiers stay intact. */
+  overflow-wrap: break-word;
 }
 pre {
   margin: 24px 0;
@@ -635,7 +601,7 @@ pre .f { color: #89f1ca; }
   border-bottom: 0;
   border-radius: var(--radius) var(--radius) 0 0;
   background: var(--deep-2);
-  color: var(--on-deep-muted);
+  color: var(--on-band-muted);
   font: 400 11px/1 var(--mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -684,9 +650,14 @@ pre .f { color: #89f1ca; }
 .card-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .card-grid--4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 
+/* A grid rather than a flex column so that kicker, heading, body and foot are
+     fixed tracks. Without this, a kicker that wraps to two lines pushes its
+     heading down and the row of card headings becomes a ragged staircase. */
 .card {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas: 'kicker' 'title' 'body' 'foot';
+  align-content: start;
   padding: 22px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -695,10 +666,17 @@ pre .f { color: #89f1ca; }
   transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
 }
 a.card:hover { transform: translateY(-3px); border-color: var(--accent-line); box-shadow: var(--shadow-md); }
-.card-kicker { color: var(--accent); font: 500 10.5px/1.4 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
-.card h3 { margin: 8px 0 8px; font-size: 18px; }
-.card p { margin: 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.62; }
-.card-foot { margin-top: auto; padding-top: 15px; color: var(--muted); font: 400 11.5px/1.5 var(--mono); }
+/* Kicker lengths stay close enough that headings share a baseline, and the
+   tracking is tight enough to fit the narrowest grid without wrapping. The
+   card-heading-misaligned check in audit-layout.mjs keeps that true. */
+.card-kicker { grid-area: kicker; align-self: start; margin: 0 0 8px; color: var(--accent); font: 500 10.5px/1.45 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.card h3 { grid-area: title; align-self: start; margin: 0 0 8px; font-size: 18px; }
+/* Both the kicker and the foot are <p> elements, so a bare `.card p` would
+     claim their grid areas and stack the card on top of itself. Scope the
+     body rule to the one paragraph that actually is the body. */
+.card > p:not(.card-kicker):not(.card-foot) { grid-area: body; margin: 0; color: var(--ink-2); font-size: 14.5px; line-height: 1.62; }
+.card-foot { grid-area: foot; margin-top: auto; padding-top: 15px; color: var(--muted); font: 400 11.5px/1.5 var(--mono); }
+.card-arrow { grid-area: foot; margin-top: auto; padding-top: 15px; color: var(--accent); font: 500 12px var(--mono); }
 .card-arrow { margin-top: auto; padding-top: 15px; color: var(--accent); font: 500 12px var(--mono); }
 
 /* ================================================================== pills */
@@ -779,9 +757,11 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
   pointer-events: none;
 }
 .hero-inner { position: relative; display: grid; grid-template-columns: minmax(0, 1.02fr) minmax(0, 1fr); gap: 64px; align-items: center; }
-.hero h1 { max-width: 15ch; font-size: clamp(42px, 5.6vw, 74px); letter-spacing: -0.055em; line-height: 1.04; }
+/* With a tight line-height an inline box is taller than its line box, so the
+     last line of the heading dips into whatever follows it. Reserve the gap. */
+.hero h1 { max-width: 15ch; margin-bottom: 12px; font-size: clamp(42px, 5.6vw, 74px); letter-spacing: -0.055em; line-height: 1.06; }
 .hero h1 em { font-style: normal; font-weight: 400; color: var(--accent); }
-.hero-lede { max-width: 52ch; margin: 26px 0 0; color: var(--ink-2); font-size: 18px; line-height: 1.68; }
+.hero-lede { max-width: 52ch; margin: 22px 0 0; color: var(--ink-2); font-size: 18px; line-height: 1.68; }
 .hero .button-row { margin: 34px 0 0; }
 .hero-meta { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 34px; color: var(--faint); font: 400 11.5px/1.6 var(--mono); }
 .hero-meta span { display: inline-flex; align-items: center; gap: 22px; }
@@ -859,8 +839,11 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
 .layer {
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr) minmax(0, 0.9fr);
-  gap: 24px;
-  align-items: center;
+  grid-template-areas:
+    'id title verb'
+    'id body  verb';
+  align-items: start;
+  gap: 0 24px;
   padding: 20px 24px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -868,20 +851,20 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
 }
 .layer--fasp { border-color: var(--accent-line); background: var(--accent-soft); }
 .layer--safety { border-color: var(--rose-line); background: var(--rose-soft); }
-.layer-id { display: grid; gap: 4px; justify-items: center; }
+.layer-id { grid-area: id; display: grid; gap: 4px; justify-items: center; }
 .layer-id .n { font: 600 24px/1 var(--display); letter-spacing: -0.04em; }
 .layer-id .l { color: var(--faint); font: 500 9px/1 var(--mono); letter-spacing: 0.1em; }
-.layer--fasp .layer-id .n, .layer--safety .layer-id .n { color: var(--accent); }
+.layer--fasp .layer-id .n { color: var(--accent); }
 .layer--safety .layer-id .n { color: var(--rose); }
-.layer h3 { margin: 0 0 5px; font-size: 17px; }
-.layer p { margin: 0; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
-.layer-verb { font: 500 12px/1.5 var(--mono); color: var(--muted); }
-.layer-verb b { display: block; color: var(--ink); font-weight: 600; }
+.layer h3 { grid-area: title; margin: 0 0 5px; font-size: 17px; }
+.layer p { grid-area: body; margin: 0; color: var(--ink-2); font-size: 14px; line-height: 1.6; }
+.layer-verb { grid-area: verb; font: 500 12px/1.5 var(--mono); color: var(--muted); }
+.layer-verb b { display: block; margin-bottom: 3px; color: var(--ink); font-weight: 600; }
 
 .home .doc-body > section { border-bottom: 0; }
-.home h2 { font-size: clamp(30px, 3.8vw, 46px); letter-spacing: -0.045em; margin-bottom: 20px; }
+.home :where(h2) { font-size: clamp(30px, 3.8vw, 46px); letter-spacing: -0.045em; margin-bottom: 20px; }
 .home h2 em { font-style: normal; font-weight: 400; color: var(--muted); }
-.home h3 { margin: 34px 0 12px; font-size: 20px; }
+.home :where(h3) { margin: 34px 0 12px; font-size: 20px; }
 .home p { color: var(--ink-2); }
 
 /* request pipeline */
@@ -901,33 +884,14 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
 .gate code { font-size: 12px; }
 
 /* dark reference band */
-.band-dark {
-  background: var(--deep);
-  color: var(--on-deep);
-  border-block: 1px solid var(--deep);
-}
-.band-dark h2 { color: #f1faf5; }
-.band-dark h2 em { color: #6f8880; }
-.band-dark p { color: var(--on-deep-muted); }
-.band-dark .sec-num { color: var(--mint); }
-.band-dark .section-head p { color: var(--on-deep-muted); }
-.band-dark .card { background: #14262a; border-color: #24393e; box-shadow: none; }
-.band-dark .card:hover { border-color: #3c6258; }
-.band-dark .card p { color: #a8bdb5; }
-.band-dark .card h3 { color: #eef8f3; }
-.band-dark .card-kicker { color: var(--mint); }
-.band-dark .card-foot { color: #7f968e; }
-.band-dark .callout { background: #14262a; border-color: #24393e; }
-.band-dark .callout p { color: #b3c8c0; }
-.band-dark .callout-title { color: #eef8f3; }
-.band-dark .lede-out { background: #14262a; color: #dcece5; }
-.band-dark .toc-label { color: #7f968e; }
+
 
 /* reading paths */
 .paths { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 30px 0; }
 .path {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  grid-template-areas: 'for' 'title' 'body' 'links';
   padding: 24px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -935,10 +899,11 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
   transition: transform 0.18s, box-shadow 0.18s, border-color 0.18s;
 }
 .path:hover { transform: translateY(-3px); border-color: var(--accent-line); box-shadow: var(--shadow-md); }
-.path-for { color: var(--accent); font: 500 10.5px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
-.path h3 { margin: 10px 0 8px; font-size: 19px; }
-.path p { margin: 0 0 18px; color: var(--ink-2); font-size: 14.5px; line-height: 1.6; }
-.path-links { display: grid; gap: 7px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line-soft); }
+.path-for { grid-area: for; margin: 0; color: var(--accent); font: 500 10.5px/1.45 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.path h3 { grid-area: title; margin: 10px 0 8px; font-size: 19px; }
+/* `.path-for` is also a <p>; same trap as .card-kicker. */
+.path > p:not(.path-for) { grid-area: body; margin: 0 0 18px; color: var(--ink-2); font-size: 14.5px; line-height: 1.6; }
+.path-links { grid-area: links; display: grid; gap: 7px; margin: 0; padding-top: 16px; border-top: 1px solid var(--line-soft); }
 .path-links a { color: var(--muted); font-size: 13.5px; transition: color 0.15s; }
 .path-links a::before { content: '→'; margin-inline-end: 8px; color: var(--accent); }
 .path-links a:hover { color: var(--accent); }
@@ -1033,6 +998,44 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
 .error-links a { padding: 9px 15px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); font-size: 14px; }
 .error-links a:hover { border-color: var(--accent-line); color: var(--accent); }
 
+/* ======================================================== override layer
+   The band recolours a whole region. It must win over component rules, so it
+   lives last rather than relying on selector specificity. Any component that
+   sets a colour inside .band-dark needs an entry here. */
+
+/* Alternating section band. --band is a dark panel in light mode and a lighter
+   slate in dark mode; either way it is clearly separated from --paper. */
+.band-dark {
+  background: var(--band);
+  color: var(--on-band);
+  border-block: 1px solid var(--line);
+}
+.band-dark h2 { color: var(--on-band); }
+.band-dark h2 em { color: var(--on-band-muted); }
+.band-dark p { color: var(--on-band-muted); }
+.band-dark .sec-num { color: var(--mint); }
+.band-dark .section-head p { color: var(--on-band-muted); }
+.band-dark .eyebrow { color: var(--mint); }
+.band-dark .card { background: var(--band-2); border-color: var(--line); box-shadow: none; }
+.band-dark .card:hover { border-color: var(--accent); }
+/* Must match the specificity of the card body rule it is overriding. */
+.band-dark .card > p:not(.card-kicker):not(.card-foot) { color: var(--on-band-muted); }
+.band-dark .card h3 { color: var(--on-band); }
+.band-dark .card-kicker { color: var(--mint); }
+.band-dark .card-foot { color: var(--on-band-muted); }
+.band-dark .callout { background: var(--band-2); border-color: var(--line); }
+.band-dark .callout p { color: var(--on-band-muted); }
+.band-dark .callout-title { color: var(--on-band); }
+.band-dark .callout-title .dot { background: var(--mint); }
+.band-dark .lede-out { background: var(--band-2); color: var(--on-band); }
+.band-dark .toc-label { color: var(--on-band-muted); }
+/* Links inside the band must not use the accent, which is tuned for a light
+   page and drops below AA against the band. */
+.band-dark a { color: var(--mint); }
+.band-dark a:hover { color: #fff; }
+.band-dark code { background: color-mix(in srgb, var(--mint) 14%, transparent); color: var(--on-band); }
+.band-dark strong { color: var(--on-band); }
+
 /* ============================================================= responsive */
 
 @media (max-width: 1080px) {
@@ -1080,6 +1083,7 @@ html[data-theme='dark'] .button-primary { color: var(--paper); }
   .section { padding: 68px 0; }
   .footer-grid { grid-template-columns: 1fr; gap: 34px; }
   .layer { grid-template-columns: 48px minmax(0, 1fr); gap: 18px; }
+  .layer { grid-template-columns: 48px minmax(0, 1fr); grid-template-areas: "id title" "id body" "verb verb"; }
   .layer-verb { grid-column: 2; }
 }
 
