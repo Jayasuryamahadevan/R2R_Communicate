@@ -18,6 +18,32 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install package and test/dev dependencies
         run: python -m pip install -e ".[test,dev]"
+      - name: Plug-and-play CLI smoke test
+        run: |
+          r2r --help
+          r2r init --name ci-node --state-dir /tmp/ci-r2r
+          r2r doctor --state-dir /tmp/ci-r2r
+
+      - name: MCP gateway SDK v2 smoke test
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m pip install -e ".[mcp]"
+          python - <<'CHECK'
+          from pathlib import Path
+          from tempfile import TemporaryDirectory
+          from fasp_harness.core import FaspHarness
+          from fasp_harness.mcp_gateway import build_mcp
+
+          with TemporaryDirectory() as path:
+              node = FaspHarness(Path(path), "test-mcp", "http://127.0.0.1:8766")
+              try:
+                  server = build_mcp(node, allow_capabilities={"observe.system.status.v1"})
+                  assert callable(server.run)
+                  print("MCP SDK gateway registration: ok")
+              finally:
+                  node.close()
+          CHECK
+
       - name: Lint
         run: ruff check fasp_harness tests
       - name: Run test suite
