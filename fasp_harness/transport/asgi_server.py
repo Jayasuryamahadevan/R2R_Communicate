@@ -209,6 +209,11 @@ def main() -> None:
             radio_listeners.append(RadioListener(harness, RadioEndpoint("ble", args.bluetooth_address, psm=args.ble_psm, address_type=args.ble_address_type)))
         for listener in radio_listeners:
             listener.start()
+            health.register(
+                f"bluetooth-{listener.endpoint.mode}",
+                lambda active=listener: (bool(active.thread and active.thread.is_alive()), "Bluetooth listener running"),
+                critical=True,
+            )
     except (FaspError, OSError) as error:
         for listener in radio_listeners:
             listener.close()

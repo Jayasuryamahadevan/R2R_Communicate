@@ -24,7 +24,7 @@ from .http_app import RECEIPT_WRAPPED_KINDS
 
 logger = logging.getLogger(__name__)
 
-MAX_REQUEST = 64 * 1024
+MAX_REQUEST = 64 * 1024 + 256  # FASP's 64 KiB envelope plus this bearer's JSON wrapper.
 MAX_RESPONSE = 2 * 1024 * 1024
 CHUNK_SIZE = 128  # Below the minimum practical LE CoC MTU.
 DEFAULT_RFCOMM_CHANNEL = 8
@@ -43,6 +43,8 @@ class RadioEndpoint:
     address_type: str = "public"
 
     def validate(self, *, listener: bool = False) -> None:
+        if not isinstance(self.mode, str) or not isinstance(self.address_type, str):
+            raise FaspError("schema.invalid", "Bluetooth mode and address type must be strings.")
         if type(self.channel) is not int or type(self.psm) is not int:
             raise FaspError("schema.invalid", "Bluetooth channel and PSM must be integers.")
         if self.mode not in {"classic", "ble"}:
@@ -230,10 +232,18 @@ class RadioListener:
                 if not self.stopping.is_set():
                     logger.exception("Bluetooth listener stopped unexpectedly")
                 break
+            if self.stopping.is_set():
+                connection.close()
+                break
             if not self.capacity.acquire(blocking=False):
                 connection.close()
                 continue
-            self.workers.submit(self._handle, connection)
+            try:
+                self.workers.submit(self._handle, connection)
+            except RuntimeError:
+                self.capacity.release()
+                connection.close()
+                break
 
     def _handle(self, connection: socket.socket) -> None:
         try:
@@ -246,7 +256,10 @@ class RadioListener:
                 except FaspError as error:
                     self.harness.metrics.increment("fasp_auth_failures_total", code=error.code)
                     response = {"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}}
-                wire.send(response, MAX_RESPONSE)
+                try:
+                    wire.send(response, MAX_RESPONSE)
+                except FaspError as error:
+                    wire.send({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}}, MAX_RESPONSE)
         except (OSError, ConnectionError, FaspError):
             logger.debug("Bluetooth request disconnected or failed", exc_info=True)
         except Exception:
