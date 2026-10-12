@@ -148,7 +148,9 @@ scheduled HTTP delivery worker; the caller must supply and supervise it.
 - Sandbox: put adapter processes behind OS resource limits, allowlisted
   outbound network, filesystem/secret isolation and a supervisor capable
   of terminating hung jobs. The in-process Python worker timeout alone
-  does not terminate a misbehaving thread.
+  does not terminate a misbehaving thread. For stateless adapters the new
+  optional --process-adapter CLI mode starts a killable subprocess for each
+  execution; it is NOT an OS sandbox or a device safety controller.
 - Robotics: physically verify independent E-stop, brake, protective
   fields, safe speed, local autonomy and hazard analysis. Validate ROS 2
   security enclaves if ROS 2 is enabled. Simulation-only evidence is NOT
@@ -157,6 +159,27 @@ scheduled HTTP delivery worker; the caller must supply and supervise it.
   restore backups, evaluate mixed-version protocol compatibility,
   commission independent security review and require an operator's
   written site-specific go/no-go acceptance.
+
+## Optional process-supervised adapters
+
+For a stateless local model/analysis adapter, add both of these flags to
+the FASP serve command:
+
+    --adapter my_package.adapter:create_adapter --process-adapter
+
+In this mode the server invokes a dedicated subprocess for capability
+discovery and each subsequent adapter call. The process supervisor can
+terminate a timed-out or cancelled invocation; its STDOUT is treated as
+a bounded JSON protocol, and child stderr is never returned to a peer.
+
+Use this only for independently replayable, stateless adapter functions.
+Do not apply it to device adapters that own persistent hardware sessions
+or expect state to survive across invocations. Process separation does
+not automatically remove inherited environment variables, permit fewer
+system calls, restrict filesystem access or block unauthorized network
+access: configure those using separate service accounts, secure container
+runtime restrictions, network policies and resource cgroups. No remote
+model text should choose the local adapter import path.
 
 ### Unfinished release blockers (no code-only shortcut)
 
