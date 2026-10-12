@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Architecture — FASP</title>
+  <meta name="description" content="undefined">
+  <link rel="canonical" href="https://jayasuryamahadevan.github.io/R2R_Communicate/architecture/">
+  <meta name="theme-color" content="#0d1519" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f5f1" media="(prefers-color-scheme: light)">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FASP reference harness">
+  <meta property="og:title" content="Architecture — FASP">
+  <meta property="og:description" content="undefined">
+  <meta property="og:url" content="https://jayasuryamahadevan.github.io/R2R_Communicate/architecture/">
+  <meta property="og:image" content="https://jayasuryamahadevan.github.io/R2R_Communicate/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    (function(){try{var t=localStorage.getItem('fasp-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+  </script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+    <div class="shell nav-row">
+      <a class="brand" href="index.html" aria-label="FASP home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a>
+      <nav id="site-nav" class="site-nav" aria-label="Primary">
+        <a href="index.html">Overview</a>
+        <a href="architecture.html" aria-current="page">Architecture</a>
+        <a href="protocol.html">Protocol</a>
+        <a href="spatial.html">Spatial</a>
+        <a href="connectivity.html">Connectivity</a>
+        <a href="operations.html">Operations</a>
+        <a href="guide.html">Guide</a>
+      </nav>
+      <div class="nav-tools">
+        <button class="search-toggle" type="button" data-search-open aria-label="Search the site">
+          <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span>Search</span><kbd>/</kbd>
+        </button>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg viewBox="0 0 16 16" aria-hidden="true" width="15" height="15" data-theme-icon><circle cx="8" cy="8" r="3.4" fill="currentColor"/></svg>
+        </button>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Toggle navigation"><span aria-hidden="true">☰</span></button>
+      </div>
+    </div>
+  </header>
+<section class="page-hero">
+        <div class="shell">
+          <nav class="crumbs" aria-label="Breadcrumb"><a href="index.html">FASP</a><span aria-hidden="true">/</span><span>Architecture</span></nav>
+          <p class="eyebrow">02 / Architecture</p>
+          <h1>How the system is actually put together</h1>
+          <p class="page-lede">A node-first mesh. Each node owns its identity, its policy, its durable work state and the adapters it is allowed to call. The interesting decisions are all about where the boundaries sit — this page is about those boundaries, and what enforces each one.</p>
+          <dl class="hero-facts"><div><dt>Boundary</dt><dd>The node</dd></div><div><dt>Topology</dt><dd>Direct peer links</dd></div><div><dt>Enforcement</dt><dd>Node-local, default-deny</dd></div></dl>
+        </div>
+      </section>
+<main id="main" class="docs"><div class="shell docs-layout"><aside class="toc" aria-label="On this page">
+        <p class="toc-label">On this page</p>
+        <ol>
+          <li><a href="#topology"><span class="toc-num">01</span><span>Reference topology</span></a></li>
+          <li><a href="#node"><span class="toc-num">02</span><span>Inside a node</span></a></li>
+          <li><a href="#gates"><span class="toc-num">03</span><span>Request gates</span></a></li>
+          <li><a href="#work"><span class="toc-num">04</span><span>Work and state</span></a></li>
+          <li><a href="#streaming"><span class="toc-num">05</span><span>Streaming and consent</span></a></li>
+          <li><a href="#deployment"><span class="toc-num">06</span><span>Deployment shapes</span></a></li>
+          <li><a href="#boundaries"><span class="toc-num">07</span><span>Implemented or not</span></a></li>
+        </ol>
+      </aside><article class="doc-body"><section id="topology" data-nav="Reference topology" data-num="01">
+  <div class="shell"><p class="sec-num">01</p>
+    <p class="lede-out"><strong>The short version.</strong> Nodes connect directly, each enforcing its own policy at its own edge. There is no control plane in the middle, because a middle that can grant authority is a middle that can be wrong about it. Routing is added later, and only when reachability demands it.</p>
+
+    <figure class="figure">
+      <div class="figure-scroll">
+        <svg viewBox="0 0 880 410" role="img" aria-labelledby="topo-title topo-desc" class="diag">
+          <title id="topo-title">A node-first mesh with local enforcement</title>
+          <desc id="topo-desc">Three FASP nodes on separate hosts sit side by side and connect with direct links. Each node contains its own identity, policy store and work state, and reaches a local device through its own adapter. One of them is an edge gateway bridging a non-FASP fieldbus device. All nodes enforce their own policy; the links carry signed envelopes only.</desc>
+          <defs>
+            <marker id="a-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 1l9 4-9 4z" fill="var(--accent)"/>
+            </marker>
+          </defs>
+
+          <!-- HOST A -->
+          <rect class="d-host" x="20" y="52" width="248" height="278" rx="12"/>
+          <text class="d-host-label" x="40" y="78">HOST A · laptop</text>
+          <rect class="d-node" x="40" y="94" width="208" height="152" rx="10"/>
+          <text class="d-node-title" x="58" y="118">FASP node</text>
+          <g class="d-inside">
+            <rect x="58" y="128" width="172" height="24" rx="5"/><text x="68" y="144">identity · ed25519 + id card</text>
+            <rect x="58" y="158" width="172" height="24" rx="5"/><text x="68" y="174">policy · pairing, grants, layers</text>
+            <rect x="58" y="188" width="172" height="24" rx="5"/><text x="68" y="204">work state · sqlite, audit chain</text>
+            <rect x="58" y="218" width="172" height="18" rx="4"/><text x="68" y="231">adapter boundary</text>
+          </g>
+          <path class="d-edge" d="M144 246v26" marker-end="url(#a-arrow)"/>
+          <rect class="d-device" x="69" y="274" width="150" height="34" rx="7"/>
+          <text class="d-device-text" x="144" y="296">agent · local service</text>
+
+          <!-- HOST B -->
+          <rect class="d-host" x="316" y="52" width="248" height="278" rx="12"/>
+          <text class="d-host-label" x="336" y="78">HOST B · robot</text>
+          <rect class="d-node" x="336" y="94" width="208" height="152" rx="10"/>
+          <text class="d-node-title" x="354" y="118">FASP node</text>
+          <g class="d-inside">
+            <rect x="354" y="128" width="172" height="24" rx="5"/><text x="364" y="144">identity · ed25519 + id card</text>
+            <rect x="354" y="158" width="172" height="24" rx="5"/><text x="364" y="174">policy · pairing, grants, layers</text>
+            <rect x="354" y="188" width="172" height="24" rx="5"/><text x="364" y="204">work state · sqlite, audit chain</text>
+            <rect x="354" y="218" width="172" height="18" rx="4"/><text x="364" y="231">fleet + spatial adapter</text>
+          </g>
+          <path class="d-edge" d="M440 246v26" marker-end="url(#a-arrow)"/>
+          <rect class="d-device" x="365" y="274" width="150" height="34" rx="7"/>
+          <text class="d-device-text" x="440" y="296">drive · sensors</text>
+
+          <!-- HOST C -->
+          <rect class="d-host" x="612" y="52" width="248" height="278" rx="12"/>
+          <text class="d-host-label" x="632" y="78">HOST C · edge gateway</text>
+          <rect class="d-node" x="632" y="94" width="208" height="152" rx="10"/>
+          <text class="d-node-title" x="650" y="118">FASP node</text>
+          <g class="d-inside">
+            <rect x="650" y="128" width="172" height="24" rx="5"/><text x="660" y="144">identity · ed25519 + id card</text>
+            <rect x="650" y="158" width="172" height="24" rx="5"/><text x="660" y="174">policy · pairing, grants, layers</text>
+            <rect x="650" y="188" width="172" height="24" rx="5"/><text x="660" y="204">work state · sqlite, audit chain</text>
+            <rect x="650" y="218" width="172" height="18" rx="4"/><text x="660" y="231">gateway adapter</text>
+          </g>
+          <path class="d-edge" d="M736 246v26" marker-end="url(#a-arrow)"/>
+          <rect class="d-device d-device--foreign" x="661" y="274" width="150" height="34" rx="7"/>
+          <text class="d-device-text" x="736" y="296">Modbus / OPC UA device</text>
+
+          <!-- mesh links between hosts -->
+          <path class="d-mesh" d="M268 180h42" marker-end="url(#a-arrow)"/>
+          <path class="d-mesh" d="M570 180h42" marker-end="url(#a-arrow)"/>
+          <text class="d-mesh-label" x="289" y="168" text-anchor="middle">envelopes</text>
+          <text class="d-mesh-label" x="591" y="168" text-anchor="middle">envelopes</text>
+
+          <rect class="d-banner" x="20" y="352" width="840" height="42" rx="8"/>
+          <text class="d-banner-text" x="440" y="370" text-anchor="middle">Every link carries the same signed protocol. Only the bearer changes — HTTPS, WebSocket or Bluetooth.</text>
+          <text class="d-banner-text" x="440" y="386" text-anchor="middle">Each node decides independently. There is no shared authority that can be misconfigured once for everyone.</text>
+        </svg>
+      </div>
+      <figcaption><span class="fig-id">FIG 01 · node-first mesh</span><span>Direct links, node-local enforcement</span></figcaption>
+    </figure>
+
+    <h3>Why node-first</h3>
+    <p>The infrastructure ideas here come from Google's <a href="https://github.com/google/agentmesh">Agent Mesh</a>: keep node, control and networking roles small, place enforcement at each node, and add routing only when the deployment topology requires it. FASP keeps its own Python implementation, its own signed-envelope protocol and its own device safety model. There is no protocol compatibility claim and no reused code.</p>
+    <p>The practical consequence is that the deployment unit is a <em>trust boundary</em>, not a process count. Run one node per independently trusted system first. Split the control function or add a router later, and only to meet an operational ownership or reachability requirement.</p>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Never copy one node's state onto another</p>
+      <p>A SQLite file moved between hosts is not replicated high availability, it is two writers with one identity key. Give every node its own identity and state directory, and never bake a private identity key into an image.</p>
+    </div>
+
+    <p class="source-note">Source: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> · agent roles and operator controls are omitted from the peer data path above</p>
+  </div>
+</section>
+
+<section id="node" data-nav="Inside a node" data-num="02">
+  <div class="shell"><p class="sec-num">02</p>
+    <p class="lede-out"><strong>What one node owns.</strong> A stable cryptographic identity, a local authorization policy, durable work and stream state, and the adapters it may call. Nothing else. An operator approves peers here, not at a central proxy.</p>
+
+    <div class="card-grid card-grid--2">
+      <article class="card">
+        <p class="card-kicker">Identity</p>
+        <h3>A keypair that survives restarts</h3>
+        <p>Ed25519, stored at <code>0600</code> in the state directory. The <code>system_id</code> is derived from the public key, not assigned, so it cannot be claimed by configuration. The signed ID card at <code>/.well-known/fasp/id-card.json</code> advertises endpoints, capabilities, layers and a runtime profile.</p>
+        <p class="card-foot">fasp_harness/crypto/</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Policy</p>
+        <h3>Default-deny, in two layers</h3>
+        <p>Pairing establishes capability prefixes with a 90-day validity. Grants narrow those prefixes further for a named purpose and duration. Scope matching is a dot-segment prefix match, so <code>observe.</code> cannot reach <code>reversible.deploy</code> by accident.</p>
+        <p class="card-foot">fasp_harness/policy/</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Durable state</p>
+        <h3>One database, versioned</h3>
+        <p>SQLite in WAL mode at <code>fasp.db</code>, schema tracked through <code>PRAGMA user_version</code> across eleven numbered migrations. Peers, inbox, work items, grants, revocations, streams, reservations, missions, leases, twin observations and a hash-chained audit log all live here.</p>
+        <p class="card-foot">fasp_harness/storage/ · artifacts/</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Adapters</p>
+        <h3>The only place code runs</h3>
+        <p>An adapter declares its capabilities, handles an intent, and optionally accepts a cancel. Capabilities are validated at startup and at every dispatch, and a remote payload can never downgrade an adapter's authoritative risk class. Process-supervised mode is available for stateless adapters.</p>
+        <p class="card-foot">fasp_harness/adapter_worker.py · example_adapter.py</p>
+      </article>
+    </div>
+
+    <h3>One dispatcher, three bearers</h3>
+    <p>HTTP, WebSocket and Bluetooth do not each get their own validation path. There is one bounded JSON decoder and one envelope dispatcher; the bearer only decides how bytes arrive. Duplicate JSON keys, non-finite values, oversized integers, invalid UTF-8 and overlarge frames are rejected before dispatch, so a framing quirk cannot become a semantic one.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <caption>Bearer comparison. Every row runs the same verifier and the same policy path.</caption>
+        <thead><tr><th>Bearer</th><th>Shape</th><th>Adds</th><th>Does not add</th></tr></thead>
+        <tbody>
+          <tr><td>HTTPS REST</td><td>Request, response</td><td>Everything routable: Ethernet, Wi-Fi, cellular, VPN</td><td>Push. A late result is polled</td></tr>
+          <tr><td>WebSocket</td><td>Persistent, bidirectional</td><td>Low-latency push on the same envelopes</td><td>Durability — it is an optimisation over stored state</td></tr>
+          <tr><td>Bluetooth RFCOMM</td><td>Serial profile, Linux</td><td>Operation without any IP stack</td><td>IP connectivity</td></tr>
+          <tr><td>Bluetooth LE L2CAP</td><td>Credit-based channel, Linux</td><td>Low-power radio bearer</td><td>Nothing — Python 3.14+ and BlueZ required</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="source-note">Detail per bearer: <a href="connectivity.html">connectivity → bears, carriers, adapters</a></p>
+  </div>
+</section>
+
+<section id="gates" data-nav="Request gates" data-num="03">
+  <div class="shell"><p class="sec-num">03</p>
+    <p class="lede-out"><strong>Order matters.</strong> Signature, then peer, then capability, then grant, then layer, then replay, then dispatch. Each gate can only reject; none of them can widen what a later one allows.</p>
+
+    <ol class="gates">
+      <li class="gate"><span class="gate-num">01</span><strong>Ed25519 over canonical JSON</strong><span>The signature covers RFC 8785 canonical JSON of the envelope with the <code>signature</code> member removed. Canonicalisation is the pinned <code>rfc8785</code> implementation, checked against the official test vectors — not a hand-rolled <code>json.dumps(sort_keys=True)</code>.</span></li>
+      <li class="gate"><span class="gate-num">02</span><strong>Audience, expiry, nonce</strong><span><code>to</code> must match this node. <code>expires_at</code> is enforced against the declared clock-skew allowance. The nonce is recorded. Any failure here is an <code>auth.*</code> error mapped to 401.</span></li>
+      <li class="gate"><span class="gate-num">03</span><strong>Paired, not revoked</strong><span>The signing key must match the key recorded for that peer. A revoked peer is refused regardless of pairing state until a fresh <code>/pair/hello</code> and <code>/pair/confirm</code>. Self-pairing and expired pairing records are refused.</span></li>
+      <li class="gate"><span class="gate-num">04</span><strong>Capability prefix</strong><span>Dot-segment prefix match against the pairing scope, and against what the adapter actually registered. An unmapped capability returns <code>capability.unavailable</code> rather than being coerced into the nearest one.</span></li>
+      <li class="gate"><span class="gate-num">05</span><strong>Grant, when required</strong><span>Reversible-risk capabilities require a live grant naming this peer, capability and purpose. <code>observe</code> and <code>reversible</code> are the executable risk classes; a grant can only narrow, never widen.</span></li>
+      <li class="gate"><span class="gate-num">06</span><strong>Layer guard</strong><span>The interaction must be permitted toward the declared layer, and no capability name may match the semantic deny list. This is the gate that makes the invariant structural rather than cultural.</span></li>
+      <li class="gate"><span class="gate-num">07</span><strong>Replay and journal</strong><span>One <code>message_id</code> dedup gate shared by every kind. A retried envelope returns its original recorded response — never a second execution of the same effect.</span></li>
+    </ol>
+
+    <h3>Idempotency is identity, not a flag</h3>
+    <p>An <code>idempotency_key</code> is scoped to the original peer <em>and</em> the original payload. The same key with a different payload is not a replay — it is a different request and is refused. Response replay is tied to the exact authenticated signed envelope, so a forged retry cannot collect another peer's recorded answer.</p>
+
+    <h3>Bounded execution</h3>
+    <p>Dispatch runs on a bounded worker pool with a real wall-clock timeout taken from the capability's declared <code>max_runtime_s</code>. Past that, the caller receives <code>task.progress</code> immediately and either polls <code>task.status</code> or — over <code>/fasp/v1/channel</code> — is pushed the eventual result. A Python thread timeout does not kill a stuck thread, which is why process-supervised adapters exist for stateless work.</p>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>A receipt is not a result</p>
+      <p><code>intent.propose</code> never asserts that a model understood or completed the requested work. The delivery receipt and the task result are distinct records, so a lost receipt can never be read as a silent success.</p>
+    </div>
+
+    <p class="source-note">Error codes and their HTTP status: <a href="protocol.html#errors">protocol → error codes</a> · the current implementation is <code>fasp_harness/core.py</code> (<code>FaspHarness.DISPATCH</code>, 23 kinds)</p>
+  </div>
+</section>
+
+<section id="work" data-nav="Work and state" data-num="04">
+  <div class="shell"><p class="sec-num">04</p>
+    <p class="lede-out"><strong>One lifecycle.</strong> Capability work and fleet missions share identity, idempotency, state transitions and recovery. A mission's progress lives in a <code>phase</code> field, not in a second state machine.</p>
+
+    <figure class="figure figure--plain">
+      <div class="lifecycle" role="img" aria-label="Work item lifecycle: queued to running to succeeded, failed or cancelled">
+        <div class="lc-node">queued</div>
+        <span class="lc-arrow" aria-hidden="true">→</span>
+        <div class="lc-node lc-active">running</div>
+        <span class="lc-arrow" aria-hidden="true">→</span>
+        <div class="lc-node lc-ok">succeeded</div>
+        <span class="lc-arrow lc-arrow--split" aria-hidden="true">↗</span>
+        <div class="lc-stack">
+          <div class="lc-node lc-bad">failed</div>
+          <div class="lc-node lc-muted">cancelled</div>
+        </div>
+      </div>
+      <figcaption><span class="fig-id">FIG 02 · work item lifecycle</span><span>Shared by capability work and fleet missions</span></figcaption>
+    </figure>
+
+    <h3>What is stored</h3>
+    <p>Eleven SQL migrations create nineteen tables. The ones that matter for understanding the design:</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Table</th><th>Holds</th><th>Why it is separate</th></tr></thead>
+        <tbody>
+          <tr><td><code>peers</code></td><td>Pairing records, pending and confirmed</td><td>Trust is a relationship with an expiry, not a property of a message</td></tr>
+          <tr><td><code>envelopes_inbox</code></td><td>Replay cache and recorded responses</td><td>Retries must return the original outcome, not re-run the gates</td></tr>
+          <tr><td><code>work_items</code></td><td>Lifecycle, idempotency, mission phase</td><td>One place to reason about recovery</td></tr>
+          <tr><td><code>grants</code>, <code>revocations</code></td><td>Time-limited scopes and revocations</td><td>A grant must be revocable without touching pairing</td></tr>
+          <tr><td><code>streams</code>, <code>stream_packets</code></td><td>Leases and bounded retention</td><td>Consent can be withdrawn; retention must be capped</td></tr>
+          <tr><td><code>reservations</code>, <code>reservation_segments</code></td><td>Space-time claims with guard bands</td><td>Two robots need a shared, checkable claim</td></tr>
+          <tr><td><code>audit_log</code></td><td>Hash-chained event log</td><td>Tamper evidence, verifiable with <code>AuditChain.verify()</code></td></tr>
+          <tr><td><code>outbox</code>, <code>leases</code></td><td>Durable send queue, leader election</td><td>Offline-safe delivery and HA fencing tokens</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Failure that fails safely</h3>
+    <p>A stale intent lease fails safely after a restart instead of replaying a possibly completed effect. Outbox recovery is for a single-owner restarted node, with retries bounded by the signed message expiry, per-destination ordering, and dead letters you can inspect. Recovery across a partition, with a second writer, needs a state and consensus design that does not exist yet — so it is not claimed.</p>
+
+    <div class="callout callout--danger">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Do not run two writers on one state volume</p>
+      <p>A central active-active control plane would need a separately designed state and consensus architecture. Running multiple writer replicas over a shared SQLite volume is not high availability — it is a split brain with a schema.</p>
+    </div>
+
+    <p class="source-note">Source: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/WORK_ITEMS.md">WORK_ITEMS.md</a> · <code>fasp_harness/deployment.py</code> wires a full node from one JSON description</p>
+  </div>
+</section>
+
+<section id="streaming" data-nav="Streaming and consent" data-num="05">
+  <div class="shell"><p class="sec-num">05</p>
+    <p class="lede-out"><strong>A stream is a lease, not a pipe.</strong> Finite duration, bounded packets, bounded retention. The receiver accepts one only when the sender's scope, the grant and the node's own sharing rule all agree — and forwarding stops the moment the downstream recipient's consent changes.</p>
+
+    <figure class="figure">
+      <div class="figure-scroll">
+        <svg viewBox="0 0 880 330" role="img" aria-labelledby="stream-title stream-desc" class="diag">
+          <title id="stream-title">Stream acceptance and forwarding consent</title>
+          <desc id="stream-desc">A producer node opens a signed stream with a receiving node. The receiver authorises the source against its local sharing rule, then authorises a named downstream subscriber separately. While consent is active the receiver signs and forwards packets. When consent is revoked the receiver stops future pushes without blocking the producer.</desc>
+          <defs>
+            <marker id="s-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 1l9 4-9 4z" fill="var(--accent)"/>
+            </marker>
+            <marker id="s-stop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M0 1l9 4-9 4z" fill="var(--rose)"/>
+            </marker>
+          </defs>
+
+          <rect class="d-col" x="24" y="40" width="190" height="210" rx="10"/>
+          <text class="d-col-title" x="119" y="66" text-anchor="middle">PRODUCER NODE</text>
+          <text class="d-col-text" x="119" y="88" text-anchor="middle">source adapter</text>
+          <rect class="d-mini" x="44" y="104" width="150" height="30" rx="6"/>
+          <text class="d-mini-text" x="119" y="124" text-anchor="middle">stream.open · signed</text>
+          <rect class="d-mini" x="44" y="146" width="150" height="30" rx="6"/>
+          <text class="d-mini-text" x="119" y="166" text-anchor="middle">stream.packet · signed</text>
+          <rect class="d-mini" x="44" y="188" width="150" height="30" rx="6"/>
+          <text class="d-mini-text" x="119" y="208" text-anchor="middle">stream.close</text>
+          <text class="d-col-foot" x="119" y="238" text-anchor="middle">finite lease, always</text>
+
+          <rect class="d-col d-col--main" x="320" y="40" width="230" height="210" rx="10"/>
+          <text class="d-col-title" x="435" y="66" text-anchor="middle">RECEIVING NODE</text>
+          <text class="d-col-text" x="435" y="88" text-anchor="middle">decides locally</text>
+          <rect class="d-mini d-mini--accent" x="340" y="104" width="190" height="30" rx="6"/>
+          <text class="d-mini-text" x="435" y="124" text-anchor="middle">stream_sharing rule</text>
+          <rect class="d-mini d-mini--accent" x="340" y="146" width="190" height="30" rx="6"/>
+          <text class="d-mini-text" x="435" y="166" text-anchor="middle">grant + field allowlist</text>
+          <rect class="d-mini d-mini--accent" x="340" y="188" width="190" height="30" rx="6"/>
+          <text class="d-mini-text" x="435" y="208" text-anchor="middle">re-signed on forward</text>
+
+          <rect class="d-col" x="656" y="40" width="200" height="210" rx="10"/>
+          <text class="d-col-title" x="756" y="66" text-anchor="middle">DOWNSTREAM PEER</text>
+          <text class="d-col-text" x="756" y="88" text-anchor="middle">named, not anonymous</text>
+          <rect class="d-mini" x="676" y="104" width="160" height="30" rx="6"/>
+          <text class="d-mini-text" x="756" y="124" text-anchor="middle">stream.subscribe</text>
+          <rect class="d-mini" x="676" y="146" width="160" height="30" rx="6"/>
+          <text class="d-mini-text" x="756" y="166" text-anchor="middle">recipient grant</text>
+          <rect class="d-mini d-mini--stop" x="676" y="188" width="160" height="30" rx="6"/>
+          <text class="d-mini-text" x="756" y="208" text-anchor="middle">consent revoked</text>
+
+          <path class="d-edge" d="M214 120h100" marker-end="url(#s-arrow)"/>
+          <text class="d-edge-label" x="264" y="110" text-anchor="middle">1 open</text>
+          <path class="d-edge" d="M214 163h100" marker-end="url(#s-arrow)"/>
+          <text class="d-edge-label" x="264" y="153" text-anchor="middle">2 packets</text>
+          <path class="d-edge" d="M550 120h100" marker-end="url(#s-arrow)"/>
+          <text class="d-edge-label" x="600" y="110" text-anchor="middle">3 subscribe</text>
+          <path class="d-edge" d="M550 163h100" marker-end="url(#s-arrow)"/>
+          <text class="d-edge-label" x="600" y="153" text-anchor="middle">4 push</text>
+          <path class="d-edge d-edge--stop" d="M550 203h100" marker-end="url(#s-stop)"/>
+          <text class="d-edge-label d-edge-label--stop" x="600" y="193" text-anchor="middle">5 stop</text>
+
+          <rect class="d-banner" x="24" y="272" width="832" height="42" rx="8"/>
+          <text class="d-banner-text" x="440" y="298" text-anchor="middle">Revocation stops future delivery. It cannot recall data already delivered — which is why consent is rechecked before every push.</text>
+        </svg>
+      </div>
+      <figcaption><span class="fig-id">FIG 03 · selective streaming</span><span>Acceptance, bounded delivery, authorised forwarding</span></figcaption>
+    </figure>
+
+    <h3>Four checks must agree</h3>
+    <ol>
+      <li>The sender is a paired peer whose capability scope covers the exact stream capability.</li>
+      <li>The grant is valid for that peer, capability and stated purpose, when a grant is required.</li>
+      <li>The node's own <code>stream_sharing</code> rule names that peer and allows the purpose, fields, media type, delivery mode, rate, duration, packet size, window, retention and any forwarding recipients.</li>
+      <li>The lease is live and every packet stays inside the accepted size, sequence, rate and checksum bounds. JSON records also pass the top-level field allowlist before being stored or forwarded.</li>
+    </ol>
+    <p>An empty <code>stream_sharing</code> list denies remote streams. Forwarding is off unless both the local rule and the stream contract name the exact downstream peer, and that peer is itself paired, authorised and presenting a recipient grant. The forwarding node rechecks peer state, capability, current policy, grant expiry and revocation before every live push; a stale subscription is removed without blocking the producer.</p>
+
+    <h3>What the field allowlist does not do</h3>
+    <p>For <code>application/json</code>, every packet must be one complete UTF-8 object with no duplicate keys and no non-finite numbers. The core rejects top-level keys outside the declared <code>fields</code> before storing or forwarding. It does <strong>not</strong> recursively filter nested values, and it cannot inspect bytes inside image, audio or other binary content. A <code>fields</code> declaration is a contract, never proof that opaque bytes were inspected or redacted.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>node.json · opt one sender in, keep forwarding off</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code><span class="c">// Everything else stays denied.</span>
+{
+  <span class="s">"stream_sharing"</span>: [
+    {
+      <span class="s">"capability"</span>: <span class="s">"observe.environment.temperature.v1"</span>,
+      <span class="s">"peer_ids"</span>: [<span class="s">"fasp:system:replace-with-paired-peer-id"</span>],
+      <span class="s">"purposes"</span>: [<span class="s">"room-temperature-dashboard"</span>],
+      <span class="s">"fields"</span>: [<span class="s">"temperature_c"</span>],
+      <span class="s">"content_types"</span>: [<span class="s">"application/json"</span>],
+      <span class="s">"delivery_modes"</span>: [<span class="s">"reliable"</span>, <span class="s">"latest"</span>],
+      <span class="s">"max_rate_hz"</span>: 2,
+      <span class="s">"max_duration_s"</span>: 300,
+      <span class="s">"max_payload_bytes"</span>: 40960,
+      <span class="s">"max_window"</span>: 32,
+      <span class="s">"max_retention_packets"</span>: 32,
+      <span class="s">"forward_to"</span>: [],
+      <span class="s">"require_grant"</span>: true
+    }
+  ]
+}</code></pre>
+    </div>
+
+    <p class="source-note">Wire contract: <a href="protocol.html#streams">protocol → streaming</a> · source <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_MESSAGING_STREAMING.md">FASP_MESSAGING_STREAMING.md</a></p>
+  </div>
+</section>
+
+<section id="deployment" data-nav="Deployment shapes" data-num="06">
+  <div class="shell"><p class="sec-num">06</p>
+    <p class="lede-out"><strong>Start with one node per trusted system.</strong> Add network infrastructure only when reachability or ownership actually requires it. Most deployments never need more.</p>
+
+    <div class="card-grid card-grid--3">
+      <article class="card">
+        <p class="card-kicker">01 / local</p>
+        <h3>Single host</h3>
+        <p>One process owns identity, state, policy and the adapters sitting beside its device or agent. No network exposure required.</p>
+        <p class="card-foot">Best for development and edge devices</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">02 / direct</p>
+        <h3>Peer mesh</h3>
+        <p>Nodes connect directly over HTTPS, WebSocket, or the Bluetooth bearers. Each peer holds a signed card and a pairing record.</p>
+        <p class="card-foot">The current network model</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">03 / adapted</p>
+        <h3>Edge gateway</h3>
+        <p>A local gateway validates constrained device data and signs it with its own identity, preserving the original source as provenance.</p>
+        <p class="card-foot">For fieldbuses and non-FASP devices</p>
+      </article>
+    </div>
+
+    <h3>Packaging is not a boundary</h3>
+    <p>The same Python package runs as a process or in the included Docker image. A container is one convenient way to package a node; a host process or a device gateway runs the same package. A deployment supplies its endpoint, TLS material, persistent state volume and adapter configuration. Devices that cannot run the package connect through a FASP gateway on their own host — keep hardware drivers beside the hardware, and keep safety interlocks local.</p>
+
+    <p><code>NodeConfig.from_file()</code> rejects unknown keys, so a misspelled safety or stream-sharing setting fails loudly instead of silently falling back to a default. <strong>Absent configuration produces an absent subsystem, never a simulated one standing in quietly.</strong></p>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>What is not implemented yet</p>
+      <p>A relay for unreachable peers, QUIC, MQTT/DDS bridges, remote identity issuance, automatic enrolment and end-to-end encrypted relaying are extension points, not runtime features. The included mesh module is a network simulator, and the outbox is a durable queue without a production network drain worker.</p>
+    </div>
+
+    <p class="source-note">Container layout and secrets: <a href="operations.html#container">operations → container deployment</a> · worked examples in <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/tree/main/examples">examples/</a></p>
+  </div>
+</section>
+
+<section id="boundaries" data-nav="Implemented or not" data-num="07">
+  <div class="shell"><p class="sec-num">07</p>
+    <p class="lede-out"><strong>The honest column matters more than the first one.</strong> Each row states what this repository does, and what you would have to build separately if your deployment needs it.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Boundary</th><th>Implemented here</th><th>Add separately when needed</th></tr></thead>
+        <tbody>
+          <tr><td>Node identity</td><td>Per-node Ed25519 identity and a signed profile</td><td>Offline-verifiable short-lived credentials from a shared issuer</td></tr>
+          <tr><td>Trust</td><td>Explicit pairing, local capability scopes, expiring grants, revocation</td><td>Organisation-wide enrolment and policy distribution</td></tr>
+          <tr><td>Work</td><td>One durable work-item lifecycle for intents and missions</td><td>A replicated coordination store if active-active state is required</td></tr>
+          <tr><td>Data</td><td>HTTP packet baseline, WebSocket push, bounded retention, local stream rules</td><td>QUIC, MQTT/DDS bridge, serial profile, media transport</td></tr>
+          <tr><td>Routing</td><td>Direct peer link</td><td>Store-and-forward router with a reviewed encryption design</td></tr>
+          <tr><td>Runtime</td><td>Python package and Docker image; adapters run beside the node</td><td>A native constrained-device runtime if a gateway will not do</td></tr>
+          <tr><td>Safety</td><td>Local adapter gates and separate safety-controller integrations</td><td>Device-specific certification and physical conformance evidence</td></tr>
+          <tr><td>Confidentiality</td><td>TLS 1.3 in transit; the envelope is signed, not encrypted</td><td>End-to-end encrypted relaying, encrypted artifact storage at rest</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Do not split modules into services because they have different names</p>
+      <p>Run one node per trust boundary first, then separate the control function or add a router only to meet an operational requirement. A module boundary is not automatically a network boundary, and a network boundary you did not need is one more thing to secure.</p>
+    </div>
+
+    <p class="source-note">Acceptance gates and what this is not: <a href="operations.html">operations</a> · interoperability notes and adjacent standards: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a></p>
+  </div>
+</section><nav class="pager" aria-label="Page navigation"><a class="pager-link pager-prev" href="index.html">
+          <span class="pager-dir">Previous</span>
+          <span class="pager-title">Overview</span>
+        </a><a class="pager-link pager-next" href="protocol.html">
+          <span class="pager-dir">Next</span>
+          <span class="pager-title">Protocol</span>
+        </a></nav></article></div></main>
+<footer class="site-footer">
+    <div class="shell footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a>
+        <p>A coordination protocol that structurally refuses to become a control system.</p>
+      </div>
+      <div class="footer-cols">
+        <div><p class="footer-label">Documentation</p>
+          <a href="architecture.html">Architecture</a>
+          <a href="protocol.html">Protocol</a>
+          <a href="spatial.html">Spatial</a>
+          <a href="connectivity.html">Connectivity</a>
+          <a href="operations.html">Operations</a>
+          <a href="guide.html">Guide</a>
+        </div>
+        <div><p class="footer-label">Repository</p>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate">Source code</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/README.md">README</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md">Protocol spec</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">Architecture</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/LICENSE">Apache 2.0</a>
+        </div>
+      </div>
+      <div class="footer-note">
+        <p class="footer-label">Status</p>
+        <p>Reference implementation and research harness. <strong>Not</strong> safety-certified software, not hard real-time, not independently validated. Physical deployment requires site-specific safety and security review.</p>
+        <p class="footer-copy">© 2026 Jayasurya Mahadevan</p>
+      </div>
+    </div>
+  </footer>
+  <div class="search-modal" data-search-modal hidden>
+    <div class="search-backdrop" data-search-close></div>
+    <div class="search-panel" role="dialog" aria-modal="true" aria-label="Search the site">
+      <div class="search-field">
+        <svg viewBox="0 0 16 16" aria-hidden="true" width="15" height="15"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input type="search" data-search-input placeholder="Search pages and sections…" aria-label="Search pages and sections" autocomplete="off" spellcheck="false">
+        <kbd>Esc</kbd>
+      </div>
+      <ul class="search-results" data-search-results></ul>
+      <p class="search-hint">Type to filter. <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>Enter</kbd> to open.</p>
+    </div>
+  </div>
+</body>
+</html>

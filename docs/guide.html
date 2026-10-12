@@ -1,39 +1,371 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="auto">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101b24">
-  <meta name="description" content="A practical guide to FASP: nodes, signed packets, leased streams, connectivity, pairing, safety boundaries, and deployment.">
-  <title>Guide — FASP Harness</title>
+  <title>Practical guide — FASP</title>
+  <meta name="description" content="undefined">
+  <link rel="canonical" href="https://jayasuryamahadevan.github.io/R2R_Communicate/guide/">
+  <meta name="theme-color" content="#0d1519" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f5f1" media="(prefers-color-scheme: light)">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FASP reference harness">
+  <meta property="og:title" content="Practical guide — FASP">
+  <meta property="og:description" content="undefined">
+  <meta property="og:url" content="https://jayasuryamahadevan.github.io/R2R_Communicate/guide/">
+  <meta property="og:image" content="https://jayasuryamahadevan.github.io/R2R_Communicate/og.png">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <script>
+    (function(){try{var t=localStorage.getItem('fasp-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+  </script>
   <script src="script.js" defer></script>
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
-  <header class="site-header"><div class="shell nav-row"><a class="brand" href="index.html" aria-label="FASP home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a><button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu <span aria-hidden="true">☰</span></button><nav id="site-nav" class="site-nav" aria-label="Primary navigation"><a href="index.html#model">The model</a><a href="index.html#connectivity">Connectivity</a><a href="index.html#trust">Trust &amp; safety</a><a href="index.html#start">Get started</a><a href="guide.html" aria-current="page">Guide</a><a class="nav-source" href="https://github.com/Jayasuryamahadevan/R2R_Communicate">GitHub <span aria-hidden="true">↗</span></a></nav></div></header>
-  <main id="main">
-    <section class="guide-hero"><div class="shell"><p class="section-index">FASP / PRACTICAL GUIDE</p><h1>Understand the system.<br><em>Build a safe link.</em></h1><p>This guide explains the reference harness from node setup to data delivery. For wire-level schemas and edge cases, follow the linked repository specifications.</p><div class="guide-hero-links"><a href="#first-node">Start with a node ↓</a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/README.md">Read the full README ↗</a></div></div></section>
-    <div class="shell guide-layout">
-      <aside class="guide-sidebar" aria-label="On this page"><p>ON THIS PAGE</p><nav><a href="#what-it-is">What FASP is</a><a href="#first-node">Run a node</a><a href="#pairing">Pair two systems</a><a href="#messages">Packets, streams, artifacts</a><a href="#links">Choose a link</a><a href="#boundaries">Boundaries and production</a><a href="#reference">Reference documents</a></nav></aside>
-      <div class="guide-content">
-        <section id="what-it-is"><p class="guide-label">01 / CONCEPT</p><h2>What FASP is</h2><p>FASP is a coordination protocol proposal and runnable Python reference harness for independent autonomous systems. A node has its own cryptographic identity, local policy, durable work state, and local adapters. Peers can request work and exchange data, but the receiving node decides whether a specific capability is allowed.</p><div class="guide-callout"><strong>The core rule</strong><p>A network message cannot act as an emergency stop reset, motor command, or other local safety function. The harness coordinates goals; the machine keeps physical authority.</p></div><p>The default agent adapter is deliberately simple: it echoes a requested objective. Connect a real agent or device through a reviewed local adapter with declared capabilities.</p></section>
-        <section id="first-node"><p class="guide-label">02 / INSTALL</p><h2>Run a node</h2><p>You need Python 3.11 or newer. Clone the source and create a local environment. This local example binds to loopback for inspection:</p><pre><code>git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
-cd R2R_Communicate
-uv sync --python 3.11 --locked
-source .venv/bin/activate
-fasp init --name my-node --state-dir .fasp/my-node
-fasp serve --name my-node --state-dir .fasp/my-node \
-  --host 127.0.0.1 --port 8766 --insecure-http</code></pre><p>Each independent node needs its own state directory. Its identity key, pairing records, replay journal, outbox, work state, and artifacts live there. Do not copy one node’s private state to another.</p><p>For a reachable peer deployment, configure the host, public URL, TLS certificates, and persistent storage as described in the <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md">two-node CLI guide ↗</a>.</p></section>
-        <section id="pairing"><p class="guide-label">03 / TRUST</p><h2>Pair two systems</h2><ol class="guide-steps"><li><strong>Run both nodes.</strong><span>Each advertises a signed public identity card at its reachable endpoint.</span></li><li><strong>Register in both directions.</strong><span>Use <code>fasp register</code> for HTTPS or <code>fasp radio-register</code> for Bluetooth.</span></li><li><strong>Compare the fingerprint out of band.</strong><span>Registration creates a pending relationship, not permission.</span></li><li><strong>Approve locally on both nodes.</strong><span>Use the exact peer ID, pairing code, and only the capability scopes needed.</span></li></ol><p>Being on the same cable, Wi-Fi network, or paired Bluetooth link does not authorize FASP work. The receiver still checks the envelope signature, paired identity, capability, grant, expiry, replay state, and local policy.</p><p><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md">Pairing commands and retry behavior ↗</a></p></section>
-        <section id="messages"><p class="guide-label">04 / DATA MODEL</p><h2>Packets, streams, and artifacts</h2><div class="guide-table-wrap"><table><thead><tr><th>Form</th><th>Use</th><th>Boundary</th></tr></thead><tbody><tr><td>Packet</td><td>One event, request, receipt, or small result</td><td>Signed envelope, up to 64 KiB</td></tr><tr><td>Stream</td><td>Repeated telemetry or media blocks</td><td>Finite lease, bounded packets, rate, window, and retention</td></tr><tr><td>Artifact</td><td>Large one-time result</td><td>Local immutable storage, digest and authorized fetch</td></tr></tbody></table></div><p>A stream opens through signed control, then carries signed <code>stream.packet</code> envelopes. <code>reliable</code> delivery enforces sequence and credit; <code>latest</code> allows replaceable samples to be dropped. A stream is never an unlimited right to keep sensing.</p><p>Source adapters validate device or broker data before it enters this model. If a device cannot sign for itself, a gateway signs with <em>its own identity</em> and preserves the source as provenance.</p><p><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_MESSAGING_STREAMING.md">Stream contract and packet fields ↗</a></p></section>
-        <section id="links"><p class="guide-label">05 / CONNECTIVITY</p><h2>Choose a link</h2><p>On an IP network, use HTTPS for request and response or WebSocket for bidirectional push. Ethernet, Wi-Fi, and cellular connectivity are supplied by the operating system; FASP uses the reachable IP endpoint. The REST interface exposes <code>/openapi.json</code> and accepts paired, signed requests at <code>/fasp/v1/envelopes</code>.</p><p>On Linux, Bluetooth Classic RFCOMM and BLE L2CAP credit based channels can carry the same signed protocol. BLE needs Python 3.14+ and compatible BlueZ support. These radio bearers are opt-in and require OS pairing as well as FASP pairing.</p><p>MQTT, ROS 2, DDS, serial, CAN, GATT, OPC UA, and similar systems need a bridge or source adapter. The <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/COMMUNICATION_CATALOG.md">communication catalog ↗</a> distinguishes implemented bearers from IP carriers and adapter plans.</p></section>
-        <section id="boundaries"><p class="guide-label">06 / OPERATIONS</p><h2>Boundaries and production</h2><ul class="guide-bullets"><li>Use TLS 1.3 on routable IP links; mTLS is available for transport identity.</li><li>Keep identity keys, admin tokens, and state directories private and persistent.</li><li>Declare capabilities in local adapters and keep physical safety controllers outside the process.</li><li>Set stream sharing rules explicitly; an empty rule set denies remote streams.</li><li>Measure latency, loss, resource use, and recovery on the actual link before setting service targets.</li></ul><p>This is a security-focused reference harness. It is not independently certified safety software. Production use needs deployment-specific security controls, local safety assurance, and the gates in <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/PRODUCTION_READINESS.md">production readiness ↗</a>.</p></section>
-        <section id="reference"><p class="guide-label">07 / REFERENCE</p><h2>Go to the source</h2><div class="guide-reference"><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md"><strong>Protocol specification</strong><span>Envelope, identity, grants, task semantics ↗</span></a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md"><strong>Architecture</strong><span>Nodes, work state, stream sharing ↗</span></a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/CONNECTIVITY.md"><strong>Connectivity</strong><span>Wi-Fi, Ethernet, Bluetooth, REST ↗</span></a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md"><strong>Agent CLI</strong><span>Setup, pairing, delivery, retry ↗</span></a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/PRODUCTION_READINESS.md"><strong>Production readiness</strong><span>Operational gates and limitations ↗</span></a></div></section>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+    <div class="shell nav-row">
+      <a class="brand" href="index.html" aria-label="FASP home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a>
+      <nav id="site-nav" class="site-nav" aria-label="Primary">
+        <a href="index.html">Overview</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="protocol.html">Protocol</a>
+        <a href="spatial.html">Spatial</a>
+        <a href="connectivity.html">Connectivity</a>
+        <a href="operations.html">Operations</a>
+        <a href="guide.html" aria-current="page">Guide</a>
+      </nav>
+      <div class="nav-tools">
+        <button class="search-toggle" type="button" data-search-open aria-label="Search the site">
+          <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span>Search</span><kbd>/</kbd>
+        </button>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg viewBox="0 0 16 16" aria-hidden="true" width="15" height="15" data-theme-icon><circle cx="8" cy="8" r="3.4" fill="currentColor"/></svg>
+        </button>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Toggle navigation"><span aria-hidden="true">☰</span></button>
       </div>
     </div>
-  </main>
-  <footer class="footer"><div class="shell footer-grid"><div><a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a><p>Secure coordination for independent systems.</p></div><p>Reference implementation. Physical deployment requires site-specific safety and security review.</p><div><a href="index.html">Home →</a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate">Source code ↗</a><a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/LICENSE">Apache 2.0 ↗</a></div></div></footer>
+  </header>
+<section class="page-hero">
+        <div class="shell">
+          <nav class="crumbs" aria-label="Breadcrumb"><a href="index.html">FASP</a><span aria-hidden="true">/</span><span>Guide</span></nav>
+          <p class="eyebrow">07 / Guide</p>
+          <h1>From empty directory to two paired nodes</h1>
+          <p class="page-lede">Everything needed to install, run, pair, extend and debug a FASP node, in the order you will need it. Wire-level schemas and edge cases stay in the repository specifications; this page is the working path through them.</p>
+          <dl class="hero-facts"><div><dt>Runtime</dt><dd>Python 3.11 or newer</dd></div><div><dt>Install</dt><dd>uv, or any PEP 517 installer</dd></div><div><dt>Defaults</dt><dd>Loopback only</dd></div></dl>
+        </div>
+      </section>
+<main id="main" class="docs"><div class="shell docs-layout"><aside class="toc" aria-label="On this page">
+        <p class="toc-label">On this page</p>
+        <ol>
+          <li><a href="#install"><span class="toc-num">01</span><span>Install</span></a></li>
+          <li><a href="#first-node"><span class="toc-num">02</span><span>Run one node</span></a></li>
+          <li><a href="#two-nodes"><span class="toc-num">03</span><span>Run two nodes</span></a></li>
+          <li><a href="#pairing"><span class="toc-num">04</span><span>Pair two systems</span></a></li>
+          <li><a href="#send"><span class="toc-num">05</span><span>Send work</span></a></li>
+          <li><a href="#adapter"><span class="toc-num">06</span><span>Write an adapter</span></a></li>
+          <li><a href="#streams"><span class="toc-num">07</span><span>Use a stream</span></a></li>
+          <li><a href="#debug"><span class="toc-num">08</span><span>Troubleshooting</span></a></li>
+          <li><a href="#reference"><span class="toc-num">09</span><span>Where to look next</span></a></li>
+        </ol>
+      </aside><article class="doc-body"><section id="install" data-nav="Install" data-num="01">
+  <div class="shell"><p class="sec-num">01</p>
+    <p class="lede-out"><strong>Requirements.</strong> Python 3.11 or newer, Git, and <code>uv</code> — though <code>uv</code> is only the fast option. Any PEP 517 installer works, because the package has no unusual build requirements.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>clone and create the environment</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
+cd R2R_Communicate
+uv sync --python 3.11 --locked --extra test --extra dev
+source .venv/bin/activate
+
+<span class="c"># prove the build is sound before trusting it</span>
+ruff check fasp_harness tests
+python3 -m unittest discover -s tests -v</code></pre>
+    </div>
+
+    <p>The lint and test commands are not optional decoration — they are exactly what CI runs, on every push, across 3.11 to 3.13. Running them locally first turns a confusing CI failure into a clear one.</p>
+
+    <p>Runtime dependencies are <code>cryptography</code>, <code>starlette</code>, <code>uvicorn</code>, <code>rfc8785</code> and <code>websockets</code>. Five wheels on an audited edge appliance is a short list, which is the point.</p>
+  </div>
+</section>
+
+<section id="first-node" data-nav="Run one node" data-num="02">
+  <div class="shell"><p class="sec-num">02</p>
+    <p class="lede-out"><strong>One node, loopback, no peers.</strong> Get this working first. It is the fastest way to find out whether your Python, your state directory and your ports are fine before they are entangled with someone else's machine.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>local quick start</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>fasp init --name my-node --state-dir .fasp/my-node
+
+fasp serve --name my-node --state-dir .fasp/my-node \
+  --host 127.0.0.1 --port 8766 --insecure-http</code></pre>
+    </div>
+
+    <p>The server prints its system ID, the URL of its public profile, and the path to its private admin token. <strong>Keep that admin token and the identity private key to yourself.</strong> Never commit them, never bake them into an image, and never copy one node's state directory onto another node.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>check that it is alive, then look at what it claims to be</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>curl -s http://127.0.0.1:8766/health
+curl -s http://127.0.0.1:8766/.well-known/fasp/id-card.json | python3 -m json.tool
+curl -s http://127.0.0.1:8766/openapi.json | head -40</code></pre>
+    </div>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Wildcards need a real advertised address</p>
+      <p>When you bind <code>0.0.0.0</code> or <code>::</code>, you must supply <code>--public-url</code> with the address peers will actually use. The server refuses to advertise a wildcard or loopback address — because an ID card pointing at <code>0.0.0.0</code> is a card that cannot be used.</p>
+    </div>
+
+    <h3>Where state lives</h3>
+    <p>Everything durable is under the state directory: the identity key and admin token at mode <code>0600</code>, <code>fasp.db</code> with all pairing, work, stream and audit state, and the local artifact store. Point <code>--state-dir</code> somewhere persistent and backed up — an ephemeral directory means a new identity on every restart.</p>
+  </div>
+</section>
+
+<section id="two-nodes" data-nav="Run two nodes" data-num="03">
+  <div class="shell"><p class="sec-num">03</p>
+    <p class="lede-out"><strong>Two machines, two identities, two state directories.</strong> Run a second instance on a phone, a Pi or another host with its own state folder and its own reachable URL, then pair them.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the second node</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>python3 -m fasp_harness serve \
+  --host 0.0.0.0 --port 8766 \
+  --public-url http://192.168.0.22:8766 \
+  --name laptop-agent --state-dir .fasp/laptop --insecure-http</code></pre>
+    </div>
+
+    <p>Its advertised URL must be the address the other node can reach. If it is not, pairing fails with a connection error rather than a policy error, which is at least a legible failure.</p>
+  </div>
+</section>
+
+<section id="pairing" data-nav="Pair two systems" data-num="04">
+  <div class="shell"><p class="sec-num">04</p>
+    <p class="lede-out"><strong>The human check is the whole of it.</strong> Everything else in the trust model is machinery protecting a fingerprint that a person has already compared.</p>
+
+    <ol class="steps">
+      <li class="step"><strong>Read the other card</strong><span>Fetch its <code>/.well-known/fasp/id-card.json</code>, or discover it with <code>fasp discover</code> on a CIDR you administer.</span></li>
+      <li class="step"><strong>Register, in both directions</strong><span><code>fasp register --peer http://192.168.0.22:8766</code> on A, and the equivalent on B. This creates a <em>pending</em> relationship and returns a pair code. It grants nothing.</span></li>
+      <li class="step"><strong>Compare the same code on both machines</strong><span>On both trusted local displays, or over a channel you already trust. If the codes differ, stop here.</span></li>
+      <li class="step"><strong>Approve locally, on each node</strong><span><code>fasp approve</code> with the peer ID, pair code, and only the capability prefixes you actually intend to allow — for example <code>observe.</code> and <code>coordinate.</code></span></li>
+      <li class="step"><strong>Confirm the relationship</strong><span><code>fasp peers</code> shows the pairing, its scope and its expiry. It lasts 90 days by default; re-pair deliberately.</span></li>
+    </ol>
+
+    <div class="code-block">
+      <div class="code-head"><span>over a radio bearer, repeat on both nodes</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>fasp radio-register --state-dir ~/.fasp-agent \
+  --peer http://127.0.0.1:8766 --mode classic --channel 8
+
+<span class="c"># or BLE on Python 3.14+; pick the address type BlueZ reports</span>
+fasp radio-register --state-dir ~/.fasp-agent \
+  --peer http://127.0.0.1:8766 \
+  --mode ble --psm 0x0080 --address-type random</code></pre>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>If a key is ever suspected compromised</p>
+      <p>Call <code>/pair/revoke</code> (or <code>fasp approve</code> with a revocation). The peer is rejected immediately regardless of any prior pairing state, until a fresh <code>/pair/hello</code> and <code>/pair/confirm</code> are completed.</p>
+    </div>
+
+    <p class="source-note">Full command reference: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md">AGENT_CLI.md</a> · bearer selection: <a href="connectivity.html">connectivity</a></p>
+  </div>
+</section>
+
+<section id="send" data-nav="Send work" data-num="05">
+  <div class="shell"><p class="sec-num">05</p>
+    <p class="lede-out"><strong>A request is a payload inside a signed envelope.</strong> The payload is the part you write; the envelope around it is what the harness produces and verifies.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the payload of an intent.propose</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>{
+  <span class="s">"intent_id"</span>: <span class="s">"status-001"</span>,
+  <span class="s">"idempotency_key"</span>: <span class="s">"laptop-status-001"</span>,
+  <span class="s">"capability"</span>: <span class="s">"observe.system.status.v1"</span>,
+  <span class="s">"objective"</span>: <span class="s">"Return a non-sensitive service health summary."</span>,
+  <span class="s">"constraints"</span>: { <span class="s">"network"</span>: <span class="s">"none"</span>, <span class="s">"retain"</span>: <span class="s">"none"</span> },
+  <span class="s">"risk"</span>: <span class="s">"observe"</span>
+}</code></pre>
+    </div>
+
+    <p>Three fields carry most of the weight. <code>capability</code> must exist in both the pairing scope and the receiving adapter's registered list. <code>idempotency_key</code> is what makes a retry safe, and it is scoped to this peer <em>and</em> this exact payload — reusing it with different content is refused rather than replayed. <code>risk</code> selects the risk class; <code>reversible</code> requires a live grant.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>send it through the durable outbox</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>fasp communicate --state-dir ~/.fasp-agent \
+  --peer http://192.168.0.22:8766 \
+  --capability observe.system.status.v1 \
+  --objective <span class="s">"Return a non-sensitive service health summary."</span>
+
+fasp task-status --state-dir ~/.fasp-agent --id status-001
+fasp drain --watch          <span class="c"># supervised retry loop against the same state</span>
+fasp outbox                 <span class="c"># inspect what is queued, and any dead letters</span></code></pre>
+    </div>
+
+    <p><code>fasp communicate</code> and <code>fasp drain</code> persist and retry. They cannot extend the original roughly two-minute envelope expiry, and they cannot guarantee exactly-once external device effects — retrying is safe, external side effects are your adapter's responsibility to make idempotent.</p>
+
+    <p class="source-note">Envelope kinds: <a href="protocol.html#kinds">protocol → envelope kinds</a> · grants: <a href="protocol.html#pairing">protocol → pairing and grants</a></p>
+  </div>
+</section>
+
+<section id="adapter" data-nav="Write an adapter" data-num="06">
+  <div class="shell"><p class="sec-num">06</p>
+    <p class="lede-out"><strong>An adapter is a local object with declared capabilities.</strong> This is the only place in the system where peer-requested work becomes an effect, which is why it is the only place worth being careful.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the entire required interface</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code><span class="k">class</span> MyAdapter:
+    <span class="k">def</span> capabilities(self) -> <span class="k">list</span>[<span class="k">dict</span>]:
+        <span class="c"># declare name, risk class and bounded runtime</span>
+        ...
+
+    <span class="k">def</span> handle(self, intent: <span class="k">dict</span>) -> <span class="k">dict</span>:
+        <span class="c"># return bounded output, nothing else</span>
+        ...
+
+    <span class="k">def</span> cancel(self, idempotency_key: <span class="k">str</span>) -> <span class="k">bool</span>:
+        <span class="c"># optional</span>
+        ...</code></pre>
+    </div>
+
+    <p>Start from <code>fasp_harness/example_adapter.py</code>, then load it from a local import path:</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>load an adapter, optionally out of process</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code><span class="c"># in-process</span>
+python3 -m fasp_harness serve --adapter my_package.adapter:create_adapter
+
+<span class="c"># killable subprocess per execution — stateless adapters only</span>
+python3 -m fasp_harness serve \
+  --adapter my_package.adapter:create_adapter --process-adapter</code></pre>
+    </div>
+
+    <h3>What an adapter must not do</h3>
+    <p>It must not treat peer text as permission for shell commands, network calls, account changes, destructive actions, continuous sensing, or physical actuation. Those need separately declared capabilities and local approval gates — and physical actuation needs a safety controller, not a Python handler.</p>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Declare a capability whose meaning is a safety function and startup fails</p>
+      <p>The layer guard reads the <em>meaning</em> of the name, not the layer it claims. <code>estop.clear</code>, <code>safety.zone.mute</code>, <code>brake.release</code> and <code>motor.setpoint</code> are refused at startup. That refusal is the design working, not a bug to work around with a different name.</p>
+    </div>
+
+    <p class="source-note">Templates: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/fasp_harness/example_adapter.py">example_adapter.py</a> · <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/fasp_harness/adapter_worker.py">adapter_worker.py</a></p>
+  </div>
+</section>
+
+<section id="streams" data-nav="Use a stream" data-num="07">
+  <div class="shell"><p class="sec-num">07</p>
+    <p class="lede-out"><strong>If it is continuous, it is a lease.</strong> Send telemetry or media through a stream, not as a series of individual packets — and always send the control that closes it as a reliable packet.</p>
+
+    <ol>
+      <li>The <em>sender's</em> operator allows the stream in its <code>stream_sharing</code> rules, naming the receiving peer, purpose, fields and limits. An empty list denies remote streams.</li>
+      <li>The sender opens a lease with <code>stream.open</code>, stating purpose, fields, delivery mode, rate, duration and size bounds.</li>
+      <li>The receiver's operator allows it too — on <em>their</em> node. Both sides consent; neither can be assumed.</li>
+      <li>Packets flow as <code>stream.packet</code>, signed and sequenced, within every declared bound.</li>
+      <li>The sender closes with <code>stream.close</code>. Expiry also closes it, because a lease that only ends politely is not a bound.</li>
+    </ol>
+
+    <p>For JSON, every packet must be one complete UTF-8 object with no duplicate keys and no non-finite numbers, and top-level keys outside the declared <code>fields</code> are rejected before storage or forwarding. The core does not recursively filter nested values and cannot inspect bytes inside binary content — so validate nested structures in your adapter and serialise only approved content.</p>
+
+    <p class="source-note">Sharing rules and consent: <a href="architecture.html#streaming">architecture → streaming and consent</a> · limits: <a href="protocol.html#streams">protocol → streaming</a></p>
+  </div>
+</section>
+
+<section id="debug" data-nav="Troubleshooting" data-num="08">
+  <div class="shell"><p class="sec-num">08</p>
+    <p class="lede-out"><strong>Most failures name their own cause.</strong> This is the mapping from what you will see to what is actually wrong.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Symptom</th><th>Most likely cause</th><th>Check</th></tr></thead>
+        <tbody>
+          <tr><td><code>auth.*</code> on every request</td><td>Clock skew, or an expired pairing</td><td>Compare issued and expires times on both hosts; check <code>fasp peers</code> for expiry</td></tr>
+          <tr><td>Signature fails, keys look right</td><td>Canonical JSON differs between implementations</td><td>Both peers must use RFC 8785 exactly — never <code>sort_keys=True</code> as a substitute</td></tr>
+          <tr><td><code>capability.unavailable</code></td><td>No local adapter declares it</td><td>The adapter's <code>capabilities()</code>, not just the pairing scope</td></tr>
+          <tr><td><code>auth.invalid_grant</code></td><td>Grant expired, or does not name this purpose</td><td>Grant subject peer, capability prefixes and remaining duration</td></tr>
+          <tr><td>Stream refused immediately</td><td>Empty or non-matching <code>stream_sharing</code> rule</td><td>Both nodes' rules; the exact peer ID, purpose and fields</td></tr>
+          <tr><td><code>resource.too_large</code></td><td>Payload past the envelope budget</td><td>Use a stream, or store an artifact and send its digest</td></tr>
+          <tr><td><code>resource.exhausted</code></td><td>Rate limit or queue depth</td><td>Per-peer and per-IP token buckets; the declared <code>max_runtime_s</code></td></tr>
+          <tr><td>Node restarts refuse to start</td><td>Audit chain failed verification</td><td>Intended behaviour after a tampered or partial restore — investigate before overriding</td></tr>
+          <tr><td>Wildcard bind refuses to serve</td><td>No usable <code>--public-url</code></td><td>Supply the address peers actually reach; loopback and wildcard are refused</td></tr>
+          <tr><td>Nothing arrives, no error</td><td>Push is an optimisation; nothing was polled</td><td>Pull <code>task.status</code> or <code>inbox.pull</code> — durable state is the source of truth</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reading the state directly</h3>
+    <div class="code-block">
+      <div class="code-head"><span>inspect a node without guessing</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>curl -s -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> http://127.0.0.1:8766/peers | python3 -m json.tool
+curl -s -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> http://127.0.0.1:8766/health/detail | python3 -m json.tool
+curl -s -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> http://127.0.0.1:8766/metrics | head -30
+
+python -m fasp_harness posture --config examples/node.json
+python -m fasp_harness security-report --config examples/node.json</code></pre>
+    </div>
+
+    <p class="source-note">Error taxonomy: <a href="protocol.html#errors">protocol → error codes</a></p>
+  </div>
+</section>
+
+<section id="reference" data-nav="Where to look next" data-num="09">
+  <div class="shell"><p class="sec-num">09</p>
+    <p class="lede-out"><strong>The specifications live in the repository.</strong> This site explains the design; the documents specify it, and they win where the two disagree.</p>
+
+    <div class="card-grid card-grid--2">
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md"><p class="card-kicker">Normative</p><h3>Protocol specification</h3><p>The complete wire protocol, in sections: envelope, identity, pairing, grants, task semantics, failure codes.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md"><p class="card-kicker">Design</p><h3>Architecture</h3><p>Reference topology, the one work model, selective streaming, deployment boundaries and interoperability notes.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_MESSAGING_STREAMING.md"><p class="card-kicker">Contract</p><h3>Messaging and streaming</h3><p>Two planes, stream lifecycle, open contract, packet frame, backpressure, failure semantics.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md"><p class="card-kicker">CLI</p><h3>Agent CLI reference</h3><p>Every <code>fasp</code> command, setup, pairing, delivery and retry behaviour.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/WORK_ITEMS.md"><p class="card-kicker">Model</p><h3>Work items</h3><p>Task status, mission phases, idempotency and recovery in one lifecycle.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/PRODUCTION_READINESS.md"><p class="card-kicker">Acceptance</p><h3>Production readiness</h3><p>Security gates, secure deployment, backup and recovery, and the site checklist.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_RUNTIME_PROFILES.md"><p class="card-kicker">Platforms</p><h3>Runtime profiles</h3><p>Windows, Linux, macOS, Raspberry Pi, Android gateways, local inference, ROS 1 and ROS 2.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/COMMUNICATION_CATALOG.md"><p class="card-kicker">Catalog</p><h3>Communication catalog</h3><p>Every communication family, its FASP entry point, and whether it is native or needs an adapter.</p><span class="card-arrow">Open in repository →</span></a>
+    </div>
+  </div>
+</section><nav class="pager" aria-label="Page navigation"><a class="pager-link pager-prev" href="operations.html">
+          <span class="pager-dir">Previous</span>
+          <span class="pager-title">Operations</span>
+        </a><span></span></nav></article></div></main>
+<footer class="site-footer">
+    <div class="shell footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a>
+        <p>A coordination protocol that structurally refuses to become a control system.</p>
+      </div>
+      <div class="footer-cols">
+        <div><p class="footer-label">Documentation</p>
+          <a href="architecture.html">Architecture</a>
+          <a href="protocol.html">Protocol</a>
+          <a href="spatial.html">Spatial</a>
+          <a href="connectivity.html">Connectivity</a>
+          <a href="operations.html">Operations</a>
+          <a href="guide.html">Guide</a>
+        </div>
+        <div><p class="footer-label">Repository</p>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate">Source code</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/README.md">README</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md">Protocol spec</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">Architecture</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/LICENSE">Apache 2.0</a>
+        </div>
+      </div>
+      <div class="footer-note">
+        <p class="footer-label">Status</p>
+        <p>Reference implementation and research harness. <strong>Not</strong> safety-certified software, not hard real-time, not independently validated. Physical deployment requires site-specific safety and security review.</p>
+        <p class="footer-copy">© 2026 Jayasurya Mahadevan</p>
+      </div>
+    </div>
+  </footer>
+  <div class="search-modal" data-search-modal hidden>
+    <div class="search-backdrop" data-search-close></div>
+    <div class="search-panel" role="dialog" aria-modal="true" aria-label="Search the site">
+      <div class="search-field">
+        <svg viewBox="0 0 16 16" aria-hidden="true" width="15" height="15"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input type="search" data-search-input placeholder="Search pages and sections…" aria-label="Search pages and sections" autocomplete="off" spellcheck="false">
+        <kbd>Esc</kbd>
+      </div>
+      <ul class="search-results" data-search-results></ul>
+      <p class="search-hint">Type to filter. <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>Enter</kbd> to open.</p>
+    </div>
+  </div>
 </body>
 </html>

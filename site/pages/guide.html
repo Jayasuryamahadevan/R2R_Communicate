@@ -1,0 +1,265 @@
+---
+slug: guide
+nav: Guide
+title: Practical guide
+eyebrow: 07 / Guide
+heading: From empty directory to two paired nodes
+lede: Everything needed to install, run, pair, extend and debug a FASP node, in the order you will need it. Wire-level schemas and edge cases stay in the repository specifications; this page is the working path through them.
+facts:
+  - [Runtime, Python 3.11 or newer]
+  - [Install, uv, or any PEP 517 installer]
+  - [Defaults, Loopback only]
+---
+
+<section id="install" data-nav="Install" data-num="01">
+  <div class="shell">
+    <p class="lede-out"><strong>Requirements.</strong> Python 3.11 or newer, Git, and <code>uv</code> — though <code>uv</code> is only the fast option. Any PEP 517 installer works, because the package has no unusual build requirements.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>clone and create the environment</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
+cd R2R_Communicate
+uv sync --python 3.11 --locked --extra test --extra dev
+source .venv/bin/activate
+
+<span class="c"># prove the build is sound before trusting it</span>
+ruff check fasp_harness tests
+python3 -m unittest discover -s tests -v</code></pre>
+    </div>
+
+    <p>The lint and test commands are not optional decoration — they are exactly what CI runs, on every push, across 3.11 to 3.13. Running them locally first turns a confusing CI failure into a clear one.</p>
+
+    <p>Runtime dependencies are <code>cryptography</code>, <code>starlette</code>, <code>uvicorn</code>, <code>rfc8785</code> and <code>websockets</code>. Five wheels on an audited edge appliance is a short list, which is the point.</p>
+  </div>
+</section>
+
+<section id="first-node" data-nav="Run one node" data-num="02">
+  <div class="shell">
+    <p class="lede-out"><strong>One node, loopback, no peers.</strong> Get this working first. It is the fastest way to find out whether your Python, your state directory and your ports are fine before they are entangled with someone else's machine.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>local quick start</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>fasp init --name my-node --state-dir .fasp/my-node
+
+fasp serve --name my-node --state-dir .fasp/my-node \
+  --host 127.0.0.1 --port 8766 --insecure-http</code></pre>
+    </div>
+
+    <p>The server prints its system ID, the URL of its public profile, and the path to its private admin token. <strong>Keep that admin token and the identity private key to yourself.</strong> Never commit them, never bake them into an image, and never copy one node's state directory onto another node.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>check that it is alive, then look at what it claims to be</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>curl -s http://127.0.0.1:8766/health
+curl -s http://127.0.0.1:8766/.well-known/fasp/id-card.json | python3 -m json.tool
+curl -s http://127.0.0.1:8766/openapi.json | head -40</code></pre>
+    </div>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Wildcards need a real advertised address</p>
+      <p>When you bind <code>0.0.0.0</code> or <code>::</code>, you must supply <code>--public-url</code> with the address peers will actually use. The server refuses to advertise a wildcard or loopback address — because an ID card pointing at <code>0.0.0.0</code> is a card that cannot be used.</p>
+    </div>
+
+    <h3>Where state lives</h3>
+    <p>Everything durable is under the state directory: the identity key and admin token at mode <code>0600</code>, <code>fasp.db</code> with all pairing, work, stream and audit state, and the local artifact store. Point <code>--state-dir</code> somewhere persistent and backed up — an ephemeral directory means a new identity on every restart.</p>
+  </div>
+</section>
+
+<section id="two-nodes" data-nav="Run two nodes" data-num="03">
+  <div class="shell">
+    <p class="lede-out"><strong>Two machines, two identities, two state directories.</strong> Run a second instance on a phone, a Pi or another host with its own state folder and its own reachable URL, then pair them.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the second node</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>python3 -m fasp_harness serve \
+  --host 0.0.0.0 --port 8766 \
+  --public-url http://192.168.0.22:8766 \
+  --name laptop-agent --state-dir .fasp/laptop --insecure-http</code></pre>
+    </div>
+
+    <p>Its advertised URL must be the address the other node can reach. If it is not, pairing fails with a connection error rather than a policy error, which is at least a legible failure.</p>
+  </div>
+</section>
+
+<section id="pairing" data-nav="Pair two systems" data-num="04">
+  <div class="shell">
+    <p class="lede-out"><strong>The human check is the whole of it.</strong> Everything else in the trust model is machinery protecting a fingerprint that a person has already compared.</p>
+
+    <ol class="steps">
+      <li class="step"><strong>Read the other card</strong><span>Fetch its <code>/.well-known/fasp/id-card.json</code>, or discover it with <code>fasp discover</code> on a CIDR you administer.</span></li>
+      <li class="step"><strong>Register, in both directions</strong><span><code>fasp register --peer http://192.168.0.22:8766</code> on A, and the equivalent on B. This creates a <em>pending</em> relationship and returns a pair code. It grants nothing.</span></li>
+      <li class="step"><strong>Compare the same code on both machines</strong><span>On both trusted local displays, or over a channel you already trust. If the codes differ, stop here.</span></li>
+      <li class="step"><strong>Approve locally, on each node</strong><span><code>fasp approve</code> with the peer ID, pair code, and only the capability prefixes you actually intend to allow — for example <code>observe.</code> and <code>coordinate.</code></span></li>
+      <li class="step"><strong>Confirm the relationship</strong><span><code>fasp peers</code> shows the pairing, its scope and its expiry. It lasts 90 days by default; re-pair deliberately.</span></li>
+    </ol>
+
+    <div class="code-block">
+      <div class="code-head"><span>over a radio bearer, repeat on both nodes</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>fasp radio-register --state-dir ~/.fasp-agent \
+  --peer http://127.0.0.1:8766 --mode classic --channel 8
+
+<span class="c"># or BLE on Python 3.14+; pick the address type BlueZ reports</span>
+fasp radio-register --state-dir ~/.fasp-agent \
+  --peer http://127.0.0.1:8766 \
+  --mode ble --psm 0x0080 --address-type random</code></pre>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>If a key is ever suspected compromised</p>
+      <p>Call <code>/pair/revoke</code> (or <code>fasp approve</code> with a revocation). The peer is rejected immediately regardless of any prior pairing state, until a fresh <code>/pair/hello</code> and <code>/pair/confirm</code> are completed.</p>
+    </div>
+
+    <p class="source-note">Full command reference: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md">AGENT_CLI.md</a> · bearer selection: <a href="connectivity.html">connectivity</a></p>
+  </div>
+</section>
+
+<section id="send" data-nav="Send work" data-num="05">
+  <div class="shell">
+    <p class="lede-out"><strong>A request is a payload inside a signed envelope.</strong> The payload is the part you write; the envelope around it is what the harness produces and verifies.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the payload of an intent.propose</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>{
+  <span class="s">"intent_id"</span>: <span class="s">"status-001"</span>,
+  <span class="s">"idempotency_key"</span>: <span class="s">"laptop-status-001"</span>,
+  <span class="s">"capability"</span>: <span class="s">"observe.system.status.v1"</span>,
+  <span class="s">"objective"</span>: <span class="s">"Return a non-sensitive service health summary."</span>,
+  <span class="s">"constraints"</span>: { <span class="s">"network"</span>: <span class="s">"none"</span>, <span class="s">"retain"</span>: <span class="s">"none"</span> },
+  <span class="s">"risk"</span>: <span class="s">"observe"</span>
+}</code></pre>
+    </div>
+
+    <p>Three fields carry most of the weight. <code>capability</code> must exist in both the pairing scope and the receiving adapter's registered list. <code>idempotency_key</code> is what makes a retry safe, and it is scoped to this peer <em>and</em> this exact payload — reusing it with different content is refused rather than replayed. <code>risk</code> selects the risk class; <code>reversible</code> requires a live grant.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>send it through the durable outbox</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>fasp communicate --state-dir ~/.fasp-agent \
+  --peer http://192.168.0.22:8766 \
+  --capability observe.system.status.v1 \
+  --objective <span class="s">"Return a non-sensitive service health summary."</span>
+
+fasp task-status --state-dir ~/.fasp-agent --id status-001
+fasp drain --watch          <span class="c"># supervised retry loop against the same state</span>
+fasp outbox                 <span class="c"># inspect what is queued, and any dead letters</span></code></pre>
+    </div>
+
+    <p><code>fasp communicate</code> and <code>fasp drain</code> persist and retry. They cannot extend the original roughly two-minute envelope expiry, and they cannot guarantee exactly-once external device effects — retrying is safe, external side effects are your adapter's responsibility to make idempotent.</p>
+
+    <p class="source-note">Envelope kinds: <a href="protocol.html#kinds">protocol → envelope kinds</a> · grants: <a href="protocol.html#pairing">protocol → pairing and grants</a></p>
+  </div>
+</section>
+
+<section id="adapter" data-nav="Write an adapter" data-num="06">
+  <div class="shell">
+    <p class="lede-out"><strong>An adapter is a local object with declared capabilities.</strong> This is the only place in the system where peer-requested work becomes an effect, which is why it is the only place worth being careful.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the entire required interface</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code><span class="k">class</span> MyAdapter:
+    <span class="k">def</span> capabilities(self) -> <span class="k">list</span>[<span class="k">dict</span>]:
+        <span class="c"># declare name, risk class and bounded runtime</span>
+        ...
+
+    <span class="k">def</span> handle(self, intent: <span class="k">dict</span>) -> <span class="k">dict</span>:
+        <span class="c"># return bounded output, nothing else</span>
+        ...
+
+    <span class="k">def</span> cancel(self, idempotency_key: <span class="k">str</span>) -> <span class="k">bool</span>:
+        <span class="c"># optional</span>
+        ...</code></pre>
+    </div>
+
+    <p>Start from <code>fasp_harness/example_adapter.py</code>, then load it from a local import path:</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>load an adapter, optionally out of process</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code><span class="c"># in-process</span>
+python3 -m fasp_harness serve --adapter my_package.adapter:create_adapter
+
+<span class="c"># killable subprocess per execution — stateless adapters only</span>
+python3 -m fasp_harness serve \
+  --adapter my_package.adapter:create_adapter --process-adapter</code></pre>
+    </div>
+
+    <h3>What an adapter must not do</h3>
+    <p>It must not treat peer text as permission for shell commands, network calls, account changes, destructive actions, continuous sensing, or physical actuation. Those need separately declared capabilities and local approval gates — and physical actuation needs a safety controller, not a Python handler.</p>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Declare a capability whose meaning is a safety function and startup fails</p>
+      <p>The layer guard reads the <em>meaning</em> of the name, not the layer it claims. <code>estop.clear</code>, <code>safety.zone.mute</code>, <code>brake.release</code> and <code>motor.setpoint</code> are refused at startup. That refusal is the design working, not a bug to work around with a different name.</p>
+    </div>
+
+    <p class="source-note">Templates: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/fasp_harness/example_adapter.py">example_adapter.py</a> · <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/fasp_harness/adapter_worker.py">adapter_worker.py</a></p>
+  </div>
+</section>
+
+<section id="streams" data-nav="Use a stream" data-num="07">
+  <div class="shell">
+    <p class="lede-out"><strong>If it is continuous, it is a lease.</strong> Send telemetry or media through a stream, not as a series of individual packets — and always send the control that closes it as a reliable packet.</p>
+
+    <ol>
+      <li>The <em>sender's</em> operator allows the stream in its <code>stream_sharing</code> rules, naming the receiving peer, purpose, fields and limits. An empty list denies remote streams.</li>
+      <li>The sender opens a lease with <code>stream.open</code>, stating purpose, fields, delivery mode, rate, duration and size bounds.</li>
+      <li>The receiver's operator allows it too — on <em>their</em> node. Both sides consent; neither can be assumed.</li>
+      <li>Packets flow as <code>stream.packet</code>, signed and sequenced, within every declared bound.</li>
+      <li>The sender closes with <code>stream.close</code>. Expiry also closes it, because a lease that only ends politely is not a bound.</li>
+    </ol>
+
+    <p>For JSON, every packet must be one complete UTF-8 object with no duplicate keys and no non-finite numbers, and top-level keys outside the declared <code>fields</code> are rejected before storage or forwarding. The core does not recursively filter nested values and cannot inspect bytes inside binary content — so validate nested structures in your adapter and serialise only approved content.</p>
+
+    <p class="source-note">Sharing rules and consent: <a href="architecture.html#streaming">architecture → streaming and consent</a> · limits: <a href="protocol.html#streams">protocol → streaming</a></p>
+  </div>
+</section>
+
+<section id="debug" data-nav="Troubleshooting" data-num="08">
+  <div class="shell">
+    <p class="lede-out"><strong>Most failures name their own cause.</strong> This is the mapping from what you will see to what is actually wrong.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Symptom</th><th>Most likely cause</th><th>Check</th></tr></thead>
+        <tbody>
+          <tr><td><code>auth.*</code> on every request</td><td>Clock skew, or an expired pairing</td><td>Compare issued and expires times on both hosts; check <code>fasp peers</code> for expiry</td></tr>
+          <tr><td>Signature fails, keys look right</td><td>Canonical JSON differs between implementations</td><td>Both peers must use RFC 8785 exactly — never <code>sort_keys=True</code> as a substitute</td></tr>
+          <tr><td><code>capability.unavailable</code></td><td>No local adapter declares it</td><td>The adapter's <code>capabilities()</code>, not just the pairing scope</td></tr>
+          <tr><td><code>auth.invalid_grant</code></td><td>Grant expired, or does not name this purpose</td><td>Grant subject peer, capability prefixes and remaining duration</td></tr>
+          <tr><td>Stream refused immediately</td><td>Empty or non-matching <code>stream_sharing</code> rule</td><td>Both nodes' rules; the exact peer ID, purpose and fields</td></tr>
+          <tr><td><code>resource.too_large</code></td><td>Payload past the envelope budget</td><td>Use a stream, or store an artifact and send its digest</td></tr>
+          <tr><td><code>resource.exhausted</code></td><td>Rate limit or queue depth</td><td>Per-peer and per-IP token buckets; the declared <code>max_runtime_s</code></td></tr>
+          <tr><td>Node restarts refuse to start</td><td>Audit chain failed verification</td><td>Intended behaviour after a tampered or partial restore — investigate before overriding</td></tr>
+          <tr><td>Wildcard bind refuses to serve</td><td>No usable <code>--public-url</code></td><td>Supply the address peers actually reach; loopback and wildcard are refused</td></tr>
+          <tr><td>Nothing arrives, no error</td><td>Push is an optimisation; nothing was polled</td><td>Pull <code>task.status</code> or <code>inbox.pull</code> — durable state is the source of truth</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reading the state directly</h3>
+    <div class="code-block">
+      <div class="code-head"><span>inspect a node without guessing</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>curl -s -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> http://127.0.0.1:8766/peers | python3 -m json.tool
+curl -s -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> http://127.0.0.1:8766/health/detail | python3 -m json.tool
+curl -s -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> http://127.0.0.1:8766/metrics | head -30
+
+python -m fasp_harness posture --config examples/node.json
+python -m fasp_harness security-report --config examples/node.json</code></pre>
+    </div>
+
+    <p class="source-note">Error taxonomy: <a href="protocol.html#errors">protocol → error codes</a></p>
+  </div>
+</section>
+
+<section id="reference" data-nav="Where to look next" data-num="09">
+  <div class="shell">
+    <p class="lede-out"><strong>The specifications live in the repository.</strong> This site explains the design; the documents specify it, and they win where the two disagree.</p>
+
+    <div class="card-grid card-grid--2">
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md"><p class="card-kicker">Normative</p><h3>Protocol specification</h3><p>The complete wire protocol, in sections: envelope, identity, pairing, grants, task semantics, failure codes.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md"><p class="card-kicker">Design</p><h3>Architecture</h3><p>Reference topology, the one work model, selective streaming, deployment boundaries and interoperability notes.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_MESSAGING_STREAMING.md"><p class="card-kicker">Contract</p><h3>Messaging and streaming</h3><p>Two planes, stream lifecycle, open contract, packet frame, backpressure, failure semantics.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md"><p class="card-kicker">CLI</p><h3>Agent CLI reference</h3><p>Every <code>fasp</code> command, setup, pairing, delivery and retry behaviour.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/WORK_ITEMS.md"><p class="card-kicker">Model</p><h3>Work items</h3><p>Task status, mission phases, idempotency and recovery in one lifecycle.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/PRODUCTION_READINESS.md"><p class="card-kicker">Acceptance</p><h3>Production readiness</h3><p>Security gates, secure deployment, backup and recovery, and the site checklist.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_RUNTIME_PROFILES.md"><p class="card-kicker">Platforms</p><h3>Runtime profiles</h3><p>Windows, Linux, macOS, Raspberry Pi, Android gateways, local inference, ROS 1 and ROS 2.</p><span class="card-arrow">Open in repository →</span></a>
+      <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/COMMUNICATION_CATALOG.md"><p class="card-kicker">Catalog</p><h3>Communication catalog</h3><p>Every communication family, its FASP entry point, and whether it is native or needs an adapter.</p><span class="card-arrow">Open in repository →</span></a>
+    </div>
+  </div>
+</section>

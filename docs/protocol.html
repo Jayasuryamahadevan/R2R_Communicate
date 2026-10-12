@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Protocol reference — FASP</title>
+  <meta name="description" content="undefined">
+  <link rel="canonical" href="https://jayasuryamahadevan.github.io/R2R_Communicate/protocol/">
+  <meta name="theme-color" content="#0d1519" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f3f5f1" media="(prefers-color-scheme: light)">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="FASP reference harness">
+  <meta property="og:title" content="Protocol reference — FASP">
+  <meta property="og:description" content="undefined">
+  <meta property="og:url" content="https://jayasuryamahadevan.github.io/R2R_Communicate/protocol/">
+  <meta property="og:image" content="https://jayasuryamahadevan.github.io/R2R_Communicate/og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+  <script>
+    (function(){try{var t=localStorage.getItem('fasp-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
+  </script>
+  <script src="script.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<header class="site-header">
+    <div class="shell nav-row">
+      <a class="brand" href="index.html" aria-label="FASP home"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a>
+      <nav id="site-nav" class="site-nav" aria-label="Primary">
+        <a href="index.html">Overview</a>
+        <a href="architecture.html">Architecture</a>
+        <a href="protocol.html" aria-current="page">Protocol</a>
+        <a href="spatial.html">Spatial</a>
+        <a href="connectivity.html">Connectivity</a>
+        <a href="operations.html">Operations</a>
+        <a href="guide.html">Guide</a>
+      </nav>
+      <div class="nav-tools">
+        <button class="search-toggle" type="button" data-search-open aria-label="Search the site">
+          <svg viewBox="0 0 16 16" aria-hidden="true" width="14" height="14"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span>Search</span><kbd>/</kbd>
+        </button>
+        <button class="theme-toggle" type="button" data-theme-toggle aria-label="Switch colour theme">
+          <svg viewBox="0 0 16 16" aria-hidden="true" width="15" height="15" data-theme-icon><circle cx="8" cy="8" r="3.4" fill="currentColor"/></svg>
+        </button>
+        <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav" aria-label="Toggle navigation"><span aria-hidden="true">☰</span></button>
+      </div>
+    </div>
+  </header>
+<section class="page-hero">
+        <div class="shell">
+          <nav class="crumbs" aria-label="Breadcrumb"><a href="index.html">FASP</a><span aria-hidden="true">/</span><span>Protocol</span></nav>
+          <p class="eyebrow">03 / Protocol</p>
+          <h1>The wire contract</h1>
+          <p class="page-lede">One envelope schema, one canonicalisation rule, twenty-three envelope kinds, one dispatcher. Everything a peer needs to interoperate is on this page; the normative text lives in FASP_PROTOCOL.md.</p>
+          <dl class="hero-facts"><div><dt>Protocol</dt><dd>fasp/1.0</dd></div><div><dt>Signature</dt><dd>Ed25519 over RFC 8785</dd></div><div><dt>Inline limit</dt><dd>64 KiB</dd></div><div><dt>Envelope kinds</dt><dd>23</dd></div></dl>
+        </div>
+      </section>
+<main id="main" class="docs"><div class="shell docs-layout"><aside class="toc" aria-label="On this page">
+        <p class="toc-label">On this page</p>
+        <ol>
+          <li><a href="#envelope"><span class="toc-num">01</span><span>Envelope</span></a></li>
+          <li><a href="#identity"><span class="toc-num">02</span><span>Identity</span></a></li>
+          <li><a href="#pairing"><span class="toc-num">03</span><span>Pairing and grants</span></a></li>
+          <li><a href="#kinds"><span class="toc-num">04</span><span>Envelope kinds</span></a></li>
+          <li><a href="#streams"><span class="toc-num">05</span><span>Streaming</span></a></li>
+          <li><a href="#surface"><span class="toc-num">06</span><span>HTTP surface</span></a></li>
+          <li><a href="#errors"><span class="toc-num">07</span><span>Error codes</span></a></li>
+        </ol>
+      </aside><article class="doc-body"><section id="envelope" data-nav="Envelope" data-num="01">
+  <div class="shell"><p class="sec-num">01</p>
+    <p class="lede-out"><strong>Everything is one JSON object.</strong> There is no sideband header, no negotiated dialect and no per-peer framing. A bearer may chunk the bytes; it may not change their meaning.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>the complete envelope · required members</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>{
+  <span class="s">"fasp"</span>: <span class="s">"fasp/1.0"</span>,
+  <span class="s">"kind"</span>: <span class="s">"intent.propose"</span>,
+  <span class="s">"message_id"</span>: <span class="s">"9f1c…"</span>,
+  <span class="s">"from"</span>: <span class="s">"fasp:system:7Qm…"</span>,
+  <span class="s">"to"</span>:   <span class="s">"fasp:system:3Pk…"</span>,
+  <span class="s">"issued_at"</span>:  <span class="s">"2026-04-18T09:12:04Z"</span>,
+  <span class="s">"expires_at"</span>: <span class="s">"2026-04-18T09:14:04Z"</span>,
+  <span class="s">"nonce"</span>: <span class="s">"b7d1…"</span>,
+  <span class="s">"payload"</span>: { <span class="s">"capability"</span>: <span class="s">"observe.system.status.v1"</span>, <span class="s">"…"</span>: <span class="s">"…"</span> },
+
+  <span class="c">// required, and the reason the payload above can be trusted</span>
+  <span class="s">"signature"</span>: {
+    <span class="s">"alg"</span>:   <span class="s">"Ed25519"</span>,
+    <span class="s">"kid"</span>:   <span class="s">"ed25519-1a2b3c4d"</span>,
+    <span class="s">"value"</span>: <span class="s">"MEUCIQ…base64"</span>
+  },
+
+  <span class="c">// optional, for threading a conversation or its cause</span>
+  <span class="s">"conversation_id"</span>: <span class="s">"c1…"</span>,
+  <span class="s">"causation_id"</span>:    <span class="s">"m0…"</span>
+}</code></pre>
+    </div>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Member</th><th>Rule</th><th>Failure it prevents</th></tr></thead>
+        <tbody>
+          <tr><td><code>fasp</code></td><td>Protocol tag, currently <code>fasp/1.0</code></td><td>Speaking this protocol to something that is not</td></tr>
+          <tr><td><code>kind</code></td><td>Selects the schema and the handler</td><td>A payload being interpreted as a nearby, more permissive kind</td></tr>
+          <tr><td><code>message_id</code></td><td>One replay-dedup key shared by every kind</td><td>A retried envelope executing its effect twice</td></tr>
+          <tr><td><code>from</code> / <code>to</code></td><td><code>to</code> must be this node</td><td>A message aimed elsewhere being processed here</td></tr>
+          <tr><td><code>issued_at</code> / <code>expires_at</code></td><td>Checked against a declared clock-skew allowance</td><td>A captured envelope being replayed days later</td></tr>
+          <tr><td><code>nonce</code></td><td>Recorded in the replay journal</td><td>Two envelopes with different IDs carrying one intent</td></tr>
+          <tr><td><code>payload</code></td><td>Schema per kind, inline budget 64 KiB</td><td>An unbounded envelope becoming a memory attack</td></tr>
+          <tr><td><code>signature</code></td><td>Ed25519 over canonical JSON, minus this member</td><td>Content mutation, including your own payload</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Canonicalisation is the whole game</h3>
+    <p>A signature over "the JSON" is meaningless unless both sides serialise identically. FASP uses <a href="https://www.rfc-editor.org/rfc/rfc8785">RFC 8785</a> JSON Canonicalization Scheme with the pinned <code>rfc8785</code> implementation, verified in the test suite against the official RFC test vectors. The signature is computed over the canonical form of the envelope with the <code>signature</code> member removed — never over a reserialisation that might reorder a key.</p>
+    <p>The JSON decoder is equally deliberate. Duplicate keys, non-finite numbers, oversized integers, invalid UTF-8 and overlarge frames are rejected <em>before</em> dispatch, because a framing quirk that reaches policy is a framing bug in policy.</p>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Signed is not encrypted</p>
+      <p>The envelope provides authenticity and integrity, not confidentiality. TLS protects the link. A reverse proxy or relay that terminates TLS can read message contents — which is why an end-to-end encrypted relay is listed as something you would have to build, not something this provides.</p>
+    </div>
+
+    <p class="source-note">Normative text: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md">FASP_PROTOCOL.md</a> · implementation <code>fasp_harness/crypto/canonical.py</code>, <code>crypto/envelope.py</code></p>
+  </div>
+</section>
+
+<section id="identity" data-nav="Identity" data-num="02">
+  <div class="shell"><p class="sec-num">02</p>
+    <p class="lede-out"><strong>An identity you can derive, not one you can assign.</strong> The <code>system_id</code> is computed from the public key, so it cannot be set by configuration, claimed by a peer, or reused after a key rotation.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>ID card · /.well-known/fasp/id-card.json</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>{
+  <span class="s">"fasp"</span>: <span class="s">"fasp/1.0"</span>,
+  <span class="s">"type"</span>: <span class="s">"id_card"</span>,
+  <span class="s">"system_id"</span>: <span class="s">"fasp:system:7Qm…"</span>,
+  <span class="s">"public_key"</span>: <span class="s">"MCowBQYDK2Vw…"</span>,
+  <span class="s">"display_name"</span>: <span class="s">"aisle-rover"</span>,
+  <span class="s">"endpoints"</span>: {
+    <span class="s">"profile"</span>:    <span class="s">"https://rover.local:8766/profile"</span>,
+    <span class="s">"pair_hello"</span>: <span class="s">"https://rover.local:8766/pair/hello"</span>,
+    <span class="s">"envelopes"</span>:  <span class="s">"https://rover.local:8766/fasp/v1/envelopes"</span>,
+    <span class="s">"receipts"</span>:   <span class="s">"https://rover.local:8766/fasp/v1/receipts"</span>,
+    <span class="s">"channel"</span>:    <span class="s">"wss://rover.local:8766/fasp/v1/channel"</span>
+  },
+  <span class="s">"capabilities"</span>: [<span class="s">"observe.system.status.v1"</span>],
+  <span class="s">"layers"</span>: [<span class="s">"L3_FLEET"</span>],
+  <span class="s">"runtime"</span>: {
+    <span class="s">"os_family"</span>: <span class="s">"linux"</span>, <span class="s">"architecture"</span>: <span class="s">"aarch64"</span>,
+    <span class="s">"python"</span>: <span class="s">"3.11.9"</span>, <span class="s">"containerized"</span>: <span class="f">false</span>,
+    <span class="s">"profiles"</span>: [<span class="s">"core-http"</span>, <span class="s">"edge-safe"</span>]
+  },
+  <span class="s">"issued_at"</span>: <span class="s">"2026-01-02T00:00:00Z"</span>,
+  <span class="s">"expires_at"</span>: <span class="s">"2026-07-02T00:00:00Z"</span>,
+  <span class="s">"signature"</span>: { <span class="s">"alg"</span>: <span class="s">"Ed25519"</span>, <span class="s">"kid"</span>: <span class="s">"ed25519-1a2b3c4d"</span>, <span class="s">"value"</span>: <span class="s">"…"</span> }
+}</code></pre>
+    </div>
+
+    <p>Discovery stores a card as <strong>self-signed and untrusted</strong>. Finding a node on a network tells you a key exists and nothing else — no authority is created by scanning. The card is verified against the key that actually signed the envelope, and a card whose key does not match the peer record is an identity-mismatch error, not a silent upgrade.</p>
+
+    <p class="source-note">Implementation <code>fasp_harness/crypto/identity.py</code> · <code>system_id = "fasp:system:" + b64(sha256(public_key))</code>, <code>kid = "ed25519-" + token_hex(4)</code></p>
+  </div>
+</section>
+
+<section id="pairing" data-nav="Pairing and grants" data-num="03">
+  <div class="shell"><p class="sec-num">03</p>
+    <p class="lede-out"><strong>Two-sided, always.</strong> Registration creates a pending relationship. Authority appears only when a human has compared the same fingerprint on both machines.</p>
+
+    <ol class="steps">
+      <li class="step"><strong>Fetch or discover the other card</strong><span>Read the peer's signed profile over HTTPS, or discover it on an explicitly supplied CIDR.</span></li>
+      <li class="step"><strong>Register in both directions</strong><span><code>POST /pair/hello</code> with their card. The reply supplies a short pair code and this node's own card.</span></li>
+      <li class="step"><strong>Compare the pair code out of band</strong><span>On both trusted local displays, or over a channel you already trust. This is the entire human check.</span></li>
+      <li class="step"><strong>Approve locally on each node</strong><span><code>POST /pair/confirm</code> with the admin token, peer ID, pair code and the capability prefixes to allow. Pairings expire after 90 days by default.</span></li>
+      <li class="step"><strong>Only now send work</strong><span>Until the confirmation step, nothing the peer says can reach an adapter.</span></li>
+    </ol>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Shared Wi-Fi is not shared authority</p>
+      <p>Being on the same cable, the same WLAN, or a paired Bluetooth link grants nothing. The receiver still checks the signature, the paired identity, the capability, the grant, the expiry, the replay journal and its own policy. Trust-on-first-use applies to a <em>pending</em> record and to nothing else.</p>
+    </div>
+
+    <h3>Grants narrow, never widen</h3>
+    <p>Pairing prefixes are the base authorization. A grant adds a time-limited requirement on top of it for a specific peer, purpose and window — it can only ever be more restrictive than what pairing already permits.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>issue a scoped grant</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>curl -s -X POST http://host:8766/grants/issue \
+  -H <span class="s">"X-FASP-Admin-Token: $TOKEN"</span> -d <span class="s">'{
+  "subject_peer": "fasp:system:7Qm…",
+  "capability_prefixes": ["reversible."],
+  "duration_seconds": 3600,
+  "purpose": "one staging deploy"
+}'</span></code></pre>
+    </div>
+
+    <p>Reference the grant from an <code>intent.propose</code> payload with <code>grant: {"id": …}</code>. <code>observe</code> and <code>reversible</code> are the executable risk classes; <code>reversible</code> requires a grant. Revoking a grant does not disturb the pairing, and revoking a peer takes effect immediately regardless of pairing state until a fresh pairing is completed.</p>
+
+    <p class="source-note">CLI equivalents: <code>fasp register</code>, <code>fasp approve</code>, <code>fasp peers</code> · <a href="guide.html#pairing">pairing walkthrough →</a></p>
+  </div>
+</section>
+
+<section id="kinds" data-nav="Envelope kinds" data-num="04">
+  <div class="shell"><p class="sec-num">04</p>
+    <p class="lede-out"><strong>Twenty-three kinds, one table, one dispatcher.</strong> An unrecognised kind is rejected with <code>protocol.unsupported_kind</code> — never silently accepted, and never routed to a nearby handler.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Kind</th><th>Group</th><th>What it does</th><th>Reaches an adapter?</th></tr></thead>
+        <tbody>
+          <tr><td><code>intent.propose</code></td><td class="num">work</td><td>Request a capability with an idempotency key</td><td>Yes, after all gates</td></tr>
+          <tr><td><code>task.cancel</code></td><td class="num">work</td><td>Cancel a running work item by key</td><td>Only the optional cancel hook</td></tr>
+          <tr><td><code>task.status</code></td><td class="num">work</td><td>Read lifecycle, phase and outcome</td><td>No</td></tr>
+          <tr><td><code>inbox.pull</code></td><td class="num">work</td><td>Drain stored envelopes for a recipient</td><td>No</td></tr>
+          <tr><td><code>receipt.processed</code></td><td class="num">work</td><td>Acknowledge a delivery receipt</td><td>No</td></tr>
+          <tr><td><code>artifact.fetch</code></td><td class="num">data</td><td>Retrieve a stored artifact by digest</td><td>No — per-peer authorization only</td></tr>
+          <tr><td><code>stream.open</code></td><td class="num">stream</td><td>Open a finite lease with limits and purpose</td><td>No</td></tr>
+          <tr><td><code>stream.packet</code></td><td class="num">stream</td><td>One bounded, sequenced, signed packet</td><td>No</td></tr>
+          <tr><td><code>stream.pull</code></td><td class="num">stream</td><td>Authorized pull of retained packets</td><td>No</td></tr>
+          <tr><td><code>stream.subscribe</code></td><td class="num">stream</td><td>Register a named downstream recipient</td><td>No</td></tr>
+          <tr><td><code>stream.unsubscribe</code></td><td class="num">stream</td><td>Withdraw that recipient's consent</td><td>No</td></tr>
+          <tr><td><code>stream.close</code></td><td class="num">stream</td><td>End the lease and release retention</td><td>No</td></tr>
+          <tr><td><code>reservation.request</code></td><td class="num">spatial</td><td>Claim space-time volume with a guard band</td><td>No</td></tr>
+          <tr><td><code>reservation.release</code></td><td class="num">spatial</td><td>Release a claim early</td><td>No</td></tr>
+          <tr><td><code>safety.halt</code></td><td class="num">safety</td><td>Request a halt. One-way; there is no clear</td><td>Layer 2 only, as a request</td></tr>
+          <tr><td><code>safety.status</code></td><td class="num">safety</td><td>Read Layer 1 observation state</td><td>No — observation only</td></tr>
+          <tr><td><code>safety.evidence</code></td><td class="num">safety</td><td>Publish signed, hash-chained evidence</td><td>No</td></tr>
+          <tr><td><code>mission.dispatch</code></td><td class="num">fleet</td><td>Start a fleet mission as a work item</td><td>Via the fleet adapter</td></tr>
+          <tr><td><code>mission.cancel</code></td><td class="num">fleet</td><td>Cancel a mission</td><td>Via the fleet adapter</td></tr>
+          <tr><td><code>mission.status</code></td><td class="num">fleet</td><td>Mission phase, progress and outcome</td><td>No</td></tr>
+          <tr><td><code>fleet.status</code></td><td class="num">fleet</td><td>Vehicles, leadership and twin divergence</td><td>No</td></tr>
+          <tr><td><code>incident.report</code></td><td class="num">fleet</td><td>Record an incident against the audit chain</td><td>No</td></tr>
+          <tr><td><code>heartbeat</code></td><td class="num">fleet</td><td>Liveness with runtime profile</td><td>No</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout callout--danger">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Read the table again</p>
+      <p>There is no <code>safety.clear</code>. There is no <code>actuate</code>. There is no kind that turns a peer's text into a local effect. That absence is the protocol's most load-bearing feature, and it is why the layer guard can be a check rather than a convention.</p>
+    </div>
+
+    <p class="source-note">Source <code>FaspHarness.DISPATCH</code> in <code>fasp_harness/core.py</code> · behaviour per kind in <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/COMMUNICATION_CATALOG.md">COMMUNICATION_CATALOG.md</a></p>
+  </div>
+</section>
+
+<section id="streams" data-nav="Streaming" data-num="05">
+  <div class="shell"><p class="sec-num">05</p>
+    <p class="lede-out"><strong>Two planes, two guarantees.</strong> The control plane that opens and closes a stream is a reliable packet exchange. The data plane is a sequence of bounded, signed packets under a lease that always expires.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <caption>Hard limits. These are constants in the implementation, not configuration.</caption>
+        <thead><tr><th>Bound</th><th>Value</th><th>Applies to</th></tr></thead>
+        <tbody>
+          <tr><td>Inline envelope</td><td class="num">64 KiB</td><td>Every single-packet message</td></tr>
+          <tr><td>Stream packet</td><td class="num">40 KiB</td><td>One <code>stream.packet</code> payload</td></tr>
+          <tr><td>Reassembled frame</td><td class="num">4 MiB</td><td>Chunks per frame before refusal</td></tr>
+          <tr><td>Credit window</td><td class="num">512</td><td>Reliable delivery, upper bound</td></tr>
+          <tr><td>Retention</td><td class="num">4096 packets</td><td>Per stream, upper bound</td></tr>
+          <tr><td>Clock skew allowance</td><td class="num">60 s</td><td>Expiry checking</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Reliable or latest</h3>
+    <p><code>reliable</code> delivery enforces sequence and the credit window: a gap is detected, not silently tolerated. <code>latest</code> is for replaceable samples — telemetry frames where only the newest value matters — and permits drops by design. Both modes use bounded packets and bounded retention, and both require an explicit expiry.</p>
+
+    <h3>Packetisation</h3>
+    <p>Large frames are split into chunks as needed rather than by building a list of all chunks first, which keeps peak memory proportional to the chunk in hand instead of the whole message. Reassembly permits at most eight incomplete frames per consumer by default, so a slow or absent reader cannot pin memory indefinitely. Packets carry a checksum and are validated before they are stored or forwarded.</p>
+
+    <h3>Forwarding signs again</h3>
+    <p>A forwarded event is signed by the forwarding node, not re-presented as the original sender's. The receiving node re-checks peer state, capability, current sharing policy, grant expiry and revocation before every live push, and removes a stale subscription without blocking the producer's packets.</p>
+
+    <p class="source-note">Full contract: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_MESSAGING_STREAMING.md">FASP_MESSAGING_STREAMING.md</a> · sharing rules: <a href="architecture.html#streaming">architecture → streaming and consent</a></p>
+  </div>
+</section>
+
+<section id="surface" data-nav="HTTP surface" data-num="06">
+  <div class="shell"><p class="sec-num">06</p>
+    <p class="lede-out"><strong>Nineteen endpoints.</strong> Operator routes take the admin token and are constant-time compared. Peer routes take a signed envelope. Public routes only describe the node.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Endpoint</th><th>Method</th><th>Access</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td><code>/openapi.json</code></td><td class="num">GET</td><td>public</td><td>OpenAPI 3.1 description of this surface</td></tr>
+          <tr><td><code>/profile</code></td><td class="num">GET</td><td>public</td><td>Signed system profile</td></tr>
+          <tr><td><code>/.well-known/fasp/id-card.json</code></td><td class="num">GET</td><td>public</td><td>Identity card for discovery</td></tr>
+          <tr><td><code>/health</code></td><td class="num">GET</td><td>public</td><td>Liveness only</td></tr>
+          <tr><td><code>/livez</code></td><td class="num">GET</td><td>public</td><td>Is this process wedged? Restart me</td></tr>
+          <tr><td><code>/readyz</code></td><td class="num">GET</td><td>public</td><td>Should this node receive work? A standby answers no</td></tr>
+          <tr><td><code>/health/detail</code></td><td class="num">GET</td><td>admin token</td><td>Per-check detail behind the probes</td></tr>
+          <tr><td><code>/safety</code></td><td class="num">GET</td><td>admin token</td><td>Layer 1 evidence: controller, functions, state</td></tr>
+          <tr><td><code>/fleet</code></td><td class="num">GET</td><td>admin token</td><td>Vehicles, missions, leadership, twin divergence</td></tr>
+          <tr><td><code>/peers</code></td><td class="num">GET</td><td>admin token</td><td>Inspect pairing state</td></tr>
+          <tr><td><code>/metrics</code></td><td class="num">GET</td><td>admin token</td><td>Prometheus text exposition</td></tr>
+          <tr><td><code>/pair/hello</code></td><td class="num">POST</td><td>signed card</td><td>Create or update a pending pairing record</td></tr>
+          <tr><td><code>/pair/confirm</code></td><td class="num">POST</td><td>admin token</td><td>Turn a matching pending record into a paired peer</td></tr>
+          <tr><td><code>/pair/revoke</code></td><td class="num">POST</td><td>admin token</td><td>Reject a peer immediately, whatever the pairing state</td></tr>
+          <tr><td><code>/grants/issue</code></td><td class="num">POST</td><td>admin token</td><td>Issue a time-limited, capability-scoped grant</td></tr>
+          <tr><td><code>/grants/revoke</code></td><td class="num">POST</td><td>admin token</td><td>Revoke a previously issued grant</td></tr>
+          <tr><td><code>/fasp/v1/envelopes</code></td><td class="num">POST</td><td>paired envelope</td><td>Generic ingress; dispatches on <code>kind</code></td></tr>
+          <tr><td><code>/fasp/v1/receipts</code></td><td class="num">POST</td><td>paired envelope</td><td>Narrowed alias into the same dispatch</td></tr>
+          <tr><td><code>/fasp/v1/channel</code></td><td class="num">WS</td><td>paired envelope per frame</td><td>Same dispatch over a persistent connection, plus push</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The admin token arrives in <code>X-FASP-Admin-Token</code> and is compared in constant time — it gates a single credential, so it is not the place to leak timing. The WebSocket channel is always a latency optimisation over durable state, never a replacement for it: if a push is lost, the result is still there to pull.</p>
+
+    <p class="source-note">Authoritative table: <code>fasp_harness/transport/http_app.py</code>, mirrored into OpenAPI by <code>transport/openapi.py</code></p>
+  </div>
+</section>
+
+<section id="errors" data-nav="Error codes" data-num="07">
+  <div class="shell"><p class="sec-num">07</p>
+    <p class="lede-out"><strong>Failures are named.</strong> An error code tells you which gate refused and therefore what to change. Mapping to HTTP status is a consequence, not the point.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Prefix</th><th>HTTP</th><th>Means</th><th>First thing to check</th></tr></thead>
+        <tbody>
+          <tr><td><code>auth.*</code></td><td class="num">401</td><td>Signature, audience, pairing or grant failed</td><td>Clock skew, then whether the peer is paired and unrevoked</td></tr>
+          <tr><td><code>policy.*</code></td><td class="num">400</td><td>Layer violation, failed preflight, insecure configuration</td><td>The declared capability's meaning, not its name</td></tr>
+          <tr><td><code>stream.*</code></td><td class="num">400</td><td>Lease, limit, field allowlist or consent failure</td><td>The local <code>stream_sharing</code> rule</td></tr>
+          <tr><td><code>task.*</code></td><td class="num">400</td><td>Too late, cancelled, or a state conflict</td><td>Whether the work item already reached a terminal state</td></tr>
+          <tr><td><code>lifecycle.*</code></td><td class="num">400</td><td>Invalid state transition</td><td>The declared lifecycle, not the requested one</td></tr>
+          <tr><td><code>fleet.*</code></td><td class="num">400</td><td>Mission or vehicle could not be accepted</td><td>Twin preflight and vendor adapter availability</td></tr>
+          <tr><td><code>protocol.unsupported_kind</code></td><td class="num">404</td><td>No handler for this kind</td><td>Version skew between peers</td></tr>
+          <tr><td><code>capability.unavailable</code></td><td class="num">404</td><td>The node does not offer this capability</td><td>The local adapter's registered capability list</td></tr>
+          <tr><td><code>resource.too_large</code></td><td class="num">413</td><td>Past the envelope or frame budget</td><td>Use a stream or an artifact reference instead</td></tr>
+          <tr><td><code>resource.exhausted</code></td><td class="num">413</td><td>Rate limit or queue depth reached</td><td>Per-peer and per-IP token buckets</td></tr>
+          <tr><td><code>transport.response_unavailable</code></td><td class="num">503</td><td>The node could not produce a response in time</td><td>Adapter latency against the declared runtime budget</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Worked examples from the test suite</p>
+      <p>Stream sharing with an empty rule set denies remote streams. A grant can only narrow a pairing prefix. Reusing an <code>idempotency_key</code> with a different payload is refused rather than replayed. Replaying an envelope returns the original recorded response. Each of these is a test, not a paragraph.</p>
+    </div>
+
+    <p class="source-note">Enumerations: <code>fasp_harness/protocol/errors.py</code> · normative behaviour in <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md">FASP_PROTOCOL.md</a></p>
+  </div>
+</section><nav class="pager" aria-label="Page navigation"><a class="pager-link pager-prev" href="architecture.html">
+          <span class="pager-dir">Previous</span>
+          <span class="pager-title">Architecture</span>
+        </a><a class="pager-link pager-next" href="spatial.html">
+          <span class="pager-dir">Next</span>
+          <span class="pager-title">Spatial</span>
+        </a></nav></article></div></main>
+<footer class="site-footer">
+    <div class="shell footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span>FASP<span class="brand-soft"> / harness</span></span></a>
+        <p>A coordination protocol that structurally refuses to become a control system.</p>
+      </div>
+      <div class="footer-cols">
+        <div><p class="footer-label">Documentation</p>
+          <a href="architecture.html">Architecture</a>
+          <a href="protocol.html">Protocol</a>
+          <a href="spatial.html">Spatial</a>
+          <a href="connectivity.html">Connectivity</a>
+          <a href="operations.html">Operations</a>
+          <a href="guide.html">Guide</a>
+        </div>
+        <div><p class="footer-label">Repository</p>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate">Source code</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/README.md">README</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md">Protocol spec</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">Architecture</a>
+          <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/LICENSE">Apache 2.0</a>
+        </div>
+      </div>
+      <div class="footer-note">
+        <p class="footer-label">Status</p>
+        <p>Reference implementation and research harness. <strong>Not</strong> safety-certified software, not hard real-time, not independently validated. Physical deployment requires site-specific safety and security review.</p>
+        <p class="footer-copy">© 2026 Jayasurya Mahadevan</p>
+      </div>
+    </div>
+  </footer>
+  <div class="search-modal" data-search-modal hidden>
+    <div class="search-backdrop" data-search-close></div>
+    <div class="search-panel" role="dialog" aria-modal="true" aria-label="Search the site">
+      <div class="search-field">
+        <svg viewBox="0 0 16 16" aria-hidden="true" width="15" height="15"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input type="search" data-search-input placeholder="Search pages and sections…" aria-label="Search pages and sections" autocomplete="off" spellcheck="false">
+        <kbd>Esc</kbd>
+      </div>
+      <ul class="search-results" data-search-results></ul>
+      <p class="search-hint">Type to filter. <kbd>↑</kbd><kbd>↓</kbd> to move, <kbd>Enter</kbd> to open.</p>
+    </div>
+  </div>
+</body>
+</html>

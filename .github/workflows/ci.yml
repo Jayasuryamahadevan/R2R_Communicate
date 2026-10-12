@@ -6,6 +6,26 @@ on:
   pull_request:
 
 jobs:
+  website:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the website
+        run: node site/build.mjs
+      # docs/ is committed so Pages has something to publish and contributors
+      # can preview without Node. This gate is what stops it drifting from the
+      # sources in site/, which is the only place content should be edited.
+      - name: Verify docs/ matches site/
+        run: |
+          git diff --exit-code --stat -- docs/
+          echo "docs/ is out of date with site/ — run: node site/build.mjs"
+
+      - name: Verify internal links resolve
+        run: node site/check-links.mjs
+
   test:
     runs-on: ubuntu-latest
     strategy:

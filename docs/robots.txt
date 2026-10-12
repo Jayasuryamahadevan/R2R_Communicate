@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://jayasuryamahadevan.github.io/R2R_Communicate/sitemap.xml

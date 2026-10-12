@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'docs/**'
+      - 'site/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -28,6 +29,16 @@ jobs:
         uses: actions/checkout@v4
       - name: Configure Pages
         uses: actions/configure-pages@v5
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # docs/ is generated. Rebuilding here means the published site can never be
+      # an older build than the sources that produced it.
+      - name: Build the website
+        run: node site/build.mjs
+      - name: Verify links
+        run: node site/check-links.mjs
       - name: Upload website
         uses: actions/upload-pages-artifact@v4
         with:

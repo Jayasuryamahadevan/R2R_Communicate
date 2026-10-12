@@ -1,0 +1,223 @@
+---
+slug: connectivity
+nav: Connectivity
+title: Connectivity and integration
+eyebrow: 05 / Connectivity
+heading: Bears, carriers, adapters
+lede: Adding every protocol to the FASP core would duplicate authorization, framing and storage once per ecosystem. Instead each source terminates at a small adapter and enters the same signed path. This page tells you which is which — and which ones this repository actually implements.
+facts:
+  - [Native, HTTPS, WebSocket, RFCOMM, LE L2CAP]
+  - [Everything else, Adapter or IP carrier]
+  - [Rule, One link per deployment]
+---
+
+<section id="rule" data-nav="How to choose" data-num="01">
+  <div class="shell">
+    <p class="lede-out"><strong>The selection rule.</strong> Use HTTPS for reliable control and low-rate packets on any IP carrier. Use WebSocket when a paired peer needs lower-latency bidirectional push. Use Bluetooth when IP is unavailable and both hosts support the radio profile. Use a gateway for fieldbuses, broker ecosystems, and devices that cannot sign for themselves. Route sustained data through a leased stream and send the control that opens and closes it as a reliable packet.</p>
+
+    <div class="figure figure--plain">
+      <svg viewBox="0 0 880 300" role="img" aria-labelledby="conn-title conn-desc" class="diag">
+        <title id="conn-title">How any communication family reaches the canonical FASP path</title>
+        <desc id="conn-desc">Many source families at the top feed into a source adapter that authenticates, parses, validates and attaches provenance. That adapter produces either a packet, a stream lease, or an artifact reference. All three converge on one signed-envelope verifier and one policy and dispatch path, which then reaches local work state and an authorized local adapter.</desc>
+        <defs>
+          <marker id="c-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M0 1l9 4-9 4z" fill="var(--accent)"/>
+          </marker>
+        </defs>
+
+        <g class="d-sources">
+          <rect class="d-src" x="14" y="26" width="124" height="28" rx="6"/><text x="76" y="44" text-anchor="middle">fieldbus</text>
+          <rect class="d-src" x="14" y="62" width="124" height="28" rx="6"/><text x="76" y="80" text-anchor="middle">broker</text>
+          <rect class="d-src" x="14" y="98" width="124" height="28" rx="6"/><text x="76" y="116" text-anchor="middle">robot middleware</text>
+          <rect class="d-src" x="14" y="134" width="124" height="28" rx="6"/><text x="76" y="152" text-anchor="middle">serial / CAN</text>
+          <rect class="d-src" x="14" y="170" width="124" height="28" rx="6"/><text x="76" y="188" text-anchor="middle">constrained radio</text>
+          <rect class="d-src" x="14" y="206" width="124" height="28" rx="6"/><text x="76" y="224" text-anchor="middle">local process</text>
+        </g>
+
+        <path class="d-edge d-edge--dim" d="M138 40h34v98h26" marker-end="url(#c-arrow)"/>
+        <path class="d-edge d-edge--dim" d="M138 76h34v62h26" marker-end="url(#c-arrow)"/>
+        <path class="d-edge d-edge--dim" d="M138 112h60" marker-end="url(#c-arrow)"/>
+        <path class="d-edge d-edge--dim" d="M138 148h34V138h26" marker-end="url(#c-arrow)"/>
+        <path class="d-edge d-edge--dim" d="M138 184h34v-46h26" marker-end="url(#c-arrow)"/>
+        <path class="d-edge d-edge--dim" d="M138 220h34v-82h26" marker-end="url(#c-arrow)"/>
+
+        <rect class="d-adapter" x="204" y="76" width="196" height="112" rx="10"/>
+        <text class="d-adapter-title" x="302" y="104" text-anchor="middle">SOURCE ADAPTER</text>
+        <text class="d-adapter-text" x="302" y="126" text-anchor="middle">authenticate · parse</text>
+        <text class="d-adapter-text" x="302" y="146" text-anchor="middle">validate · attach provenance</text>
+        <text class="d-adapter-text" x="302" y="170" text-anchor="middle">reject invalid input</text>
+
+        <path class="d-edge" d="M400 112h60" marker-end="url(#c-arrow)"/>
+        <path class="d-edge" d="M400 132h60" marker-end="url(#c-arrow)"/>
+        <path class="d-edge" d="M400 152h60" marker-end="url(#c-arrow)"/>
+
+        <g>
+          <rect class="d-mini d-box" x="470" y="94" width="126" height="32" rx="6"/>
+          <text class="d-box-title" x="533" y="114" text-anchor="middle">packet</text>
+          <rect class="d-mini d-box" x="470" y="134" width="126" height="32" rx="6"/>
+          <text class="d-box-title" x="533" y="154" text-anchor="middle">stream lease</text>
+          <rect class="d-mini d-box" x="470" y="174" width="126" height="32" rx="6"/>
+          <text class="d-box-title" x="533" y="194" text-anchor="middle">artifact ref</text>
+        </g>
+
+        <path class="d-edge" d="M596 150h34" marker-end="url(#c-arrow)"/>
+
+        <rect class="d-adapter d-adapter--main" x="640" y="76" width="226" height="112" rx="10"/>
+        <text class="d-adapter-title" x="753" y="104" text-anchor="middle">ONE SIGNED PATH</text>
+        <text class="d-adapter-text" x="753" y="126" text-anchor="middle">verifier · policy · dispatch</text>
+        <text class="d-adapter-text" x="753" y="146" text-anchor="middle">durable work state</text>
+        <text class="d-adapter-text" x="753" y="170" text-anchor="middle">authorized local adapter</text>
+
+        <text class="d-note" x="14" y="268">Authorization, framing and storage are written once. Adding a protocol means writing an adapter, not a second protocol.</text>
+      </svg>
+    </div>
+
+    <p>The pipeline diagram is the reason the adapter concept is not a compromise. An already-signed FASP envelope is verified as received. A gateway for an unsigned device must validate the device-specific data and sign a <em>new</em> envelope with the gateway's own identity, preserving the original source as provenance — because pretending an unsigned device is a paired FASP peer would be a lie the policy engine would have to believe.</p>
+  </div>
+</section>
+
+<section id="matrix" data-nav="The matrix" data-num="02">
+  <div class="shell">
+    <p class="lede-out"><strong>Three labels, and the difference matters.</strong> <strong>Native</strong> means this repository implements the bearer. <strong>IP carrier</strong> means the operating system gives you a routable IP link for the native HTTPS or WebSocket bearer. <strong>Adapter</strong> means a gateway or bridge is needed — listing one does not imply it is implemented.</p>
+
+    <div class="table-wrap">
+      <table class="data">
+        <thead><tr><th>Family</th><th>Common choices</th><th>FASP entry</th><th>Status</th></tr></thead>
+        <tbody>
+          <tr><td>Local process</td><td>Function calls, Unix sockets, named pipes, shared memory, file drop</td><td>Local adapter creates packet or stream</td><td><span class="pill pill--muted">Adapter</span></td></tr>
+          <tr><td>Wired IP</td><td>Ethernet copper or fibre, industrial Ethernet / TSN, USB Ethernet</td><td>HTTPS or WebSocket</td><td><span class="pill pill--muted">IP carrier</span></td></tr>
+          <tr><td>Wireless IP</td><td>Wi-Fi, cellular 4G/5G, private LTE, Thread/6LoWPAN, IP VPN</td><td>HTTPS or WebSocket</td><td><span class="pill pill--muted">IP carrier</span></td></tr>
+          <tr><td>Bluetooth Classic</td><td>RFCOMM, Bluetooth PAN/IP</td><td>Signed packet or stream packet</td><td><span class="pill">Native RFCOMM</span></td></tr>
+          <tr><td>Bluetooth LE</td><td>LE L2CAP credit-based channels, GATT</td><td>Signed packet or stream packet</td><td><span class="pill">Native L2CAP</span></td></tr>
+          <tr><td>Direct serial and buses</td><td>USB CDC, UART / RS-232 / RS-485, SPI, I²C, CAN / CAN FD / CANopen</td><td>Adapter frames and signs packets</td><td><span class="pill pill--amber">Adapter</span></td></tr>
+          <tr><td>Constrained radio</td><td>Zigbee / 802.15.4, LoRaWAN, NFC, satellite and mesh gateways</td><td>Gateway validates and signs</td><td><span class="pill pill--amber">Adapter</span></td></tr>
+          <tr><td>Web request/response</td><td>HTTP REST, HTTP/2 or 3, Server-Sent Events, CoAP</td><td>Packet; observe-style feeds become streams</td><td><span class="pill">Native HTTPS</span></td></tr>
+          <tr><td>Persistent sessions</td><td>WebSocket, raw TCP/TLS, UDP/DTLS, QUIC, WebTransport</td><td>Packet or leased stream</td><td><span class="pill">Native WebSocket</span></td></tr>
+          <tr><td>RPC and media</td><td>gRPC unary and streaming, WebRTC data channel and media</td><td>Packet or leased stream</td><td><span class="pill pill--amber">Adapter</span></td></tr>
+          <tr><td>Brokers and logs</td><td>MQTT / MQTT-SN, AMQP, NATS/JetStream, Kafka, ZeroMQ</td><td>Consumer validates, dedupes, signs</td><td><span class="pill pill--amber">Adapter</span></td></tr>
+          <tr><td>Robot and industrial</td><td>DDS/RTPS, ROS 2, OPC UA client/server or PubSub, Modbus TCP/RTU</td><td>Schema-aware gateway</td><td><span class="pill pill--amber">Adapter</span></td></tr>
+          <tr><td>One-time objects</td><td>Filesystem, object store, HTTP download</td><td>Local artifact and signed reference</td><td><span class="pill">Native local store</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>The groupings follow the standards and their maintainers' own descriptions, so the taxonomy can be checked against primary sources rather than taken on trust. The reference harness stores artifacts produced by local adapters and supports authorized fetch; it does <strong>not</strong> expose a generic remote blob upload endpoint.</p>
+
+    <p class="source-note">Full catalog with standard references: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/COMMUNICATION_CATALOG.md">COMMUNICATION_CATALOG.md</a> · setup detail in <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/CONNECTIVITY.md">CONNECTIVITY.md</a></p>
+  </div>
+</section>
+
+<section id="ip" data-nav="HTTPS and WebSocket" data-num="03">
+  <div class="shell">
+    <p class="lede-out"><strong>The operating system supplies the network; FASP uses the endpoint it is given.</strong> Ethernet, Wi-Fi and cellular are all the same thing to this layer, which is why one bearer covers all of them.</p>
+
+    <p>The REST interface publishes an OpenAPI 3.1 description at <code>/openapi.json</code> and accepts paired, signed requests at <code>/fasp/v1/envelopes</code>. HTTP parsing, TLS and ALPN negotiation, and chunked encoding are handled by an audited library rather than a hand-rolled <code>http.server</code> — that is not a stylistic choice, it is the entire reason those paths are not where the bugs are.</p>
+
+    <h3>The channel is an optimisation</h3>
+    <p><code>/fasp/v1/channel</code> is a WebSocket carrying the identical signed-envelope protocol, frame by frame, multiplexed over logical channels with per-channel grant and capability enforcement. It exists to remove a round trip from push. It is never the only copy of anything: if a push is lost, the result is still in durable state and can be pulled.</p>
+
+    <h3>TLS posture</h3>
+    <p>Use TLS 1.3 on any routable link. <code>--tls-client-ca</code> requires and verifies client certificates for an additional transport identity check — and is still never a substitute for envelope-level peer authorization, which runs on every request regardless of how the connection was established.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>production-shaped listener</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>python3 -m fasp_harness serve --state-dir .fasp/laptop \
+  --public-url https://192.168.0.22:8766 \
+  --tls-cert cert.pem --tls-key key.pem --tls-client-ca client-ca.pem \
+  --rate-limit-per-peer 10 --rate-limit-burst 20 \
+  --ip-rate-limit-per-second 20 --ip-rate-limit-burst 40</code></pre>
+    </div>
+
+    <p class="source-note">Endpoint reference: <a href="protocol.html#surface">protocol → HTTP surface</a></p>
+  </div>
+</section>
+
+<section id="bluetooth" data-nav="Bluetooth bearers" data-num="04">
+  <div class="shell">
+    <p class="lede-out"><strong>For sites with no IP at all.</strong> Two opt-in Linux listeners carry the same signed protocol over the radio — and still go through the same signature, pairing and policy checks as an HTTPS link.</p>
+
+    <p>Bluetooth requires an authenticated, encrypted BlueZ link in addition to FASP pairing. The two are not substitutes: the radio link proves the bytes came from the adjacent machine, FASP proves the envelope came from the system that signed it and is allowed to say this.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>start a bearer, then register the peer on the other node</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code><span class="c"># serve: opt into the Classic RFCOMM listener on channel 8</span>
+python3 -m fasp_harness serve --state-dir .fasp/laptop \
+  --rfcomm-channel 8
+
+<span class="c"># or BLE L2CAP; choose 'random' when BlueZ reports a random LE address</span>
+python3 -m fasp_harness serve --state-dir .fasp/laptop \
+  --ble-psm 0x0080 --ble-address-type random
+
+<span class="c"># repeat registration on the other node with its peer address</span>
+fasp radio-register --state-dir ~/.fasp-agent \
+  --peer http://127.0.0.1:8766 \
+  --mode classic --channel 8</code></pre>
+    </div>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>BLE L2CAP is the one untested path</p>
+      <p>It requires Linux, BlueZ, and Python 3.14 or newer — all three above the CI matrix, which runs 3.11 to 3.13. Treat it as implemented but unexercised, and test it on the real target radio before depending on it.</p>
+    </div>
+
+    <p class="source-note"><code>fasp_harness/transport/radio.py</code> · CLI reference <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md">AGENT_CLI.md</a></p>
+  </div>
+</section>
+
+<section id="discovery" data-nav="Discovery and limits" data-num="05">
+  <div class="shell">
+    <p class="lede-out"><strong>Finding a node grants nothing.</strong> Discovery stores a self-signed card, not a trusted peer. Authority still requires a pairing a human confirmed.</p>
+
+    <div class="code-block">
+      <div class="code-head"><span>scan one explicitly named CIDR</span><button class="copy-button" type="button">Copy</button></div>
+      <pre><code>python3 -m fasp_harness discover --cidr 192.168.0.0/24 \
+  --port 8766 --state-dir .fasp/laptop
+
+<span class="c"># on a production network, verify TLS properly</span>
+python3 -m fasp_harness discover --cidr 10.0.4.0/24 --scheme https \
+  --ca-cert /path/to/ca.crt</code></pre>
+    </div>
+
+    <p>One fixed path, on one explicitly supplied CIDR and port, capped at 1,024 hosts unless <code>--allow-large</code> is given. Obtain authorisation for a network before scanning it. This tool is not for networks you do not own or administer.</p>
+
+    <h3>Rate limiting happens in two layers</h3>
+    <p>Per-source-IP token buckets run <em>before</em> authentication, so an unauthenticated flood cannot reach the signature verifier. Per-peer buckets run <em>after</em> it, so one paired peer cannot consume the node's capacity for everyone else. Defaults are 10 requests per second per peer with a burst of 20, and 20 per second per IP with a burst of 40.</p>
+
+    <p class="source-note">Discovery: <code>fasp_harness/discovery.py</code> · limits: <code>fasp_harness/policy/ratelimit.py</code></p>
+  </div>
+</section>
+
+<section id="interop" data-nav="Adjacent standards" data-num="06">
+  <div class="shell">
+    <p class="lede-out"><strong>Use adapters for adjacent ecosystems; do not reimplement them.</strong> FASP's useful combination is edge coordination, local physical-safety boundaries, uncertainty-carrying spatial state, and a stream contract that can stop forwarding when consent changes. Those are the things worth keeping small and sharp.</p>
+
+    <div class="card-grid card-grid--2">
+      <article class="card">
+        <p class="card-kicker">A2A</p>
+        <h3>Task exchange, different wire</h3>
+        <p>An interoperability adapter can map FASP <code>work_items</code> to A2A tasks while keeping one internal lifecycle. FASP is not A2A wire-compatible and does not claim to be.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">AGNTCY</p>
+        <h3>Sensible integration boundaries</h3>
+        <p>Separating discovery, identity, schemas, messaging and observability is a reasonable stack. FASP does not need to reimplement every layer of it.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">SLIM</p>
+        <h3>The encryption gap, named</h3>
+        <p>End-to-end group encryption is exactly what this signed-JSON transport does not provide. Useful as the reference for what a relay would need.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">NATS leaf nodes</p>
+        <h3>A future relay shape</h3>
+        <p>An outbound-only connection from a firewalled edge site to a hub is the right pattern for device sites — a future relay here, not a current feature.</p>
+      </article>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Add an ecosystem only with two things attached</p>
+      <p>An interoperability test, and a named owner for identity, policy and failure recovery. A bridge without those is a new protocol with an unowned trust model.</p>
+    </div>
+
+    <p class="source-note">Interoperability notes: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a> · agent bridges in <code>bridge_core/</code>, <code>pi_bridge/</code>, <code>opencode_bridge/</code></p>
+  </div>
+</section>

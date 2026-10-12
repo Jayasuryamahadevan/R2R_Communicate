@@ -14,16 +14,22 @@
 
 <p align="center">
   <a href="https://jayasuryamahadevan.github.io/R2R_Communicate/">Website</a> ·
+  <a href="https://jayasuryamahadevan.github.io/R2R_Communicate/architecture.html">Architecture</a> ·
+  <a href="https://jayasuryamahadevan.github.io/R2R_Communicate/protocol.html">Protocol</a> ·
+  <a href="https://jayasuryamahadevan.github.io/R2R_Communicate/spatial.html">Spatial coordination</a> ·
   <a href="#quick-start">Quick start</a> ·
-  <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="PRODUCTION_READINESS.md">Production readiness</a> ·
   <a href="AGENT_CLI.md">Agent CLI</a> ·
   <a href="CONNECTIVITY.md">Connectivity</a> ·
-  <a href="COMMUNICATION_CATALOG.md">Communication options</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
   <a href="#operator-commands">Operator commands</a> ·
   <a href="#what-this-is-not">What this is not</a>
+</p>
+
+<p align="center">
+  <sub>The site source is in <a href="site/">site/</a> and builds to
+  <a href="docs/">docs/</a> with <code>node site/build.mjs</code> — no dependencies.</sub>
 </p>
 
 ---

@@ -1,0 +1,49 @@
+<!doctype html>
+<!-- Design source for site/assets/og.png. Not part of the site build; rendered
+     once with headless Chrome at 1200x630. -->
+<html lang="en"><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;box-sizing:border-box}
+  body{width:1200px;height:630px;overflow:hidden;
+    background:#0d1519;color:#e7efea;
+    font-family:'DM Sans',sans-serif;
+    display:flex;flex-direction:column;justify-content:space-between;
+    padding:62px 72px;position:relative}
+  .grid{position:absolute;inset:0;
+    background-image:linear-gradient(#89f1ca0d 1px,transparent 1px),linear-gradient(90deg,#89f1ca0d 1px,transparent 1px);
+    background-size:48px 48px;
+    -webkit-mask-image:radial-gradient(110% 90% at 78% 4%,#000 0%,transparent 68%)}
+  .top,.bottom{position:relative;display:flex;align-items:center;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:14px;font:700 24px 'Space Grotesk';letter-spacing:-.045em}
+  .mark{display:grid;grid-template-columns:repeat(2,1fr);gap:4px;width:34px;height:34px;transform:rotate(-12deg)}
+  .mark i{background:#e7efea;border-radius:3px}
+  .mark i:nth-child(2),.mark i:nth-child(3){background:#5fd3ac}
+  .soft{font-weight:400;color:#74857e}
+  .eyebrow{font:500 14px 'DM Mono';letter-spacing:.16em;color:#5fd3ac;text-transform:uppercase}
+  h1{position:relative;font:700 68px/1.06 'Space Grotesk';letter-spacing:-.05em;max-width:17ch}
+  h1 em{font-style:normal;font-weight:400;color:#5fd3ac}
+  .facts{position:relative;display:flex;gap:44px;padding-top:26px;border-top:1px solid #24343a}
+  .facts div{display:flex;flex-direction:column;gap:8px}
+  .facts dt{font:500 11px 'DM Mono';letter-spacing:.14em;color:#74857e;text-transform:uppercase}
+  .facts dd{font:600 19px 'Space Grotesk';letter-spacing:-.02em;color:#e7efea}
+  .lic{font:500 13px 'DM Mono';letter-spacing:.1em;color:#74857e}
+</style></head>
+<body>
+  <div class="grid"></div>
+  <div class="top">
+    <div class="brand"><span class="mark"><i></i><i></i><i></i><i></i></span>
+      <span>FASP<span class="soft"> / harness</span></span></div>
+    <div class="eyebrow">Open source · Apache 2.0</div>
+  </div>
+  <h1>Coordination that <em>refuses to become control.</em></h1>
+  <div class="bottom">
+    <dl class="facts">
+      <div><dt>Invariant</dt><dd>Local authority</dd></div>
+      <div><dt>Trust</dt><dd>Ed25519 · RFC 8785</dd></div>
+      <div><dt>Link</dt><dd>IP · Bluetooth</dd></div>
+    </dl>
+    <div class="lic">jayasuryamahadevan.github.io</div>
+  </div>
+</body></html>

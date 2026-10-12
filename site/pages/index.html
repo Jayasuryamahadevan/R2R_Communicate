@@ -1,0 +1,325 @@
+---
+slug: index
+nav: Overview
+title: Overview
+description: FASP is a signed-envelope coordination layer for autonomous systems. Local identity, local authority, and an enforced boundary above hard real-time safety.
+---
+
+<section class="hero">
+  <div class="shell hero-inner">
+    <div>
+      <p class="eyebrow"><span class="pulse" aria-hidden="true"></span> Open source · Apache 2.0 · reference harness</p>
+      <h1>Coordination that <em>refuses to become control.</em></h1>
+      <p class="hero-lede">FASP is a signed-envelope layer for coordinating agents, robots and edge devices. Each node keeps its own identity, its own policy and its own authority — and an enforced boundary keeps every peer above hard real-time safety.</p>
+      <div class="button-row">
+        <a class="button button-primary" href="architecture.html">Read the architecture <span aria-hidden="true">→</span></a>
+        <a class="button button-quiet" href="guide.html">Run a node <span aria-hidden="true">→</span></a>
+      </div>
+      <p class="hero-meta">
+        <span>Python 3.11+</span>
+        <span>Ed25519 over RFC 8785</span>
+        <span>HTTPS · WebSocket · Bluetooth</span>
+      </p>
+    </div>
+    <div class="hero-visual">
+      <p class="visual-label">The whole argument, in one diagram</p>
+      <svg viewBox="0 0 420 424" role="img" aria-labelledby="hero-viz-title hero-viz-desc" class="viz">
+        <title id="hero-viz-title">A signed envelope crossing one node boundary</title>
+        <desc id="hero-viz-desc">Peer B sends a signed envelope to Node A. Node A verifies the signature, authorizes the capability, journals the work, and only then calls a declared local adapter. A dashed line marked observe only connects the node to the Layer 1 safety controller running outside the process.</desc>
+        <defs>
+          <marker id="hv-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1l9 4-9 4z" fill="var(--accent)"/>
+          </marker>
+          <marker id="hv-observe" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 1l9 4-9 4z" fill="var(--rose)"/>
+          </marker>
+        </defs>
+
+        <rect class="v-peer" x="18" y="14" width="384" height="46" rx="8"/>
+        <text class="v-kicker" x="36" y="34">Peer B · another machine, its own policy</text>
+        <text class="v-body" x="36" y="50">sends one signed envelope, nothing more</text>
+
+        <path class="v-flow" d="M210 60v30" marker-end="url(#hv-arrow)"/>
+        <rect class="v-envelope" x="66" y="94" width="288" height="46" rx="8"/>
+        <text class="v-envelope-title" x="210" y="114">ENVELOPE · fasp/1.0</text>
+        <text class="v-envelope-sub" x="210" y="130">Ed25519 · canonical JSON · ≤ 64 KiB</text>
+
+        <path class="v-flow" d="M210 140v30" marker-end="url(#hv-arrow)"/>
+
+        <rect class="v-node" x="18" y="174" width="384" height="106" rx="10"/>
+        <text class="v-kicker" x="36" y="196">Node A · the trust boundary</text>
+        <g class="v-gate">
+          <rect x="36" y="208" width="80" height="28" rx="5"/><text x="76" y="226">verify</text>
+          <rect x="124" y="208" width="88" height="28" rx="5"/><text x="168" y="226">authorize</text>
+          <rect x="220" y="208" width="80" height="28" rx="5"/><text x="260" y="226">journal</text>
+          <rect x="308" y="208" width="76" height="28" rx="5"/><text x="346" y="226">dispatch</text>
+        </g>
+        <text class="v-body" x="36" y="258">every gate runs before an adapter sees anything;</text>
+        <text class="v-body" x="36" y="272">a failure is recorded, never retried into a second effect</text>
+
+        <path class="v-flow" d="M210 280v28" marker-end="url(#hv-arrow)"/>
+        <rect class="v-adapter" x="66" y="312" width="288" height="42" rx="8"/>
+        <text class="v-adapter-title" x="210" y="338">LOCAL ADAPTER · declared capability</text>
+
+        <path class="v-observe" d="M402 227h12v170h-30" marker-end="url(#hv-observe)"/>
+        <text class="v-observe-label" x="352" y="312">observe only</text>
+        <rect class="v-safety" x="118" y="378" width="266" height="32" rx="7"/>
+        <text class="v-safety-title" x="243" y="399">LAYER 1 · safety controller, separate process</text>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<section id="invariant" class="section" data-nav="The invariant" data-num="01">
+  <div class="shell">
+    <div class="section-head">
+      <div>
+        <h2>One checked property, <em>not a promise in a README.</em></h2>
+      </div>
+      <p>A coordination protocol and a control system are different products. Conflating them means a network fault degrades throughput in one and degrades safety in the other. FASP draws the line at a layer boundary that the running process enforces — <code>layers.py</code> refuses an adapter at startup if it declares something whose <em>meaning</em> is a safety function, whatever layer it claims.</p>
+    </div>
+
+    <div class="layers" role="table" aria-label="The four coordination layers and what FASP may do to each">
+      <article class="layer layer--safety">
+        <div class="layer-id"><span class="n">L1</span><span class="l">SAFETY</span></div>
+        <div>
+          <h3>Hard real-time local safety</h3>
+          <p>E-stop, safety-rated protective fields, speed and force limiting, the safety PLC, motor control. Runs on certified hardware or an RTOS, <strong>outside this process</strong>.</p>
+        </div>
+        <div class="layer-verb"><b>Observe only</b>OBSERVE</div>
+      </article>
+      <article class="layer">
+        <div class="layer-id"><span class="n">L2</span><span class="l">AUTONOMY</span></div>
+        <div>
+          <h3>Local autonomy</h3>
+          <p>Navigation, perception, obstacle avoidance, route following. Runs on the vehicle, next to the hardware it drives.</p>
+        </div>
+        <div class="layer-verb"><b>Goal level</b>OBSERVE · REQUEST_HALT · COORDINATE · DISPATCH</div>
+      </article>
+      <article class="layer layer--fasp">
+        <div class="layer-id"><span class="n">L3</span><span class="l">FLEET</span></div>
+        <div>
+          <h3>Fleet coordination</h3>
+          <p>Missions, space-time reservations, charging, scheduling, traffic rules. <strong>This is where FASP lives.</strong></p>
+        </div>
+        <div class="layer-verb"><b>Full coordination</b>… the Layer 2 set, plus CONFIGURE</div>
+      </article>
+      <article class="layer layer--fasp">
+        <div class="layer-id"><span class="n">L4</span><span class="l">ENTERPRISE</span></div>
+        <div>
+          <h3>Enterprise and cloud</h3>
+          <p>WMS, MES, ERP, digital twin, analytics, human approvals. The same node, a different deployment.</p>
+        </div>
+        <div class="layer-verb"><b>Full coordination</b>… the Layer 2 set, plus CONFIGURE</div>
+      </article>
+    </div>
+
+    <div class="card-grid card-grid--3">
+      <article class="card">
+        <p class="card-kicker">Rule 1 · declared layer</p>
+        <h3>There is no actuation verb.</h3>
+        <p><code>ACTUATE</code> appears in no permitted set for any layer. A peer can ask for a goal, a halt, or an observation. It cannot ask for an action, because the word does not exist on the wire.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Rule 2 · semantic deny list</p>
+        <h3>Meaning is checked, not names.</h3>
+        <p>A declaration is exactly what a mistake gets wrong, so capabilities whose <em>meaning</em> is a Layer 1 function are refused whatever layer they declare — <code>estop.clear</code>, <code>safety.zone.mute</code>, <code>brake.release</code>, <code>motor.setpoint</code>.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Rule 3 · no clear message</p>
+        <h3>Halt is one-way.</h3>
+        <p>There is no <code>safety.clear</code> envelope kind. <code>safety.halt</code> can be requested over a network; clearing it is local, physical work at the machine.</p>
+      </article>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Run it and read the answer</p>
+      <p><code>python -m fasp_harness layers</code> prints exactly what your build enforces. If the answer is wrong for your deployment, you find out before a machine does.</p>
+    </div>
+
+    <p class="source-note">Enforced in <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/fasp_harness/layers.py">fasp_harness/layers.py</a> · <a href="operations.html">What this is not →</a></p>
+  </div>
+</section>
+
+<section id="node" class="section" data-nav="The node" data-num="02">
+  <div class="shell">
+    <div class="section-head">
+      <div>
+        <h2>The node is the trust boundary. <em>Not the container.</em></h2>
+      </div>
+      <p>A container is one convenient way to package a node. A host process or a device gateway runs the same package. Give every independently trusted system its own identity and its own persistent state directory, and never copy one node's state volume onto another.</p>
+    </div>
+
+    <div class="card-grid card-grid--2">
+      <article class="card">
+        <p class="card-kicker">Identity</p>
+        <h3>An Ed25519 keypair and a signed profile</h3>
+        <p>A stable <code>system_id</code> derived from the public key, an ID card published at <code>/.well-known/fasp/id-card.json</code>, and the endpoints a peer needs to reach you. Private key and admin token live at mode <code>0600</code> in the node's state directory.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Policy</p>
+        <h3>Default-deny, decided here</h3>
+        <p>Pairing establishes capability prefixes. Grants narrow them further for a time window. Both are enforced locally on every request — no central proxy is consulted, and a future issuer cannot override a node's own deny.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">State</p>
+        <h3>One SQLite file, one work lifecycle</h3>
+        <p><code>queued → running → succeeded | failed | cancelled</code> shared by capability work and fleet missions, with idempotency, a replay journal and a hash-chained audit log that you can verify end to end.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Adapters</p>
+        <h3>Local, declared, bounded</h3>
+        <p>An adapter is a local object with a capability list and a handler. It runs beside its device, never as a remote effect. The default agent adapter deliberately does something small — connect real machinery through a reviewed adapter.</p>
+      </article>
+    </div>
+
+    <p class="source-note">Deployment shapes: <a href="architecture.html#deployment">single host, peer mesh, edge gateway →</a></p>
+  </div>
+</section>
+
+<section id="pipeline" class="section" data-nav="Request pipeline" data-num="03">
+  <div class="shell">
+    <div class="section-head">
+      <div>
+        <h2>Seven gates, <em>all before your adapter.</em></h2>
+      </div>
+      <p>A failure at any stage is persisted, so resubmitting the same <code>idempotency_key</code> returns the identical recorded outcome instead of running the checks — and the effect — a second time.</p>
+    </div>
+
+    <ol class="gates">
+      <li class="gate"><span class="gate-num">01</span><strong>Signature</strong><span>Ed25519 over RFC 8785 canonical JSON, with the <code>signature</code> field removed before hashing. The ID card is checked against the key that actually signed.</span></li>
+      <li class="gate"><span class="gate-num">02</span><strong>Peer</strong><span>Is this system paired, not revoked, not self-paired, and not expired? Trust-on-first-use applies to a <em>pending</em> record only — a human confirms the key before any authority exists.</span></li>
+      <li class="gate"><span class="gate-num">03</span><strong>Capability prefix</strong><span>Dot-segment prefix match against the scope agreed at pairing. Unknown or unmapped capabilities are refused, never coerced into a nearby one.</span></li>
+      <li class="gate"><span class="gate-num">04</span><strong>Grant</strong><span>If the capability's risk class requires one, a live grant must cover this peer, capability and purpose. A grant can only ever <em>narrow</em> what pairing already allows.</span></li>
+      <li class="gate"><span class="gate-num">05</span><strong>Layer guard</strong><span>Interaction allowed toward the target layer, and no name on the semantic deny list. An adapter declaring one fails at startup, not at runtime.</span></li>
+      <li class="gate"><span class="gate-num">06</span><strong>Replay and journal</strong><span>Expiry, nonce, audience and the shared <code>message_id</code> dedup gate. A retried envelope always returns its original recorded response.</span></li>
+      <li class="gate"><span class="gate-num">07</span><strong>Dispatch</strong><span>A bounded worker pool with a real wall-clock timeout at the capability's declared <code>max_runtime_s</code>, durable backpressure, and an optional <code>cancel</code> hook.</span></li>
+    </ol>
+
+    <div class="callout callout--warn">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>Receipts and results are different things</p>
+      <p><code>intent.propose</code> never claims a model understood or completed the requested work. Delivery of the request and the result of the work are separate records, so a lost receipt never reads as a success.</p>
+    </div>
+
+    <p class="source-note">Full gate chain: <a href="architecture.html#gates">architecture → request gates</a> · error codes: <a href="protocol.html#errors">protocol → error codes</a></p>
+  </div>
+</section>
+
+<section id="forms" class="section band-dark" data-nav="Canonical forms" data-num="04">
+  <div class="shell">
+    <div class="section-head">
+      <div>
+        <h2>Every input ends up as <em>one of three forms.</em></h2>
+      </div>
+      <p>Adapters differ. The contract does not. A source adapter authenticates, parses, validates and attaches provenance, then enters the same signed path — which means authorization, framing and storage are written once instead of once per protocol.</p>
+    </div>
+
+    <div class="card-grid card-grid--3">
+      <article class="card">
+        <p class="card-kicker">01 / event</p>
+        <h3>Packet</h3>
+        <p>One request, event, receipt or small result, wrapped in a single signed envelope of at most 64 KiB. The <code>kind</code> field selects its schema and its handler.</p>
+        <p class="card-foot">task request → receipt</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">02 / continuous</p>
+        <h3>Stream</h3>
+        <p>A finite lease opens a sequence of signed, bounded packets. Choose reliable delivery or latest-sample semantics per stream; the receiver enforces rate, window and retention.</p>
+        <p class="card-foot">telemetry → dashboard</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">03 / one time</p>
+        <h3>Artifact</h3>
+        <p>An immutable result stored by digest locally, then referenced from a packet when an authorized node needs to fetch it. Keeps large payloads out of the envelope budget.</p>
+        <p class="card-foot">report → digest reference</p>
+      </article>
+    </div>
+
+    <div class="callout">
+      <p class="callout-title"><span class="dot" aria-hidden="true"></span>A stream is never an unlimited right to keep sensing</p>
+      <p>Every lease has an explicit expiry and bounded retention. Revocation stops future delivery — it cannot recall data already delivered, which is why the consent model is checked before each push rather than once at open.</p>
+    </div>
+
+    <p class="source-note">Envelope schema and all 23 kinds: <a href="protocol.html">protocol reference →</a> · <a href="connectivity.html">what reaches the canonical path →</a></p>
+  </div>
+</section>
+
+<section id="reality" class="section" data-nav="What is real" data-num="05">
+  <div class="shell">
+    <div class="section-head">
+      <div>
+        <h2>Implemented, <em>not aspirational.</em></h2>
+      </div>
+      <p>These are counts from this repository, not targets. Anything not listed here is either an extension point or stated plainly as not implemented — the distinction is drawn explicitly in the connectivity matrix and the readiness checklist.</p>
+    </div>
+
+    <dl class="stat-strip">
+      <div class="stat"><dt>Python</dt><dd>18.8k</dd><small>lines across 102 modules</small></div>
+      <div class="stat"><dt>Tests</dt><dd>605</dd><small>test functions, 52 modules</small></div>
+      <div class="stat"><dt>Wire</dt><dd>23</dd><small>envelope kinds, one dispatcher</small></div>
+      <div class="stat"><dt>Surface</dt><dd>19</dd><small>HTTP and WebSocket endpoints</small></div>
+      <div class="stat"><dt>Deps</dt><dd>5</dd><small>runtime, audited on an edge install</small></div>
+    </dl>
+
+    <div class="card-grid card-grid--2">
+      <article class="card">
+        <p class="card-kicker">Built and tested</p>
+        <h3>Enforcement, durability, observability</h3>
+        <p>Ed25519 identity with RFC 8785 canonicalisation verified against the official vectors · capability-scoped pairing and revocable grants · a durable work lifecycle with idempotency · SQLite in WAL mode with versioned migrations · a hash-chained audit log · two-layer token-bucket rate limiting · mutual TLS · Prometheus metrics.</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Deliberately absent</p>
+        <h3>Stated, not implied</h3>
+        <p>Hard real-time — <code>hard_realtime</code> is the constant <code>False</code> with reasons, not a computed value. Safety certification — Layer 1 authority belongs to certified hardware. Independent validation — the safety case marks it <em>undeveloped</em> rather than omitting it. End-to-end encryption — the signed JSON envelope is not encrypted, only signed.</p>
+      </article>
+    </div>
+
+    <p class="source-note"><a href="operations.html">Production readiness and acceptance gates →</a></p>
+  </div>
+</section>
+
+<section id="next" class="section" data-nav="Read this next" data-num="06">
+  <div class="shell">
+    <div class="section-head">
+      <div>
+        <h2>Three ways in, <em>depending on why you are here.</em></h2>
+      </div>
+      <p>The documentation is organised so that the page you need is the page you land on. Nothing depends on reading the pages before it.</p>
+    </div>
+
+    <div class="paths">
+      <div class="path">
+        <p class="path-for">If you are evaluating</p>
+        <h3>Understand the design</h3>
+        <p>Topology, node anatomy, the gate chain, durable state, streaming consent rules and where the current implementation deliberately stops.</p>
+        <div class="path-links">
+          <a href="architecture.html">Architecture, end to end</a>
+          <a href="spatial.html">Spatial coordination</a>
+          <a href="operations.html">What this is not</a>
+        </div>
+      </div>
+      <div class="path">
+        <p class="path-for">If you are integrating</p>
+        <h3>Build against the wire</h3>
+        <p>Envelope schema, identity and pairing, the full envelope-kind catalog, stream contracts, the HTTP and WebSocket surface, and every error code with its status.</p>
+        <div class="path-links">
+          <a href="protocol.html">Protocol reference</a>
+          <a href="connectivity.html">Bears, carriers, adapters</a>
+          <a href="guide.html#adapter">Write an adapter</a>
+        </div>
+      </div>
+      <div class="path">
+        <p class="path-for">If you are operating</p>
+        <h3>Run and harden it</h3>
+        <p>Install and run a node, pair two systems, choose a bearer, configure deployment hardening, container layout, state recovery and the CI gates that run on every push.</p>
+        <div class="path-links">
+          <a href="guide.html">Practical guide</a>
+          <a href="connectivity.html">Pick a link</a>
+          <a href="operations.html">Security profiles</a>
+        </div>
+      </div>
+    </div>
+
+    <p class="source-note">Everything on this site is generated from one source of truth. The specifications themselves live in the repository: <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_PROTOCOL.md">FASP_PROTOCOL.md</a> · <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/FASP_MESSAGING_STREAMING.md">FASP_MESSAGING_STREAMING.md</a> · <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a></p>
+  </div>
+</section>
