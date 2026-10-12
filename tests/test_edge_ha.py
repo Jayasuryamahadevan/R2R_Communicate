@@ -191,6 +191,7 @@ class OutboxTests(unittest.TestCase):
 
     def test_signed_envelope_expiry_limits_queue_lifetime(self) -> None:
         from datetime import UTC, datetime
+
         from fasp_harness.timestamps import stamp
 
         envelope = {**self.envelope("short-lived"), "expires_at": stamp(datetime.fromtimestamp(2, tz=UTC))}
