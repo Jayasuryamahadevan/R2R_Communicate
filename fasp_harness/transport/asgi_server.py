@@ -58,6 +58,7 @@ def main() -> None:
     parser.add_argument("--state-dir", type=Path, default=Path(".fasp"))
     parser.add_argument("--public-url", help="Advertised HTTPS/HTTP base URL; required for a reachable LAN peer.")
     parser.add_argument("--adapter", help="Optional local model adapter: module:object or module:factory")
+    parser.add_argument("--process-adapter", action="store_true", help="Run a stateless model adapter in supervised subprocesses instead of in-process threads.")
     parser.add_argument("--tls-cert", type=Path, help="PEM certificate for production HTTPS.")
     parser.add_argument("--tls-key", type=Path, help="PEM private key for production HTTPS.")
     parser.add_argument("--tls-client-ca", type=Path, help="PEM CA bundle to require and verify client certificates (mTLS). Transport hardening only -- never a substitute for envelope-level peer authorization.")
@@ -89,6 +90,14 @@ def main() -> None:
     profile = SecurityProfile(args.security_profile) if args.security_profile else SecurityProfile.DEVELOPMENT
     if not 1 <= args.adapter_concurrency <= 64 or args.max_inflight_tasks < 1:
         raise SystemExit("Adapter concurrency must be 1..64; max-inflight-tasks must be positive.")
+    if args.process_adapter and not args.adapter:
+        raise SystemExit("--process-adapter requires --adapter module:factory.")
+    if args.process_adapter:
+        from ..adapter_worker import ProcessAdapter
+
+        adapter = ProcessAdapter(args.adapter)
+    else:
+        adapter = load_adapter(args.adapter)
     node = None
     if args.config:
         from ..deployment import NodeConfig, build_node
@@ -113,7 +122,7 @@ def main() -> None:
         try:
             node = build_node(
                 config,
-                adapter=load_adapter(args.adapter),
+                adapter=adapter,
                 security_posture=listener_posture,
                 rate_limit_per_second=args.rate_limit_per_peer,
                 rate_limit_burst=args.rate_limit_burst,
@@ -130,7 +139,7 @@ def main() -> None:
             args.state_dir,
             args.name,
             base_url,
-            load_adapter(args.adapter),
+            adapter,
             rate_limit_per_second=args.rate_limit_per_peer,
             rate_limit_burst=args.rate_limit_burst,
             max_inflight_tasks=args.max_inflight_tasks,
