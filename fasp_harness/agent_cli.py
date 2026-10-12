@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
+import re
 import ssl
 import sys
 import time
@@ -277,7 +279,11 @@ def cmd_peers(args: argparse.Namespace) -> int:
 def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
     if args.payload_file:
         path = args.payload_file
-        raw = sys.stdin.buffer.read(MAX_INLINE_BYTES + 1) if path == "-" else Path(path).read_bytes()
+        if path == "-":
+            raw = sys.stdin.buffer.read(MAX_INLINE_BYTES + 1)
+        else:
+            with Path(path).open("rb") as source:
+                raw = source.read(MAX_INLINE_BYTES + 1)
         if len(raw) > MAX_INLINE_BYTES:
             raise FaspError("resource.too_large", "Payload exceeds 64 KiB.")
         try:
@@ -325,10 +331,10 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 def cmd_drain(args: argparse.Namespace) -> int:
     with _agent(args) as h:
-        last = {}
         while True:
             last = _deliver(h, args)
-            _emit(last)
+            if not args.watch or last["delivered"] or last["retry"] or last["dead"]:
+                _emit(last)
             if not args.watch:
                 return 3 if last["retry"] else 4 if last["dead"] else 0
             try:
@@ -428,11 +434,28 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _normalize_pair_code_arg(argv: list[str]) -> list[str]:
+    """Keep a URL-safe fingerprint starting with '-' usable after --code.
+
+    argparse otherwise reads it as a new option. Pairing codes are exactly
+    twelve URL-safe characters, so only that shape is rewritten.
+    """
+    if not argv or argv[0] != "approve":
+        return argv
+    for index in range(1, len(argv) - 1):
+        if argv[index] == "--code" and re.fullmatch(r"-[A-Za-z0-9_-]{11}", argv[index + 1]):
+            return [*argv[:index], f"--code={argv[index + 1]}", *argv[index + 2 :]]
+    return argv
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = build_parser().parse_args(_normalize_pair_code_arg(list(sys.argv[1:] if argv is None else argv)))
     try:
-        if getattr(args, "timeout", 5) <= 0 or getattr(args, "limit", 32) <= 0 or getattr(args, "interval", 2) <= 0:
-            raise FaspError("schema.invalid", "Timeout, queue batch limit and drain interval must be positive.")
+        timeout = getattr(args, "timeout", 5)
+        limit = getattr(args, "limit", 32)
+        interval = getattr(args, "interval", 2)
+        if not math.isfinite(timeout) or timeout <= 0 or not 1 <= limit <= 256 or not math.isfinite(interval) or interval <= 0:
+            raise FaspError("schema.invalid", "Timeout and drain interval must be finite and positive; queue batch limit must be 1..256.")
         if getattr(args, "client_key", None) and not args.client_cert:
             raise FaspError("schema.invalid", "--client-key requires --client-cert.")
         return int(args.handler(args))

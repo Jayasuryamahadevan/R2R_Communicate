@@ -135,6 +135,31 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "transport.tls_required")
         self.assertEqual(agent_cli._base_url("http://10.0.0.12:8766", True), "http://10.0.0.12:8766")
 
+    def test_cli_rejects_nonfinite_delivery_settings(self):
+        for flag, value in (("--timeout", "nan"), ("--interval", "inf"), ("--limit", "257")):
+            with self.subTest(flag=flag, value=value):
+                rc, result = self._run("drain", flag, value, "--state-dir", self.alice_path)
+                self.assertEqual(rc, 2)
+                self.assertEqual(result["error"]["code"], "schema.invalid")
+
+    def test_pairing_code_can_start_with_dash(self):
+        rc, result = self._run("approve", "unknown-peer", "--code", "-abcdefghijk", "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(result["error"]["code"], "auth.pairing_not_found")
+
+    def test_cli_bounds_payload_file_and_watch_logs_only_activity(self):
+        payload = self.root / "large.json"
+        payload.write_bytes(b" " * (agent_cli.MAX_INLINE_BYTES + 1))
+        rc, result = self._run("send", "peer", "--kind", "heartbeat", "--payload-file", str(payload), "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(result["error"]["code"], "resource.too_large")
+
+        stdout = io.StringIO()
+        with patch.object(agent_cli.time, "sleep", side_effect=KeyboardInterrupt), contextlib.redirect_stdout(stdout):
+            code = agent_cli.main(["drain", "--watch", "--state-dir", self.alice_path])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

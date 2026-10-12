@@ -126,6 +126,9 @@ fasp task-status 'fasp:system:BOB_ID' task-001 --state-dir ~/.fasp-a \
   --client-cert /run/secrets/a.crt --client-key /run/secrets/a.key
 ```
 
+In `--watch` mode, the drain command emits JSON when a delivery is sent,
+retried, or dead-lettered; idle polls stay silent.
+
 Only one CLI delivery owner is allowed per local state directory. The
 receiver deduplicates signed `message_id` and, for intentions, the stable
 task idempotency key. The original immutable signed envelope is retried
