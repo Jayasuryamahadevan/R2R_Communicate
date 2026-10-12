@@ -13,6 +13,7 @@ import json
 import threading
 import time
 import uuid
+from binascii import Error as Base64Error
 from collections.abc import Iterator
 from typing import Any
 
@@ -30,6 +31,19 @@ MAX_RETENTION_PACKETS = 4096
 
 def digest(data: bytes) -> str:
     return "sha-256:" + hashlib.sha256(data).hexdigest()
+
+
+def _decode_packet_payload(packet: dict[str, Any], max_bytes: int) -> bytes:
+    encoded = packet.get("payload")
+    if not isinstance(encoded, str) or len(encoded) > 4 * ((max_bytes + 2) // 3):
+        raise FaspError("stream.invalid_fragment", "Packet payload is missing or too large.")
+    try:
+        data = unb64(encoded)
+    except (Base64Error, ValueError) as exc:
+        raise FaspError("stream.invalid_fragment", "Packet payload is not valid base64url.") from exc
+    if len(data) > max_bytes or b64(data) != encoded:
+        raise FaspError("stream.invalid_fragment", "Packet payload is oversized or not canonical base64url.")
+    return data
 
 
 def packetize(stream_id: str, epoch: int, sequence_start: int, data: bytes, content_type: str, max_payload_bytes: int = MAX_PACKET_BYTES) -> Iterator[dict[str, Any]]:
@@ -69,30 +83,40 @@ def packetize(stream_id: str, epoch: int, sequence_start: int, data: bytes, cont
 class Reassembler:
     """Bounded reassembly of a fragmented frame on a consumer."""
 
-    def __init__(self, max_frame_bytes: int = MAX_FRAME_BYTES) -> None:
+    def __init__(self, max_frame_bytes: int = MAX_FRAME_BYTES, max_inflight_frames: int = 8) -> None:
+        if max_frame_bytes < 1 or max_inflight_frames < 1:
+            raise ValueError("reassembly limits must be positive")
         self.max_frame_bytes = max_frame_bytes
+        self.max_inflight_frames = max_inflight_frames
         self.frames: dict[str, dict[str, Any]] = {}
 
     def add(self, packet: dict[str, Any]) -> bytes | None:
-        data = unb64(packet["payload"])
-        if digest(data) != packet["checksum"]:
+        data = _decode_packet_payload(packet, MAX_PACKET_BYTES)
+        if digest(data) != packet.get("checksum"):
             raise FaspError("stream.checksum_mismatch", "Packet checksum did not match payload.")
-        count, index = int(packet["fragment_count"]), int(packet["fragment_index"])
+        count, index = packet.get("fragment_count"), packet.get("fragment_index")
+        if type(count) is not int or type(index) is not int:
+            raise FaspError("stream.invalid_fragment", "Packet fragment metadata is invalid.")
         if not 1 <= count <= MAX_WINDOW or not 0 <= index < count:
             raise FaspError("stream.invalid_fragment", "Packet fragment metadata is invalid.")
-        state = self.frames.setdefault(packet["frame_id"], {"count": count, "parts": {}, "bytes": 0})
+        frame_id = packet.get("frame_id")
+        if not isinstance(frame_id, str) or not 1 <= len(frame_id) <= 128:
+            raise FaspError("stream.invalid_fragment", "Packet frame ID is invalid.")
+        if frame_id not in self.frames and len(self.frames) >= self.max_inflight_frames:
+            raise FaspError("resource.exhausted", "Too many incomplete frames are awaiting reassembly.")
+        state = self.frames.setdefault(frame_id, {"count": count, "parts": {}, "bytes": 0})
         if state["count"] != count:
             raise FaspError("stream.invalid_fragment", "Frame fragment count changed mid-frame.")
         if index not in state["parts"]:
             state["parts"][index] = data
             state["bytes"] += len(data)
         if state["bytes"] > self.max_frame_bytes:
-            self.frames.pop(packet["frame_id"], None)
+            self.frames.pop(frame_id, None)
             raise FaspError("resource.exhausted", "Reassembly frame exceeds local limit.")
         if len(state["parts"]) != count:
             return None
         output = b"".join(state["parts"][part] for part in range(count))
-        self.frames.pop(packet["frame_id"], None)
+        self.frames.pop(frame_id, None)
         return output
 
 
@@ -177,8 +201,8 @@ class StreamRegistry:
                 raise FaspError("stream.capability_mismatch", "Packet capability differs from the accepted stream contract.")
             if packet.get("content_type") != stream["content_type"]:
                 raise FaspError("stream.content_type_mismatch", "Packet content type differs from stream contract.")
-            data = unb64(packet.get("payload", ""))
-            if len(data) > stream["max_payload_bytes"] or digest(data) != packet.get("checksum"):
+            data = _decode_packet_payload(packet, stream["max_payload_bytes"])
+            if digest(data) != packet.get("checksum"):
                 raise FaspError("stream.checksum_mismatch", "Packet is oversized or its checksum is invalid.")
             if stream["content_type"] == "application/json":
                 self._validate_json_record(packet, stream["contract"], data)
