@@ -12,6 +12,7 @@ import json
 import math
 import os
 import secrets
+import tempfile
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -124,10 +125,16 @@ def _plain_json(value: Any) -> bytes:
 
 def atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(_plain_json(value) + b"\n")
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(_plain_json(value) + b"\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 class JsonState:
@@ -149,9 +156,10 @@ class JsonState:
 
     def append_jsonl(self, name: str, value: dict[str, Any]) -> None:
         path = self.directory / name
-        with self.lock, path.open("a", encoding="utf-8") as output:
-            output.write(_plain_json(value).decode() + "\n")
-        os.chmod(path, 0o600)
+        with self.lock:
+            descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(descriptor, "a", encoding="utf-8") as output:
+                output.write(_plain_json(value).decode() + "\n")
 
     def read_jsonl(self, name: str) -> list[dict[str, Any]]:
         path = self.directory / name
@@ -255,10 +263,14 @@ class FaspHarness:
         # optimization layered on the durable queue above, never a
         # replacement for it.
         self.channels = ConnectionRegistry()
-        if not (state_dir / "admin_token").exists():
-            token = secrets.token_urlsafe(32)
-            (state_dir / "admin_token").write_text(token + "\n", encoding="utf-8")
-            os.chmod(state_dir / "admin_token", 0o600)
+        admin_path = state_dir / "admin_token"
+        try:
+            descriptor = os.open(admin_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write(secrets.token_urlsafe(32) + "\n")
         # A row can only still be RUNNING here if the previous process
         # crashed mid-adapter-call; resolve it to a safe terminal state
         # rather than silently leaving it stuck (ss7.1, ss10, ss15 #5/#6).
@@ -516,9 +528,15 @@ class FaspHarness:
         # point twice, and a duplicate arriving on a later request always
         # finds the first one already terminal (or still genuinely in
         # flight on the adapter pool, in which case it is told to wait).
-        if not self.tasks.propose(key, intent.get("intent_id"), capability, envelope["from"], stamp()):
+        if not self.tasks.propose(key, intent.get("intent_id"), capability, envelope["from"], stamp(), payload=intent):
             existing = self.tasks.get(key)
-            if existing is not None and existing["state"] == "REJECTED":
+            if existing is None or existing["from_peer"] != envelope["from"]:
+                raise FaspError("auth.not_authorized", "This task identity is owned by another peer.")
+            if existing["payload"] is not None and existing["payload"] != intent:
+                raise FaspError("schema.idempotency_conflict", "The idempotency key is already bound to a different request.")
+            if existing["payload"] is None and (existing["capability"] != capability or existing["intent_id"] != intent.get("intent_id")):
+                raise FaspError("schema.idempotency_conflict", "Legacy task identity is bound to a different request.")
+            if existing["state"] == "REJECTED":
                 error = existing["error"] or {}
                 raise FaspError(error.get("code", "policy.requires_confirmation"), error.get("detail", "Intent was previously rejected."))
             if existing is not None and existing["state"] in TERMINAL_STATES:
@@ -535,7 +553,9 @@ class FaspHarness:
             self.layer_guard.check_capability(self.capability_declarations.get(capability) or CapabilityDeclaration.from_mapping(capabilities[capability]))
         except FaspError as error:
             self._reject_task(key, error.code, error.detail)
-        risk = intent.get("risk", capabilities[capability]["risk"])
+        risk = capabilities[capability]["risk"]
+        if intent.get("risk", risk) != risk:
+            self._reject_task(key, "policy.requires_confirmation", "Request risk does not match the trusted adapter declaration.")
         if not capability_policy.is_executable(risk):
             self._reject_task(key, "policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
         grant_id = intent.get("grant", {}).get("id") if isinstance(intent.get("grant"), dict) else None

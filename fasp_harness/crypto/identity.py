@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import secrets
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,10 +28,16 @@ from .envelope import b64, unb64
 def atomic_json(path: Path, value: Any) -> None:
     """Write `value` as canonical JSON bytes, atomically, owner-only (0600)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_bytes(canonicalize(value) + b"\n")
-    os.replace(temporary, path)
-    os.chmod(path, 0o600)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(canonicalize(value) + b"\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 @dataclass(frozen=True)

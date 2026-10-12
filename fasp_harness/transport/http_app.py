@@ -102,8 +102,12 @@ def _catching(harness: FaspHarness) -> Callable[[Callable[[Request], Awaitable[J
 
 
 async def _read_json_body(request: Request) -> dict[str, Any]:
-    body = await request.body()
-    if not 1 <= len(body) <= MAX_BODY_BYTES:
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_BODY_BYTES:
+            raise FaspError("schema.invalid", "Body must be a JSON object smaller than 64 KiB.")
+        body.extend(chunk)
+    if not body:
         raise FaspError("schema.invalid", "Body must be a JSON object smaller than 64 KiB.")
     try:
         payload = json.loads(body)
@@ -332,8 +336,16 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None) -> St
         try:
             while True:
                 try:
-                    payload = await websocket.receive_json()
+                    raw = await websocket.receive_text()
                 except (ValueError, WebSocketDisconnect):
+                    break
+                if len(raw.encode("utf-8")) > MAX_BODY_BYTES:
+                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": "resource.too_large", "detail": "WebSocket frame exceeds 64 KiB."}})
+                    await websocket.close(code=1009)
+                    break
+                try:
+                    payload = json.loads(raw)
+                except ValueError:
                     break
                 if not isinstance(payload, dict):
                     await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": "schema.invalid", "detail": "Frame must be a JSON object."}})

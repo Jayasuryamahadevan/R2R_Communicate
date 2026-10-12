@@ -6,6 +6,7 @@ import json
 import sqlite3
 from typing import Any
 
+from ..protocol.errors import FaspError
 from ..timestamps import parse_stamp
 from .db import Database
 
@@ -38,6 +39,12 @@ class InboxRepo:
                     ),
                 )
         except sqlite3.IntegrityError:
+            existing = self.db.read_one(
+                "SELECT from_peer, envelope_json FROM envelopes_inbox WHERE message_id = ?",
+                (envelope["message_id"],),
+            )
+            if existing is None or existing["from_peer"] != envelope["from"] or json.loads(existing["envelope_json"]) != envelope:
+                raise FaspError("auth.replay_conflict", "Message ID is already bound to a different signed envelope.")
             return False
         return True
 

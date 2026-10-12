@@ -20,7 +20,7 @@ import uvicorn
 from ..core import FaspHarness
 from ..protocol.errors import FaspError
 from ..security.posture import DeploymentConfig, SecurityProfile, evaluate_posture
-from .http_app import create_app, default_health
+from .http_app import MAX_BODY_BYTES, create_app, default_health
 from .middleware import IPRateLimitMiddleware
 
 
@@ -146,7 +146,10 @@ def main() -> None:
             config_kwargs["ssl_ca_certs"] = str(args.tls_client_ca)
             config_kwargs["ssl_cert_reqs"] = ssl.CERT_REQUIRED
 
-    server_config = uvicorn.Config(app, host=args.host, port=args.port, log_level="info", **config_kwargs)
+    server_config = uvicorn.Config(
+        app, host=args.host, port=args.port, log_level="info",
+        ws_max_size=MAX_BODY_BYTES, ws_max_queue=16, **config_kwargs,
+    )
     try:
         uvicorn.Server(server_config).run()
     finally:

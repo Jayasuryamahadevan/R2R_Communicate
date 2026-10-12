@@ -104,6 +104,18 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(posted.status_code, 400)
         self.assertEqual(posted.json()["error"]["code"], "schema.invalid")
 
+    def test_streaming_request_cannot_exceed_size_limit(self) -> None:
+        chunks = iter([b"x" * 32768, b"y" * 32768, b"z"])
+        posted = self.client.post("/fasp/v1/envelopes", content=chunks, headers={"Content-Type": "application/json"})
+        self.assertEqual(posted.status_code, 400)
+        self.assertEqual(posted.json()["error"]["code"], "schema.invalid")
+
+    def test_websocket_oversized_frame_is_rejected(self) -> None:
+        with self.client.websocket_connect("/fasp/v1/channel") as socket:
+            socket.send_text("x" * (64 * 1024 + 1))
+            result = socket.receive_json()
+            self.assertEqual(result["error"]["code"], "resource.too_large")
+
     def test_metrics_requires_admin_token_and_reports_envelope_counts(self) -> None:
         unauthenticated = self.client.get("/metrics")
         self.assertEqual(unauthenticated.status_code, 401)
