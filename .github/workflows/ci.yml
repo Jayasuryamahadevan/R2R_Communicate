@@ -58,6 +58,7 @@ jobs:
           docker compose --env-file deploy/production/.env.example -f deploy/production/compose.yaml config --quiet
           docker compose --env-file deploy/production/.env.example -f deploy/production/compose.yaml build --quiet
           docker run --rm --network none --entrypoint python fasp-harness:local -m fasp_harness.healthcheck --help > /dev/null
+          docker run --rm --network none --user 10001:10001 --read-only --tmpfs /tmp:mode=1777,size=32m -v /home/fasp/.fasp fasp-harness:local init --name ci-smoke --base-url https://node.example.internal:8766 --state-dir /home/fasp/.fasp > /dev/null
 
       # The operator gates, run as gates. Each exits non-zero on a failing
       # verdict, so a regression in the safety argument or the timing
