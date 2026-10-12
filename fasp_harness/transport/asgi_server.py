@@ -14,6 +14,7 @@ import argparse
 import importlib
 import ssl
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import uvicorn
 
@@ -49,6 +50,37 @@ def _tls13_only_context_factory(config: uvicorn.Config, default_factory):
     return context
 
 
+def advertised_url(host: str, port: int, public_url: str | None, secure: bool) -> str:
+    """Return a usable ID-card endpoint or fail before creating node state."""
+    if host in {"0.0.0.0", "::"} and not public_url:
+        raise SystemExit("A wildcard listener needs --public-url with the DNS name or IP address peers can reach.")
+    if public_url:
+        url = public_url.rstrip("/")
+        try:
+            parts = urlsplit(url)
+            hostname = parts.hostname
+            valid_port = parts.port is None or 1 <= parts.port <= 65535
+        except ValueError as exc:
+            raise SystemExit("--public-url has an invalid host or port.") from exc
+        if (
+            parts.scheme not in {"http", "https"}
+            or not hostname
+            or hostname in {"0.0.0.0", "::"}
+            or (host in {"0.0.0.0", "::"} and hostname in {"localhost", "127.0.0.1", "::1"})
+            or parts.username is not None
+            or parts.password is not None
+            or parts.query
+            or parts.fragment
+            or not valid_port
+        ):
+            raise SystemExit("--public-url must be a reachable http(s) URL without credentials, query, or fragment.")
+        if secure and parts.scheme != "https":
+            raise SystemExit("A TLS listener requires an https:// --public-url.")
+        return url
+    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    return f"{'https' if secure else 'http'}://{display_host}:{port}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a model-agnostic FASP harness endpoint.")
     parser.add_argument("serve", nargs="?", default="serve")
@@ -70,7 +102,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, help="Node configuration JSON (see examples/node.json): safety controller, fleets, site map, HA. Without it this serves a plain coordination node.")
     parser.add_argument("--max-inflight-tasks", type=int, default=256, help="Persistent maximum number of active intent tasks.")
     parser.add_argument("--adapter-concurrency", type=int, default=8, help="Maximum concurrent local adapter calls.")
-    parser.add_argument("--security-profile", choices=["development", "hardened", "production"], default=None, help="Startup gate. `production` refuses to run without mutual TLS, an enforcing ROS 2 domain, 0600 private material, and a real safety controller.")
+    parser.add_argument("--security-profile", choices=["development", "hardened", "production"], default=None, help="Startup gate. `production` requires mutual TLS and private state; configured ROS 2 and safety hardware must pass their own checks.")
     args = parser.parse_args()
 
     secure = bool(args.tls_cert or args.tls_key)
@@ -80,9 +112,7 @@ def main() -> None:
         raise SystemExit("--tls-client-ca requires --tls-cert/--tls-key.")
     if not secure and args.host not in {"127.0.0.1", "localhost", "::1"} and not args.insecure_http:
         raise SystemExit("Refusing plain HTTP on a non-loopback interface. Use TLS or explicitly pass --insecure-http for an isolated development LAN.")
-    base_url = args.public_url or f"{'https' if secure else 'http'}://{args.host}:{args.port}"
-    if secure and not base_url.startswith("https://"):
-        raise SystemExit("A TLS listener requires an https:// --public-url.")
+    base_url = advertised_url(args.host, args.port, args.public_url, secure)
 
     # The security gate runs before anything binds a socket or connects to
     # a controller: a deployment that would be refused is refused before it
@@ -169,7 +199,7 @@ def main() -> None:
 
     print(f"FASP harness for {harness.identity.system_id}")
     print(f"Profile: {base_url}/profile  ({profile.value} security profile)")
-    print(f"Admin token file: {args.state_dir / 'admin_token'} (keep private)")
+    print(f"Admin token file: {harness.state.directory / 'admin_token'} (keep private)")
     if node is not None:
         print(f"Safety controller: {node.supervisor.driver.describe()['model'] if node.supervisor and node.supervisor.driver else 'none observed'}")
         print(f"Fleets: {', '.join(node.registry.fleets) or 'none'}   Leader: {node.lease.is_leader if node.lease else 'single-node'}")

@@ -160,6 +160,9 @@ key.** Run a second instance on a phone, Pi, or other host with its own state
 folder and public URL, then pair them — see **Pairing workflow** under
 [Reference](#reference).
 
+When binding to `0.0.0.0` or `::`, supply `--public-url` with the address peers
+actually use; the server refuses to advertise a wildcard or loopback address.
+
 <details>
 <summary><b>Docker, TLS, and rate limiting</b></summary>
 

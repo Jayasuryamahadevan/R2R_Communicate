@@ -12,8 +12,8 @@ Three profiles:
     hardened     TLS required, no default credentials, rate limits set,
                  private material 0600. The floor for anything on a real
                  network.
-    production   hardened, plus mutual TLS, plus an enforcing ROS 2
-                 security posture, plus a verified audit chain at boot.
+    production   hardened, plus mutual TLS and a verified audit chain at
+                 boot. Configured ROS 2 and safety hardware are checked.
 
 Every check returns a remediation string. A gate that tells you what is
 wrong without telling you what to do is a gate people disable.

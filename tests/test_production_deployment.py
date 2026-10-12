@@ -10,6 +10,7 @@ from fasp_harness.core import FaspHarness
 from fasp_harness.deployment import NodeConfig, build_node
 from fasp_harness.protocol.errors import FaspError
 from fasp_harness.security.posture import DeploymentConfig, SecurityProfile
+from fasp_harness.transport.asgi_server import advertised_url
 
 
 class ProductionNodeTests(unittest.TestCase):
@@ -75,6 +76,19 @@ class ProductionNodeTests(unittest.TestCase):
         with self.assertRaises(FaspError) as raised:
             build_node(config, security_posture=listener)
         self.assertEqual(raised.exception.code, "policy.insecure_configuration")
+
+    def test_advertised_url_requires_reachable_address_for_wildcard_listener(self) -> None:
+        with self.assertRaises(SystemExit):
+            advertised_url("0.0.0.0", 8766, None, True)
+        with self.assertRaises(SystemExit):
+            advertised_url("0.0.0.0", 8766, "https://127.0.0.1:8766", True)
+        self.assertEqual(advertised_url("0.0.0.0", 8766, "https://node.example.internal:8766/", True), "https://node.example.internal:8766")
+
+    def test_advertised_url_validates_tls_and_ipv6(self) -> None:
+        self.assertEqual(advertised_url("::1", 8766, None, False), "http://[::1]:8766")
+        for value in ("http://node.example.internal:8766", "https://node.example.internal:0", "https://node.example.internal?secret=1"):
+            with self.subTest(value=value), self.assertRaises(SystemExit):
+                advertised_url("0.0.0.0", 8766, value, True)
 
 
 if __name__ == "__main__":
