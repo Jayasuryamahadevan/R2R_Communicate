@@ -201,10 +201,12 @@ The implemented network transports are signed HTTP envelopes, a WebSocket
 channel, Bluetooth Classic RFCOMM, and BLE L2CAP credit based channels carrying
 the same envelope protocol. The Bluetooth bearers are opt-in Linux listeners;
 BLE L2CAP requires Python 3.14 or newer. TLS 1.3 protects routable IP links;
-mTLS is available for an additional transport identity check. Transport
-Bluetooth listeners require authenticated, encrypted BlueZ links and still
+mTLS is available for an additional transport identity check. Bluetooth
+listeners require authenticated, encrypted BlueZ links and still
 use the same FASP signature, pairing, and policy checks. See
-[`CONNECTIVITY.md`](CONNECTIVITY.md) for radio and Wi-Fi setup.
+[`CONNECTIVITY.md`](CONNECTIVITY.md) for radio and Wi-Fi setup and
+[`COMMUNICATION_CATALOG.md`](COMMUNICATION_CATALOG.md) for the canonical
+packet, stream, and optional artifact path across other communication sources.
 The signed JSON envelope is not end-to-end encrypted by this harness. A
 reverse proxy or relay that terminates TLS can read message contents.
 

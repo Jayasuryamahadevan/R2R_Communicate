@@ -84,8 +84,9 @@ recipient's authorization checks pass.
 ## 4. Packet frame
 
 The HTTP baseline transports this object inside a signed `stream.packet` FASP
-envelope. For WebSocket, QUIC, MQTT, DDS, or serial profiles, the same fields
-are encoded in the session frame.
+envelope. WebSocket and Bluetooth carry that same signed envelope. A future
+QUIC, MQTT, DDS, or serial adapter must preserve these fields and the
+receiver's authorization checks.
 
 ```json
 {
@@ -149,13 +150,16 @@ out-of-window, expired, checksum-failed, or stale-epoch frames are rejected.
 |---|---|---|
 | `http-baseline` | telemetry, text, images, low-rate streams | signed POST packets + pull/ack endpoints |
 | `websocket-session` | interactive dashboards, bidirectional medium-rate data | TLS WebSocket after signed control session |
+| `bluetooth-classic` | direct Linux device coordination without IP | authenticated RFCOMM frames carrying signed envelopes |
+| `bluetooth-le` | direct Linux low-energy device coordination | authenticated LE L2CAP frames carrying signed envelopes; Python 3.14+ |
 | `quic-datagram` | latest-only high-rate telemetry | authenticated QUIC session; ordered control remains reliable |
 | `webrtc-media` | audio/video to a user interface | FASP control opens stream; WebRTC carries media; no task control in media channel |
 | `mqtt-dds-bridge` | IoT/ROS 2 environments | topic ACLs plus end-to-end FASP identity and capability checks |
 | `serial-cbor` | microcontrollers and robots | CBOR/COSE frames, fixed windows, local watchdog |
 
-The included harness implements the signed HTTP baseline and a WebSocket
-channel, plus an optional live-push layer on top: a paired peer may open `/fasp/v1/channel` (a websocket
+The included harness implements signed HTTP, WebSocket, Bluetooth Classic,
+and BLE L2CAP ingress. The other rows describe adapter profiles and are not
+implemented bearers. A paired peer may open `/fasp/v1/channel` (a websocket
 carrying the identical signed-envelope protocol, frame for frame, as the HTTP
 baseline) and send `stream.subscribe` for a stream_id to receive that stream's
 future packets pushed the moment they arrive, instead of polling `stream.pull`.

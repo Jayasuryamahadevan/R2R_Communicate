@@ -18,6 +18,7 @@
   <a href="PRODUCTION_READINESS.md">Production readiness</a> ·
   <a href="AGENT_CLI.md">Agent CLI</a> ·
   <a href="CONNECTIVITY.md">Connectivity</a> ·
+  <a href="COMMUNICATION_CATALOG.md">Communication options</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
   <a href="#operator-commands">Operator commands</a> ·

@@ -6,6 +6,10 @@ Bluetooth Classic carries the same requests over RFCOMM; Bluetooth Low Energy
 (BLE) carries them over an L2CAP credit based channel. Neither Bluetooth
 bearer is a GATT UART service.
 
+For other links and middleware, see the researched
+[communication catalog](COMMUNICATION_CATALOG.md). It maps each source to a
+canonical packet, leased stream, or optional one-time artifact reference.
+
 | Link | Runtime | Address used by sender | Listener option |
 |:--|:--|:--|:--|
 | Wi-Fi / Ethernet | Any supported Python | HTTPS URL and TCP port | `--host`, `--port`, `--public-url` |
