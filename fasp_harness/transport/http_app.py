@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import secrets
 from collections.abc import Awaitable, Callable
@@ -46,20 +45,11 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..core import PROTOCOL, FaspError, FaspHarness
 from ..edge.health import HealthRegistry
 from ..observability.logging import configure, log
+from .canonical import MAX_ENVELOPE_BYTES, accept_envelope, decode_object
 
 logger = configure()
 
-MAX_BODY_BYTES = 64 * 1024
-
-# Kinds whose HTTP response is wrapped in a `receipt.delivered` envelope --
-# the two-phase "delivery receipt is not a completion receipt" shape ss7.1
-# requires specifically for the task lifecycle. Every other kind's response
-# is returned as-is: it's a plain request/response RPC, not a durable job.
-# Kind support and dispatch itself is entirely `FaspHarness.accept()`'s
-# job now (`core.py`'s `DISPATCH` table) -- this transport module no longer
-# keeps its own parallel copy of that mapping.
-RECEIPT_WRAPPED_KINDS = frozenset({"intent.propose", "task.cancel", "artifact.fetch"})
-
+MAX_BODY_BYTES = MAX_ENVELOPE_BYTES
 
 def _error_status(error: FaspError) -> int:
     if error.code.startswith("auth."):
@@ -105,17 +95,9 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > MAX_BODY_BYTES:
-            raise FaspError("schema.invalid", "Body must be a JSON object smaller than 64 KiB.")
+            raise FaspError("resource.too_large", "Body exceeds 64 KiB.")
         body.extend(chunk)
-    if not body:
-        raise FaspError("schema.invalid", "Body must be a JSON object smaller than 64 KiB.")
-    try:
-        payload = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise FaspError("schema.invalid", "Body is not valid JSON.") from exc
-    if not isinstance(payload, dict):
-        raise FaspError("schema.invalid", "Body must be a JSON object.")
-    return payload
+    return decode_object(body)
 
 
 def _live_gauges(harness: FaspHarness) -> dict[str, int]:
@@ -313,15 +295,13 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
     @catching
     async def post_envelopes(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
-        duplicate, response = await run_in_threadpool(harness.accept, payload)
-        if payload.get("kind") in RECEIPT_WRAPPED_KINDS:
-            return _json_ok({"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": payload.get("message_id"), "response": response})
+        response = await run_in_threadpool(accept_envelope, harness, payload)
         return _json_ok(response)
 
     @catching
     async def post_receipts(request: Request) -> JSONResponse:
         payload = await _read_json_body(request)
-        _, response = await run_in_threadpool(harness.accept, payload, "receipt.processed")
+        response = await run_in_threadpool(accept_envelope, harness, payload, expected_kind="receipt.processed", wrap_receipt=False)
         return _json_ok(response)
 
     async def channel_endpoint(websocket: WebSocket) -> None:
@@ -350,14 +330,13 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
                     await websocket.close(code=1009)
                     break
                 try:
-                    payload = json.loads(raw)
-                except ValueError:
+                    payload = decode_object(raw.encode("utf-8"))
+                except FaspError as error:
+                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
+                    await websocket.close(code=1007)
                     break
-                if not isinstance(payload, dict):
-                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": "schema.invalid", "detail": "Frame must be a JSON object."}})
-                    continue
                 try:
-                    duplicate, response = await run_in_threadpool(harness.accept, payload)
+                    response = await run_in_threadpool(accept_envelope, harness, payload)
                 except FaspError as error:
                     harness.metrics.increment("fasp_auth_failures_total", code=error.code)
                     await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
@@ -368,10 +347,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
                         harness.channels.unregister(registered_peer, websocket)
                     harness.channels.register(sender, websocket)
                     registered_peer = sender
-                if payload.get("kind") in RECEIPT_WRAPPED_KINDS:
-                    await websocket.send_json({"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": payload.get("message_id"), "response": response})
-                else:
-                    await websocket.send_json(response)
+                await websocket.send_json(response)
         finally:
             if registered_peer is not None:
                 harness.channels.unregister(registered_peer, websocket)

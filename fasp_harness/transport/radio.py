@@ -20,11 +20,11 @@ from typing import Any
 
 from ..core import PROTOCOL, FaspHarness
 from ..protocol.errors import FaspError
-from .http_app import RECEIPT_WRAPPED_KINDS
+from .canonical import MAX_ENVELOPE_BYTES, accept_envelope, decode_object
 
 logger = logging.getLogger(__name__)
 
-MAX_REQUEST = 64 * 1024 + 256  # FASP's 64 KiB envelope plus this bearer's JSON wrapper.
+MAX_REQUEST = MAX_ENVELOPE_BYTES + 256  # Envelope plus this bearer's JSON wrapper.
 MAX_RESPONSE = 2 * 1024 * 1024
 CHUNK_SIZE = 128  # Below the minimum practical LE CoC MTU.
 DEFAULT_RFCOMM_CHANNEL = 8
@@ -132,13 +132,7 @@ class FramedConnection:
         size = struct.unpack(">I", self._read(4))[0]
         if not 0 < size <= limit:
             raise FaspError("resource.too_large", "Bluetooth frame exceeds the allowed size.")
-        try:
-            value = json.loads(self._read(size))
-        except (UnicodeError, ValueError) as exc:
-            raise FaspError("schema.invalid", "Bluetooth frame is not valid JSON.") from exc
-        if not isinstance(value, dict):
-            raise FaspError("schema.invalid", "Bluetooth frame must contain a JSON object.")
-        return value
+        return decode_object(self._read(size), limit=limit)
 
     def send(self, value: dict[str, Any], limit: int) -> None:
         data = json.dumps(value, allow_nan=False, separators=(",", ":")).encode("utf-8")
@@ -169,9 +163,7 @@ def dispatch(harness: FaspHarness, request: dict[str, Any]) -> dict[str, Any]:
         envelope = request.get("envelope")
         if not isinstance(envelope, dict):
             raise FaspError("schema.invalid", "A signed envelope object is required.")
-        duplicate, response = harness.accept(envelope)
-        if envelope.get("kind") in RECEIPT_WRAPPED_KINDS:
-            return {"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": envelope.get("message_id"), "response": response}
+        response = accept_envelope(harness, envelope)
         return response or {"ok": True}
     raise FaspError("protocol.unsupported_kind", "Unknown Bluetooth request type.")
 

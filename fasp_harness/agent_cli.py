@@ -24,6 +24,7 @@ from .core import MAX_INLINE_BYTES, FaspHarness
 from .crypto.envelope import verify
 from .edge.outbox import Outbox
 from .protocol.errors import FaspError
+from .transport.canonical import decode_object
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 AGENT_COMMANDS = frozenset({"init", "id", "register", "radio-register", "approve", "peers", "communicate", "send", "drain", "outbox", "task-status"})
@@ -97,11 +98,9 @@ def request_json(url: str, payload: dict[str, Any] | None, args: argparse.Namesp
     except (error.URLError, TimeoutError, ConnectionError, OSError) as exc:
         raise TransportFailure(f"Remote transport unavailable ({type(exc).__name__}).") from exc
     try:
-        result = json.loads(body)
-    except (ValueError, UnicodeError) as exc:
-        raise TransportFailure("Remote response is not valid JSON.") from exc
-    if not isinstance(result, dict):
-        raise TransportFailure("Remote JSON response must be an object.")
+        result = decode_object(body, limit=MAX_RESPONSE_BYTES)
+    except FaspError as exc:
+        raise TransportFailure("Remote response is not a valid canonical JSON object.") from exc
     if result.get("type") == "protocol.error":
         problem = result.get("error", {})
         raise RemoteRejection(str(problem.get("code", "protocol.error")), str(problem.get("detail", "Rejected.")), 400)
@@ -347,13 +346,7 @@ def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
                 raw = source.read(MAX_INLINE_BYTES + 1)
         if len(raw) > MAX_INLINE_BYTES:
             raise FaspError("resource.too_large", "Payload exceeds 64 KiB.")
-        try:
-            value = json.loads(raw)
-        except ValueError as exc:
-            raise FaspError("schema.invalid", "Payload file must contain JSON.") from exc
-        if not isinstance(value, dict):
-            raise FaspError("schema.invalid", "Payload must be a JSON object.")
-        return value
+        return decode_object(raw)
     return {}
 
 

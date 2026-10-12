@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib import request
 
 from .core import FaspHarness, JsonState, stamp
+from .transport.canonical import decode_object
 
 
 class _NoRedirect(request.HTTPRedirectHandler):
@@ -32,7 +33,7 @@ def probe(address: str, port: int, timeout: float, scheme: str = "http", ca_cert
             body = response.read(64 * 1024 + 1)
             if len(body) > 64 * 1024:
                 return None
-            card = json.loads(body)
+            card = decode_object(body)
         FaspHarness.verify_id_card(card)
         return {"address": address, "port": port, "card": card, "discovered_at": stamp()}
     except Exception:  # Probe failures are expected on unused local addresses.
