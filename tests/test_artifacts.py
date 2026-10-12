@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from fasp_harness.core import ARTIFACT_INLINE_THRESHOLD_BYTES, DefaultSafeAdapter, FaspHarness
+from fasp_harness.core import ARTIFACT_INLINE_THRESHOLD_BYTES, DefaultSafeAdapter, FaspError, FaspHarness
 
 
 class _LargeOutputAdapter(DefaultSafeAdapter):
@@ -66,6 +66,37 @@ class ArtifactTests(unittest.TestCase):
 
         raw = base64.urlsafe_b64decode(fetched["payload"] + "=" * (-len(fetched["payload"]) % 4))
         self.assertEqual(json.loads(raw)["blob"], "x" * (ARTIFACT_INLINE_THRESHOLD_BYTES * 2))
+
+    def test_foreign_peer_cannot_fetch_artifact_even_when_paired(self) -> None:
+        carol = FaspHarness(Path(self.temp.name) / "carol", "carol", "http://carol:8766")
+        hello = self.bob.hello(carol.id_card())
+        self.bob.confirm_peer(carol.identity.system_id, hello["pair_code"])
+        try:
+            artifact = self.bob.artifacts.put(b"private", "application/octet-stream", self.alice.identity.system_id, "2026-01-01T00:00:00.000Z")
+            request = carol.make_envelope("artifact.fetch", self.bob.identity.system_id, {"artifact_id": artifact["artifact_id"]})
+            with self.assertRaises(FaspError) as raised:
+                self.bob.accept(request)
+            self.assertEqual(raised.exception.code, "auth.not_authorized")
+        finally:
+            carol.close()
+
+    def test_identical_bytes_allow_distinct_authorized_owners(self) -> None:
+        carol = FaspHarness(Path(self.temp.name) / "carol", "carol", "http://carol:8766")
+        try:
+            first = self.bob.artifacts.put(b"same bytes", "application/octet-stream", self.alice.identity.system_id, "2026-01-01T00:00:00.000Z")
+            second = self.bob.artifacts.put(b"same bytes", "application/octet-stream", carol.identity.system_id, "2026-01-01T00:00:01.000Z")
+            self.assertEqual(first["artifact_id"], second["artifact_id"])
+            self.assertTrue(self.bob.artifacts.can_fetch(first["artifact_id"], self.alice.identity.system_id))
+            self.assertTrue(self.bob.artifacts.can_fetch(first["artifact_id"], carol.identity.system_id))
+        finally:
+            carol.close()
+
+    def test_modified_bytes_fail_integrity_check(self) -> None:
+        artifact = self.bob.artifacts.put(b"original", "application/octet-stream", self.alice.identity.system_id, "2026-01-01T00:00:00.000Z")
+        Path(artifact["storage_path"]).write_bytes(b"tampered")
+        with self.assertRaises(FaspError) as raised:
+            self.bob.artifacts.read_bytes(artifact["artifact_id"])
+        self.assertEqual(raised.exception.code, "storage.artifact_corrupt")
 
     def test_storing_identical_bytes_twice_deduplicates_by_digest(self) -> None:
         first = self.bob.artifacts.put(b"same bytes", "application/octet-stream", self.alice.identity.system_id, "2026-01-01T00:00:00.000Z")

@@ -16,7 +16,9 @@ would just be indirection with no caller that wants one without the other.
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -45,6 +47,11 @@ class ArtifactStore:
         digest = "sha-256:" + hashlib.sha256(data).hexdigest()
         existing = self.db.read_one("SELECT * FROM artifacts WHERE digest = ?", (digest,))
         if existing is not None:
+            with self.db.write() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO artifact_access (artifact_id, peer_id) VALUES (?, ?)",
+                    (existing["artifact_id"], created_by),
+                )
             return _row_to_artifact(existing)
 
         if self.total_bytes() + len(data) > self.max_total_bytes:
@@ -55,8 +62,16 @@ class ArtifactStore:
         shard = self.directory / hex_digest[:2]
         shard.mkdir(mode=0o700, parents=True, exist_ok=True)
         path = shard / hex_digest
-        path.write_bytes(data)
-        path.chmod(0o600)
+        descriptor, temporary = tempfile.mkstemp(prefix=".artifact-", dir=shard)
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
         retention_until = stamp(parse_stamp(at) + retention) if retention is not None else None
         with self.db.write() as conn:
@@ -64,6 +79,10 @@ class ArtifactStore:
                 "INSERT INTO artifacts (artifact_id, media_type, digest, size_bytes, created_by, created_at, retention_until, storage_path) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (artifact_id, media_type, digest, len(data), created_by, at, retention_until, str(path)),
+            )
+            conn.execute(
+                "INSERT INTO artifact_access (artifact_id, peer_id) VALUES (?, ?)",
+                (artifact_id, created_by),
             )
         artifact = self.get(artifact_id)
         assert artifact is not None
@@ -73,11 +92,24 @@ class ArtifactStore:
         row = self.db.read_one("SELECT * FROM artifacts WHERE artifact_id = ?", (artifact_id,))
         return _row_to_artifact(row) if row is not None else None
 
+    def can_fetch(self, artifact_id: str, peer_id: str) -> bool:
+        row = self.db.read_one(
+            "SELECT 1 FROM artifact_access WHERE artifact_id = ? AND peer_id = ?",
+            (artifact_id, peer_id),
+        )
+        return row is not None
+
     def read_bytes(self, artifact_id: str) -> bytes | None:
         artifact = self.get(artifact_id)
         if artifact is None:
             return None
-        return Path(artifact["storage_path"]).read_bytes()
+        try:
+            data = Path(artifact["storage_path"]).read_bytes()
+        except OSError as exc:
+            raise FaspError("storage.artifact_unavailable", "Stored artifact cannot be read.") from exc
+        if len(data) != artifact["size_bytes"] or "sha-256:" + hashlib.sha256(data).hexdigest() != artifact["digest"]:
+            raise FaspError("storage.artifact_corrupt", "Stored artifact failed its integrity check.")
+        return data
 
 
 def _row_to_artifact(row: Any) -> dict[str, Any]:

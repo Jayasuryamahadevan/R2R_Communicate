@@ -25,6 +25,7 @@ EXPECTED_TABLES = {
     "revocations",
     "audit_log",
     "artifacts",
+    "artifact_access",
     "streams",
     "stream_packets",
     "reservations",

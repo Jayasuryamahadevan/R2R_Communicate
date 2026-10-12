@@ -657,8 +657,8 @@ class FaspHarness:
         if not isinstance(artifact_id, str):
             raise FaspError("schema.invalid", "artifact.fetch requires artifact_id.")
         artifact = self.artifacts.get(artifact_id)
-        if artifact is None:
-            raise FaspError("schema.invalid", "Unknown artifact_id.")
+        if artifact is None or not self.artifacts.can_fetch(artifact_id, envelope["from"]):
+            raise FaspError("auth.not_authorized", "Artifact is unavailable to this peer.")
         data = self.artifacts.read_bytes(artifact_id)
         if data is None or len(data) > MAX_INLINE_BYTES:
             raise FaspError("resource.too_large", "Artifact exceeds inline transfer size; use an out-of-band transfer.")
