@@ -12,3 +12,4 @@ opencode_bridge/plugin/.aic/
 build/
 dist/
 deploy/production/secrets/
+deploy/production/.env

@@ -1,9 +1,34 @@
-# Reference only: site-specific security review is required before production.
+# Site review and real TLS material are required before bringing up this stack.
 services:
+  fasp-init:
+    image: fasp-harness:local
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+    volumes:
+      - fasp-state:/home/fasp/.fasp
+    command:
+      - init
+      - --name
+      - ${FASP_NODE_NAME:?Set FASP_NODE_NAME in deploy/production/.env}
+      - --base-url
+      - ${FASP_PUBLIC_URL:?Set FASP_PUBLIC_URL in deploy/production/.env}
+      - --state-dir
+      - /home/fasp/.fasp
+    restart: "no"
+
   fasp:
     build:
       context: ../..
     image: fasp-harness:local
+    depends_on:
+      fasp-init:
+        condition: service_completed_successfully
     user: "10001:10001"
     read_only: true
     restart: unless-stopped
@@ -23,12 +48,14 @@ services:
       - "127.0.0.1:8766:8766"
     command:
       - serve
+      - --name
+      - ${FASP_NODE_NAME:?Set FASP_NODE_NAME in deploy/production/.env}
       - --host
       - 0.0.0.0
       - --port
       - "8766"
       - --public-url
-      - https://node.example.internal:8766
+      - ${FASP_PUBLIC_URL:?Set FASP_PUBLIC_URL in deploy/production/.env}
       - --state-dir
       - /home/fasp/.fasp
       - --tls-cert
@@ -36,9 +63,61 @@ services:
       - --tls-key
       - /run/secrets/fasp/tls.key
       - --tls-client-ca
-      - /run/secrets/fasp/client-ca.crt
+      - /run/secrets/fasp/mesh-ca.crt
       - --security-profile
       - production
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -m
+        - fasp_harness.healthcheck
+        - --public-url
+        - ${FASP_PUBLIC_URL:?Set FASP_PUBLIC_URL in deploy/production/.env}
+        - --ca-cert
+        - /run/secrets/fasp/mesh-ca.crt
+        - --client-cert
+        - /run/secrets/fasp/client.crt
+        - --client-key
+        - /run/secrets/fasp/client.key
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  fasp-drain:
+    image: fasp-harness:local
+    depends_on:
+      fasp:
+        condition: service_healthy
+    user: "10001:10001"
+    read_only: true
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+    volumes:
+      - fasp-state:/home/fasp/.fasp
+      - ./secrets:/run/secrets/fasp:ro
+    command:
+      - drain
+      - --watch
+      - --interval
+      - "2"
+      - --state-dir
+      - /home/fasp/.fasp
+      - --ca-cert
+      - /run/secrets/fasp/mesh-ca.crt
+      - --client-cert
+      - /run/secrets/fasp/client.crt
+      - --client-key
+      - /run/secrets/fasp/client.key
 
 volumes:
   fasp-state:

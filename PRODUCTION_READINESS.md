@@ -44,9 +44,10 @@ independent of FASP. A network fault must not remove the local safety response.
   device-specific confirmation for physical effects. FASP's task receipt
   never proves a robot has finished moving.
 - Native networking is direct HTTPS/WebSocket. Cross-NAT routing, automated
-  organizational enrollment, multi-hop end-to-end ciphertext relay and a
-  production store-and-forward drain worker are not present. The
-  resilience mesh module is simulation, not a real routing plane.
+  organizational enrollment and a multi-hop end-to-end ciphertext relay
+  are not present. The Compose stack supervises the CLI's signed outbox
+  drain; the generic node outbox has no network router. The resilience
+  mesh module is simulation, not a real routing plane.
 - Durable SQLite WAL is intentionally per node, on local storage. It is not
   a distributed active-active database and must not be put on NFS/SMB.
 
@@ -71,20 +72,44 @@ These are guards implemented in code, not a third-party audit attestation.
 
 ## Secure deployment example
 
-The provided deploy/production/compose.yaml uses a dedicated non-root UID,
+The provided `deploy/production/compose.yaml` uses a dedicated non-root UID,
 read-only image filesystem, no-new-privileges, removed Linux capabilities,
-persistent state, TLS secret mounts and bounded container resources.
-It binds the service to HOST loopback for an upstream restricted ingress.
+persistent state, TLS secret mounts and bounded container resources. It
+initializes one durable identity, starts the HTTPS listener, probes `/readyz`
+through mTLS with hostname verification, then starts a supervised `fasp drain
+--watch` process for the same state directory. The service binds to HOST
+loopback for an upstream restricted ingress.
 
-Before using the compose file, create deploy/production/secrets/ OUTSIDE
-version control with TLS server key/certificate and the issuing client CA.
-Protect these files with host permissions. Never commit a private key.
+Set up the deployment before starting it:
 
-    cd deploy/production
-    docker compose build
-    docker compose up -d
+1. Copy `deploy/production/.env.example` to `deploy/production/.env`. Set
+   `FASP_NODE_NAME` and `FASP_PUBLIC_URL`. The URL must resolve for peers and
+   its DNS name must appear in the server certificate's subject alternative
+   names. Keep these values stable for a persisted identity; `fasp-init`
+   refuses a silent config change.
+2. Create `deploy/production/secrets/` outside version control with
+   `tls.crt` and `tls.key` for the server, `client.crt` and `client.key` for
+   this node's outbound mTLS connections, and `mesh-ca.crt` containing the
+   issuing CA for trusted nodes. Ensure container UID 10001 can traverse the
+   directory and read these files. Restrict private key access to that UID;
+   never commit the keys. The client certificate needs client authentication
+   use, and the server certificate needs server authentication use.
+3. Validate the rendered Compose configuration, build, and start:
 
-Replace node.example.internal in the template with your actual DNS identity.
+       cd deploy/production
+       docker compose config --quiet
+       docker compose build
+       docker compose up -d
+       docker compose ps
+
+`fasp-init` should exit successfully, `fasp` should become healthy, and
+`fasp-drain` should stay running. Inspect `docker compose logs fasp
+fasp-drain` if any condition fails. The shared `fasp-state` volume contains
+the identity and SQLite database; preserve it through routine updates.
+The drain process retries only the CLI's signed outbox, within each
+envelope's roughly two-minute expiry. Inspect dead letters with `fasp
+outbox` and obtain a fresh authorized message after expiry.
+
 For remote access place the node behind a firewall-controlled TLS-aware
 ingress, or an authenticated private network. Test certificate rotation,
 revocation, source restrictions and denied requests before attaching a
@@ -127,8 +152,10 @@ Outbox recovery requeues uncertain inflight records when build_node opens
 the database. A prior send may already have reached the receiver; the
 receiver's message-ID replay protection prevents repeated application
 through FASP, but arbitrary external device effects still require adapter
-idempotency. The outbox does not currently include an automatically
-scheduled HTTP delivery worker; the caller must supply and supervise it.
+idempotency. The Compose `fasp-drain` service supervises delivery for
+messages created by the agent CLI. A standalone deployment must run its
+own `fasp drain --watch` worker; the lower-level generic outbox still
+requires an application-supplied sender.
 
 ## Agent command-line integration
 
@@ -194,8 +221,8 @@ model text should choose the local adapter import path.
 ### Unfinished release blockers (no code-only shortcut)
 
 Independent security audit, real-hardware safety assessment, full multi-host
-endurance testing, supervised out-of-process adapters, automatically drained
-signed outbox across partitions, and production-grade cross-NAT transport if
+endurance testing, supervised out-of-process adapters, site-proven drain
+behavior across partitions, and production-grade cross-NAT transport if
 that network topology is required. A central multi-node active-active control
 plane would require a separately designed state/consensus architecture;
 do NOT deploy multiple writer replicas over a shared SQLite volume.
