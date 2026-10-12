@@ -15,6 +15,7 @@
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="ARCHITECTURE.md">Architecture</a> ·
+  <a href="PRODUCTION_READINESS.md">Production readiness</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
   <a href="#operator-commands">Operator commands</a> ·
@@ -22,6 +23,11 @@
 </p>
 
 ---
+
+> **Production note:** This is a security-focused reference harness, not
+> independently certified safety software. Before external or physical-system
+> deployment, consult [production-readiness architecture](PRODUCTION_READINESS.md)
+> for security gates, operations, and unimplemented production dependencies.
 
 Two or more autonomous systems — models, robots, phones, Raspberry Pis, edge
 gateways — need to agree on who does what, where, and when. FASP is the layer
@@ -146,7 +152,10 @@ folder and public URL, then pair them — see **Pairing workflow** under
 
 ```bash
 docker build -t fasp-harness .
-docker run -p 8766:8766 -v fasp-state:/home/fasp/.fasp fasp-harness
+# LAN development mode only; HTTP is explicitly opted-in and bound to host loopback:
+docker run -p 127.0.0.1:8766:8766 -v fasp-state:/home/fasp/.fasp \
+  fasp-harness serve --host 0.0.0.0 --port 8766 \
+  --state-dir /home/fasp/.fasp --insecure-http
 ```
 
 ```bash

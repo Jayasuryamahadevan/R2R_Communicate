@@ -1,0 +1,44 @@
+# Reference only: site-specific security review is required before production.
+services:
+  fasp:
+    build:
+      context: ../..
+    image: fasp-harness:local
+    user: "10001:10001"
+    read_only: true
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 2
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+    volumes:
+      - fasp-state:/home/fasp/.fasp
+      - ./secrets:/run/secrets/fasp:ro
+    ports:
+      - "127.0.0.1:8766:8766"
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8766"
+      - --public-url
+      - https://node.example.internal:8766
+      - --state-dir
+      - /home/fasp/.fasp
+      - --tls-cert
+      - /run/secrets/fasp/tls.crt
+      - --tls-key
+      - /run/secrets/fasp/tls.key
+      - --tls-client-ca
+      - /run/secrets/fasp/client-ca.crt
+      - --security-profile
+      - production
+
+volumes:
+  fasp-state:
