@@ -95,6 +95,10 @@ def main() -> None:
     parser.add_argument("--tls-key", type=Path, help="PEM private key for production HTTPS.")
     parser.add_argument("--tls-client-ca", type=Path, help="PEM CA bundle to require and verify client certificates (mTLS). Transport hardening only -- never a substitute for envelope-level peer authorization.")
     parser.add_argument("--insecure-http", action="store_true", help="Allow plain HTTP for isolated development LANs only.")
+    parser.add_argument("--rfcomm-channel", type=int, help="Also listen on an authenticated Bluetooth Classic RFCOMM channel (1..30).")
+    parser.add_argument("--ble-psm", type=lambda value: int(value, 0), help="Also listen on an authenticated BLE L2CAP LE_PSM (0x0080..0x00ff; Python 3.14+).")
+    parser.add_argument("--bluetooth-address", default="00:00:00:00:00:00", help="Local Bluetooth adapter address; default binds any adapter.")
+    parser.add_argument("--ble-address-type", choices=("public", "random"), default="public")
     parser.add_argument("--rate-limit-per-peer", type=float, default=10.0, help="Sustained signed-envelope requests per second, per paired peer.")
     parser.add_argument("--rate-limit-burst", type=int, default=20, help="Burst allowance on top of --rate-limit-per-peer.")
     parser.add_argument("--ip-rate-limit-per-second", type=float, default=20.0, help="Sustained requests per second, per source address, before authentication.")
@@ -195,6 +199,23 @@ def main() -> None:
             raise SystemExit(f"Refusing to start in the {profile.value} security profile.")
         health = default_health(harness)
 
+    from .radio import RadioEndpoint, RadioListener
+
+    radio_listeners: list[RadioListener] = []
+    try:
+        if args.rfcomm_channel is not None:
+            radio_listeners.append(RadioListener(harness, RadioEndpoint("classic", args.bluetooth_address, channel=args.rfcomm_channel)))
+        if args.ble_psm is not None:
+            radio_listeners.append(RadioListener(harness, RadioEndpoint("ble", args.bluetooth_address, psm=args.ble_psm, address_type=args.ble_address_type)))
+        for listener in radio_listeners:
+            listener.start()
+    except (FaspError, OSError) as error:
+        for listener in radio_listeners:
+            listener.close()
+        if node is not None:
+            node.stop()
+        raise SystemExit(f"Bluetooth listener failed: {error}") from error
+
     app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst, health)
 
     print(f"FASP harness for {harness.identity.system_id}")
@@ -220,6 +241,8 @@ def main() -> None:
     try:
         uvicorn.Server(server_config).run()
     finally:
+        for listener in radio_listeners:
+            listener.close()
         if node is not None:
             node.stop()
 

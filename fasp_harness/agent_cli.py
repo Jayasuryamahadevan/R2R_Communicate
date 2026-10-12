@@ -26,7 +26,7 @@ from .edge.outbox import Outbox
 from .protocol.errors import FaspError
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-AGENT_COMMANDS = frozenset({"init", "id", "register", "approve", "peers", "communicate", "send", "drain", "outbox", "task-status"})
+AGENT_COMMANDS = frozenset({"init", "id", "register", "radio-register", "approve", "peers", "communicate", "send", "drain", "outbox", "task-status"})
 
 
 class RemoteRejection(Exception):
@@ -172,6 +172,34 @@ def _peer_endpoint(harness: FaspHarness, peer_id: str, args: argparse.Namespace)
     return base + "/fasp/v1/envelopes"
 
 
+def _radio_endpoint(harness: FaspHarness, peer_id: str):
+    from .transport.radio import RadioEndpoint
+
+    endpoints = harness.state.get("agent-radios.json", {})
+    if peer_id not in endpoints:
+        raise FaspError("config.peer_radio_missing", "Peer has no registered Bluetooth endpoint. Run 'fasp radio-register'.")
+    endpoint = RadioEndpoint.from_dict(endpoints[peer_id])
+    return endpoint
+
+
+def _send_to_peer(harness: FaspHarness, peer_id: str, envelope: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    transport = args.transport
+    if transport == "auto":
+        transport = "http" if peer_id in harness.state.get("agent-peers.json", {}) else "radio"
+    if transport == "http":
+        return request_json(_peer_endpoint(harness, peer_id, args), envelope, args)
+
+    from .transport.radio import request_radio
+
+    endpoint = _radio_endpoint(harness, peer_id)
+    card = request_radio(endpoint, {"type": "profile"}, timeout=args.timeout)
+    harness.verify_id_card(card)
+    pinned = harness._peer(peer_id)
+    if card["system_id"] != peer_id or card["public_key"] != pinned["card"]["public_key"]:
+        raise FaspError("auth.peer_identity_changed", "Live Bluetooth peer differs from the pinned pairing identity.")
+    return request_radio(endpoint, {"type": "envelope", "envelope": envelope}, timeout=args.timeout)
+
+
 def _deliver(harness: FaspHarness, args: argparse.Namespace) -> dict[str, Any]:
     outbox = Outbox(harness.db)
     delivered: list[dict[str, Any]] = []
@@ -182,8 +210,7 @@ def _deliver(harness: FaspHarness, args: argparse.Namespace) -> dict[str, Any]:
         messages = outbox.claim_ready(limit=args.limit)
         for message in messages:
             try:
-                endpoint = _peer_endpoint(harness, message.destination, args)
-                response = request_json(endpoint, message.envelope, args)
+                response = _send_to_peer(harness, message.destination, message.envelope, args)
                 if response.get("type") == "receipt.delivered":
                     if response.get("message_id") != message.message_id:
                         raise TransportFailure("Receipt message ID does not match the signed envelope.")
@@ -202,8 +229,12 @@ def _deliver(harness: FaspHarness, args: argparse.Namespace) -> dict[str, Any]:
                     outbox.mark_dead(message.row_id, str(exc), {"error": {"code": exc.code, "detail": exc.detail}})
                     dead.append(message.message_id)
             except FaspError as exc:
-                outbox.mark_dead(message.row_id, f"{exc.code}: {exc.detail}", {"error": {"code": exc.code, "detail": exc.detail}})
-                dead.append(message.message_id)
+                if exc.code in {"resource.exhausted", "transport.unreachable"}:
+                    outbox.mark_failed(message.row_id, f"{exc.code}: {exc.detail}")
+                    retried.append(message.message_id)
+                else:
+                    outbox.mark_dead(message.row_id, f"{exc.code}: {exc.detail}", {"error": {"code": exc.code, "detail": exc.detail}})
+                    dead.append(message.message_id)
             except (TransportFailure, OSError) as exc:
                 outbox.mark_failed(message.row_id, str(exc))
                 retried.append(message.message_id)
@@ -261,6 +292,35 @@ def cmd_register(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_radio_register(args: argparse.Namespace) -> int:
+    from .transport.radio import RadioEndpoint, request_radio
+
+    endpoint = RadioEndpoint(args.mode, args.address, channel=args.channel, psm=args.psm, address_type=args.address_type)
+    endpoint.validate()
+    with _agent(args) as h:
+        card = request_radio(endpoint, {"type": "profile"}, timeout=args.timeout)
+        h.verify_id_card(card)
+        old = h.peers.get(card["system_id"])
+        if old is not None and old["card"]["public_key"] != card["public_key"]:
+            raise FaspError("auth.peer_identity_changed", "Existing paired identity key cannot be replaced during registration.")
+        response = request_radio(endpoint, {"type": "pair.hello", "id_card": h.id_card()}, timeout=args.timeout)
+        if response.get("type") != "hello.ready" or response.get("system_id") != card["system_id"]:
+            raise FaspError("auth.invalid_hello", "Bluetooth peer hello did not match the discovered identity.")
+        verify(response, card["public_key"])
+        response_card = response.get("id_card", {})
+        h.verify_id_card(response_card)
+        if response_card["system_id"] != card["system_id"] or response_card["public_key"] != card["public_key"]:
+            raise FaspError("auth.invalid_hello", "Bluetooth peer changed identity between discovery and hello.")
+        pending = h.hello(response_card)
+        if response.get("pair_code") != pending.get("pair_code"):
+            raise FaspError("auth.invalid_hello", "Pairing fingerprint differs between peers.")
+        radios = h.state.get("agent-radios.json", {})
+        radios[card["system_id"]] = endpoint.as_dict()
+        h.state.put("agent-radios.json", radios)
+        _emit({"ok": True, "peer_id": card["system_id"], "name": card.get("display_name"), "state": h.peers.get(card["system_id"])["state"], "pair_code": pending["pair_code"], "approval_required": True, "instructions": "Verify the fingerprint out of band, then approve on BOTH nodes."})
+    return 0
+
+
 def cmd_approve(args: argparse.Namespace) -> int:
     with _agent(args) as h:
         result = h.confirm_peer(args.peer, args.code, args.scope if args.scope else None)
@@ -271,7 +331,8 @@ def cmd_approve(args: argparse.Namespace) -> int:
 def cmd_peers(args: argparse.Namespace) -> int:
     with _agent(args) as h:
         urls = h.state.get("agent-peers.json", {})
-        peers = [{"peer_id": pid, "name": entry["card"].get("display_name"), "state": entry["state"], "expires_at": entry["expires_at"], "scopes": entry["allowed_capability_prefixes"], "url": urls.get(pid)} for pid, entry in sorted(h.peers.all().items())]
+        radios = h.state.get("agent-radios.json", {})
+        peers = [{"peer_id": pid, "name": entry["card"].get("display_name"), "state": entry["state"], "expires_at": entry["expires_at"], "scopes": entry["allowed_capability_prefixes"], "url": urls.get(pid), "radio": radios.get(pid)} for pid, entry in sorted(h.peers.all().items())]
         _emit({"peers": peers})
     return 0
 
@@ -389,6 +450,14 @@ def build_parser() -> argparse.ArgumentParser:
     reg.add_argument("url", help="Peer node base HTTPS URL.")
     network_flags(reg)
 
+    radio = add("radio-register", "Exchange signed ID cards and request pending pairing over Bluetooth.", cmd_radio_register)
+    radio.add_argument("address", help="Remote Bluetooth MAC address.")
+    radio.add_argument("--mode", choices=("classic", "ble"), required=True)
+    radio.add_argument("--channel", type=int, default=8, help="RFCOMM channel for Bluetooth Classic (default 8).")
+    radio.add_argument("--psm", type=lambda value: int(value, 0), default=0x0080, help="BLE LE_PSM (default 0x0080).")
+    radio.add_argument("--address-type", choices=("public", "random"), default="public")
+    radio.add_argument("--timeout", type=float, default=10.0)
+
     approve = add("approve", "Approve a pending peer locally after out-of-band code verification.", cmd_approve)
     approve.add_argument("peer", help="Full FASP system ID.")
     approve.add_argument("--code", required=True, help="Pairing fingerprint verified with peer operator.")
@@ -398,6 +467,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def deliver_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--limit", type=int, default=32, help="Max due messages per drain cycle.")
+        cmd.add_argument("--transport", choices=("auto", "http", "radio"), default="auto", help="Bearer for signed delivery; auto prefers a registered HTTPS endpoint.")
         network_flags(cmd)
 
     def message_flags(cmd: argparse.ArgumentParser) -> None:
