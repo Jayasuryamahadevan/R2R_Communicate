@@ -54,3 +54,37 @@
 .guide-reference span{font-size:12px;color:#77877d}
 @media(max-width:900px){.guide-layout{grid-template-columns:180px minmax(0,1fr);gap:35px}}
 @media(max-width:760px){.guide-hero{padding:58px 0}.guide-layout{display:block;padding-top:50px;padding-bottom:75px}.guide-sidebar{position:static;border-left:0;border-bottom:1px solid var(--line);padding:0 0 25px;margin-bottom:45px}.guide-sidebar nav{display:grid;grid-template-columns:1fr 1fr;gap:9px}.guide-content>section{padding-bottom:43px;margin-bottom:43px}.guide-reference{grid-template-columns:1fr}}
+
+/* Architecture presentation */
+.architecture-section{background:#ebf1eb;border-top:1px solid #d9e4da;border-bottom:1px solid #d9e4da}
+.architecture-section .section-heading{margin-bottom:38px}
+.architecture-figure{margin:0;background:#f3f7f2;border:1px solid #cad9cd;border-radius:10px;overflow:hidden;box-shadow:0 16px 38px #213c2b12}
+.architecture-scroll{overflow-x:auto;overscroll-behavior-inline:contain;scrollbar-color:#76a48a #e0e9e1;scrollbar-width:thin}
+.architecture-scroll img{display:block;width:100%;min-width:1040px;height:auto}
+.architecture-scroll:focus-visible{outline:3px solid #18b48a;outline-offset:-4px}
+.architecture-figure figcaption{display:flex;justify-content:space-between;gap:15px;padding:13px 18px;border-top:1px solid #d5e0d7;color:#708179;font:10px var(--mono);letter-spacing:.05em}
+.architecture-figure figcaption span:first-child{color:#367b5f}
+.deployment-heading{display:grid;grid-template-columns:230px 1fr;gap:30px;align-items:start;margin:58px 0 22px}
+.deployment-heading .section-index{margin:3px 0}
+.deployment-heading>p:last-child{max-width:650px;color:#63736b;font-size:15px;margin:0}
+.deployment-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.deployment-card{background:#f8faf7;border:1px solid #d3dfd5;border-radius:6px;padding:24px;min-height:250px;display:flex;flex-direction:column}
+.deployment-card .form-number{margin:0 0 8px}
+.deployment-card h3{font-size:24px;letter-spacing:-.045em;margin:0 0 8px}
+.deployment-card>p:not(.form-number){font-size:14px;color:#617068;line-height:1.6;margin:0 0 15px}
+.deployment-card>span{margin-top:auto;padding-top:12px;border-top:1px solid #e0e8e1;color:#58806a;font:10px var(--mono)}
+.deploy-glyph{height:64px;width:90px;position:relative;margin:0 0 19px;display:flex;align-items:center;justify-content:center}
+.deploy-glyph i{display:block;width:27px;height:25px;border:1.5px solid #428b6e;border-radius:3px;background:#e6f4e8;position:relative}
+.deploy-glyph i:before{content:'';position:absolute;left:5px;right:5px;top:6px;border-top:1px solid #79ae8d;box-shadow:0 5px #79ae8d,0 10px #79ae8d}
+.deploy-glyph.single:after{content:'';position:absolute;width:46px;height:40px;border:1px dashed #86b69a;border-radius:6px}
+.deploy-glyph.mesh{gap:15px}
+.deploy-glyph.mesh:before,.deploy-glyph.mesh:after{content:'';position:absolute;left:22px;right:22px;top:32px;border-top:1px solid #72a88a;transform:rotate(20deg)}
+.deploy-glyph.mesh:after{transform:rotate(-20deg)}
+.deploy-glyph.mesh i{z-index:1;width:23px;height:23px}
+.deploy-glyph.gateway{gap:22px}
+.deploy-glyph.gateway:before{content:'';position:absolute;width:28px;border-top:1px dashed #72a88a}
+.deploy-glyph.gateway i:first-child{width:34px;height:34px;border-radius:50%;background:#d5eee0}
+.deploy-glyph.gateway i:last-child{width:24px;height:24px}
+.architecture-note{margin:18px 0 0;color:#708078;font-size:12px}
+.architecture-note a{color:#347b5b;text-decoration:underline;text-underline-offset:3px}
+@media(max-width:760px){.architecture-scroll img{min-width:980px}.architecture-figure figcaption{flex-direction:column;gap:5px}.deployment-heading{grid-template-columns:1fr;gap:8px;margin-top:42px}.deployment-grid{grid-template-columns:1fr}.deployment-card{min-height:220px}.deploy-glyph{margin-bottom:12px}}
