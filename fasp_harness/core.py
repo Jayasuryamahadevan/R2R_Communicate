@@ -531,6 +531,9 @@ class FaspHarness:
         # into an ungranted observe action by supplying risk="observe".
         risk = capabilities[capability]["risk"]
         if "risk" in intent and intent["risk"] != risk:
+            claimed = intent["risk"]
+            if not isinstance(claimed, str) or not capability_policy.is_executable(claimed):
+                self._reject_task(key, "policy.requires_confirmation", "The caller requested an unapproved risk class.")
             self._reject_task(key, "policy.risk_mismatch", "Requested risk does not match the locally declared capability risk.")
         if not capability_policy.is_executable(risk):
             self._reject_task(key, "policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
