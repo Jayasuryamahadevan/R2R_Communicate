@@ -14,6 +14,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 export const SITE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DOCS = path.join(SITE, 'docs');
 
@@ -58,21 +60,36 @@ export async function chrome() {
       '--headless=new', '--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage',
       '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
     ],
-    { stdio: ['ignore', 'ignore', 'pipe'] },
+    { stdio: ['ignore', 'ignore', 'ignore'] },
   );
 
-  const port = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('chrome did not report a debugging port')), 20000);
-    let buf = '';
-    child.stderr.on('data', (d) => {
-      buf += d.toString();
-      const m = buf.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//);
-      if (m) { clearTimeout(timer); resolve(Number(m[1])); }
-    });
-  });
+  // Chrome writes the chosen port to <profile>/DevToolsActivePort. Reading the
+  // file is reliable; parsing stderr is not, because the format of the
+  // "DevTools listening" line varies by version and host binding.
+  const portFile = path.join(profile, 'DevToolsActivePort');
+  const deadline = Date.now() + 30000;
+  let port = null;
+  while (Date.now() < deadline && port === null) {
+    try {
+      const first = (await readFile(portFile, 'utf8')).split('\n')[0].trim();
+      if (first) port = Number(first);
+    } catch {
+      /* not written yet */
+    }
+    if (port === null) await sleep(150);
+  }
+  if (!port) {
+    child.kill();
+    throw new Error('chrome did not report a debugging port within 30s');
+  }
 
-  const version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
-  return { port, browser: version.Browser, close: () => child.kill() };
+  let version = {};
+  try {
+    version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+  } catch {
+    /* version string is cosmetic */
+  }
+  return { port, browser: version.Browser || 'Chrome', close: () => child.kill() };
 }
 
 /** Minimal CDP client over the browser WebSocket. */
@@ -116,7 +133,6 @@ export async function cdp(port) {
   return { send, goto, evaluate, close: () => ws.close() };
 }
 
-export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Every page plus the viewports and themes to check them at. */
 export const VIEWPORTS = [360, 390, 480, 768, 1024, 1280, 1440, 1920];
