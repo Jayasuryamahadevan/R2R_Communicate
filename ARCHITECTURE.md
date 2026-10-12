@@ -197,10 +197,14 @@ volume. A device that cannot run this Python package can connect through a
 FASP gateway on its local host. Keep hardware drivers beside the hardware and
 keep safety interlocks local.
 
-The implemented network transports are signed HTTP envelopes and a WebSocket
-channel carrying the same envelope protocol. TLS 1.3 protects routable links;
+The implemented network transports are signed HTTP envelopes, a WebSocket
+channel, Bluetooth Classic RFCOMM, and BLE L2CAP credit based channels carrying
+the same envelope protocol. The Bluetooth bearers are opt-in Linux listeners;
+BLE L2CAP requires Python 3.14 or newer. TLS 1.3 protects routable IP links;
 mTLS is available for an additional transport identity check. Transport
-security does not replace FASP peer identity, grants, or capability checks.
+Bluetooth listeners require authenticated, encrypted BlueZ links and still
+use the same FASP signature, pairing, and policy checks. See
+[`CONNECTIVITY.md`](CONNECTIVITY.md) for radio and Wi-Fi setup.
 The signed JSON envelope is not end-to-end encrypted by this harness. A
 reverse proxy or relay that terminates TLS can read message contents.
 

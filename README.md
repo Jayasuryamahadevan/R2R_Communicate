@@ -17,6 +17,7 @@
   <a href="ARCHITECTURE.md">Architecture</a> ·
   <a href="PRODUCTION_READINESS.md">Production readiness</a> ·
   <a href="AGENT_CLI.md">Agent CLI</a> ·
+  <a href="CONNECTIVITY.md">Connectivity</a> ·
   <a href="#the-one-invariant">The invariant</a> ·
   <a href="#spatial-coordination">Spatial coordination</a> ·
   <a href="#operator-commands">Operator commands</a> ·
@@ -494,6 +495,7 @@ heavy-tailed, and the mean describes a link nobody experiences.
 
 | Endpoint | Method | Access | Purpose |
 |:--|:--|:--|:--|
+| `/openapi.json` | GET | public | OpenAPI 3.1 description of the HTTP API |
 | `/profile` (+ `/.well-known/fasp/id-card.json`) | GET | public | signed system profile |
 | `/health` | GET | public | liveness only |
 | `/livez` | GET | public | is this process wedged? (restart me) |
@@ -547,12 +549,16 @@ Trust-on-first-use applies only to the *pending* record. A human confirms the
 public key before any task authority exists.
 
 **Discovery** probes one fixed FASP path on one explicitly supplied CIDR and
-port, capped at 1,024 hosts unless `--allow-large` is given, and stores
+port over HTTP or HTTPS, capped at 1,024 hosts unless `--allow-large` is given, and stores
 *self-signed discovered cards*, not trusted peers:
 
 ```bash
 python3 -m fasp_harness discover --cidr 192.168.0.0/24 --port 8766 --state-dir .fasp/laptop
 ```
+
+Use `--scheme https --ca-cert /path/to/ca.crt` on a production Wi-Fi or
+Ethernet network. See [CONNECTIVITY.md](CONNECTIVITY.md) for Bluetooth Classic,
+BLE, and REST API setup.
 
 > ⚠️ Obtain authorization for that network before scanning. Do not use this on
 > networks you do not own or administer.

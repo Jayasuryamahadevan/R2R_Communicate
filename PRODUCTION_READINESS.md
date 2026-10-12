@@ -43,7 +43,11 @@ independent of FASP. A network fault must not remove the local safety response.
 - Adapters must enforce their own narrow schemas, external idempotency and
   device-specific confirmation for physical effects. FASP's task receipt
   never proves a robot has finished moving.
-- Native networking is direct HTTPS/WebSocket. Cross-NAT routing, automated
+- IP networking is direct HTTPS/WebSocket. Opt-in Linux Bluetooth Classic
+  and BLE L2CAP listeners require authenticated BlueZ link pairing, the
+  matching channel/PSM, and hardware validation. They use the same signed
+  envelope authorization boundary. The stock container has no radio device
+  access. Cross-NAT routing, automated
   organizational enrollment and a multi-hop end-to-end ciphertext relay
   are not present. The Compose stack supervises the CLI's signed outbox
   drain; the generic node outbox has no network router. The resilience

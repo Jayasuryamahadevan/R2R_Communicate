@@ -79,6 +79,12 @@ Use `~/.fasp-b` and the opposite peer ID on B. `--scope` can be repeated;
 the scope is a receiver-side authorization boundary, not just metadata.
 `fasp peers --state-dir ~/.fasp-a` shows paired identities and endpoints.
 
+For Linux Bluetooth Classic or BLE, use `fasp radio-register ADDRESS
+--mode classic|ble` on both nodes, compare the same FASP fingerprint and
+approve both sides. Use `--transport radio` on `communicate`, `send`,
+`task-status`, or `drain`. The full setup and Python/BlueZ requirements are
+in [CONNECTIVITY.md](CONNECTIVITY.md).
+
 ### AI-to-AI communication
 
 With the default safe test adapter on machine B:
@@ -167,8 +173,9 @@ private information; store CLI output with appropriate permissions.
 
 ## Current boundaries
 
-- Requires pre-existing IP/DNS/TLS reachability; does not itself create
-  libp2p circuits, NAT hole punching or a relay mesh.
+- IP links require pre-existing IP/DNS/TLS reachability; Bluetooth links
+  require paired Linux/BlueZ radios and the matching RFCOMM channel or LE_PSM.
+  The CLI does not create libp2p circuits, NAT hole punching or a relay mesh.
 - Requires two-sided operator approval, rather than hidden auto-enrollment.
 - Certificates and CA roots remain operator responsibilities; TLS server
   verification is on by default, with no insecure-skip-verification switch.
