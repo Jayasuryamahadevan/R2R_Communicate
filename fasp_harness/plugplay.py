@@ -137,6 +137,7 @@ def peer_summary(node: FaspHarness) -> list[dict]:
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="r2r", description="Easy onboarding for the FASP coordination protocol.")
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("serve", help="Run a FASP node (see r2r serve --help for server flags).")
     def add(name: str, description: str):
         p = sub.add_parser(name, help=description)
         p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE)
@@ -173,6 +174,19 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "serve":
         from .transport import asgi_server
+        # Reuse identity/name/advertised endpoint created by 'r2r init'.
+        # Explicit 'serve' flags still take precedence over saved defaults.
+        directory = DEFAULT_STATE
+        if "--state-dir" in argv:
+            index = argv.index("--state-dir")
+            if index + 1 >= len(argv):
+                raise ValueError("--state-dir requires a path.")
+            directory = Path(argv[index + 1])
+        config = config_for(directory)
+        if "--name" not in argv:
+            argv.extend(["--name", config["name"]])
+        if "--public-url" not in argv:
+            argv.extend(["--public-url", config["public_url"]])
         old = sys.argv
         try:
             sys.argv = ["r2r", *argv]
