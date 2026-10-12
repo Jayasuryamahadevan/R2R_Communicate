@@ -64,6 +64,22 @@ An adapter that tries **fails startup**.
 
 ---
 
+## New: Plug-and-play CLI and MCP gateway
+
+Want to connect **two computers** before exploring robotics/industrial configuration?
+
+```bash
+python -m pip install -e ".[mcp]"
+r2r init --name my-agent --public-url https://my-agent.example:8766
+r2r --help
+```
+
+R2R now provides `r2r connect`, `r2r approve`, `r2r peers`, `r2r ask`, `r2r status`, `r2r doctor` and a local stdio `r2r mcp` integration. The new interface is an optional thin layer over the existing FASP harness; it does not install an AI model or authorize unbounded actions. Pairing requires approval on **both** machines, and network HTTP is disabled by default except on loopback.
+
+**[Follow the two-machine setup and MCP guide →](docs/PLUG_AND_PLAY.md)**
+
+---
+
 ## The one invariant
 
 FASP is a *coordination* protocol, not a control system. That distinction is

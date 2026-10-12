@@ -12,6 +12,10 @@ dependencies = ["cryptography>=42", "starlette>=0.37", "uvicorn>=0.30", "rfc8785
 [project.optional-dependencies]
 test = ["pytest>=8.0", "hypothesis>=6.100", "httpx2>=2.0"]
 dev = ["ruff>=0.16"]
+mcp = ["mcp>=2,<3"]
+
+[project.scripts]
+r2r = "fasp_harness.plugplay:main"
 
 [tool.setuptools.packages.find]
 include = ["fasp_harness*"]

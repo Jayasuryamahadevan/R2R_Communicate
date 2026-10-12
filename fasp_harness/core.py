@@ -526,7 +526,15 @@ class FaspHarness:
             self.layer_guard.check_capability(self.capability_declarations.get(capability) or CapabilityDeclaration.from_mapping(capabilities[capability]))
         except FaspError as error:
             self._reject_task(key, error.code, error.detail)
-        risk = intent.get("risk", capabilities[capability]["risk"])
+        # The receiver, not the requester, owns the authoritative risk class.
+        # A network peer must never be able to turn a grant-required capability
+        # into an ungranted observe action by supplying risk="observe".
+        risk = capabilities[capability]["risk"]
+        if "risk" in intent and intent["risk"] != risk:
+            claimed = intent["risk"]
+            if not isinstance(claimed, str) or not capability_policy.is_executable(claimed):
+                self._reject_task(key, "policy.requires_confirmation", "The caller requested an unapproved risk class.")
+            self._reject_task(key, "policy.risk_mismatch", "Requested risk does not match the locally declared capability risk.")
         if not capability_policy.is_executable(risk):
             self._reject_task(key, "policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
         grant_id = intent.get("grant", {}).get("id") if isinstance(intent.get("grant"), dict) else None

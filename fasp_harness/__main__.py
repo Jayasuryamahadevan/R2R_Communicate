@@ -18,6 +18,9 @@ INDUSTRIAL_COMMANDS = {"rt-probe", "layers", "safety-case", "security-report", "
 
 def main() -> int:
     command = sys.argv[1] if len(sys.argv) > 1 else "serve"
+    if command in {"init", "peers", "connect", "approve", "ask", "status", "doctor", "mcp"}:
+        from .plugplay import main as plugplay_main
+        return plugplay_main(sys.argv[1:])
     if command == "discover":
         sys.argv.pop(1)
         discovery.main()
