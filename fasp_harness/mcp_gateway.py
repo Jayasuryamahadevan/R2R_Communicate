@@ -8,7 +8,7 @@ from __future__ import annotations
 import secrets
 
 from .core import FaspHarness
-from .plugplay import peer_summary, paired_peer, send
+from .plugplay import paired_peer, peer_summary, send
 
 
 def build_mcp(node: FaspHarness, *, allow_capabilities: set[str], allow_insecure: bool = False):
