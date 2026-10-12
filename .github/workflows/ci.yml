@@ -16,17 +16,24 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install package and test/dev dependencies
-        run: python -m pip install -e ".[test,dev]"
+      - name: Install locked package and test dependencies
+        run: |
+          python -m pip install uv==0.12.6
+          uv sync --python ${{ matrix.python-version }} --locked --extra test --extra dev
+      - name: Verify production requirements match the lockfile
+        run: |
+          uv export --locked --no-dev --no-emit-project --format requirements-txt --offline --output-file requirements-prod.txt > /dev/null
+          git diff --exit-code -- requirements-prod.txt
       - name: Lint
-        run: ruff check fasp_harness tests
+        run: uv run --locked --extra test --extra dev ruff check fasp_harness tests
       - name: Run test suite
-        run: python -m unittest discover -s tests -v
+        run: uv run --locked --extra test --extra dev python -m unittest discover -s tests -v
       - name: Verify installed wheel and packaged migrations
         run: |
           python -m pip wheel --no-deps --wheel-dir dist .
           python -m venv /tmp/fasp-wheel-verify
-          /tmp/fasp-wheel-verify/bin/python -m pip install dist/fasp_harness-*.whl
+          /tmp/fasp-wheel-verify/bin/python -m pip install --require-hashes -r requirements-prod.txt
+          /tmp/fasp-wheel-verify/bin/python -m pip install --no-deps dist/fasp_harness-*.whl
           # Exercise the actual installed agent binary, not only Python imports.
           /tmp/fasp-wheel-verify/bin/fasp --help | grep -q 'communicate'
           /tmp/fasp-wheel-verify/bin/fasp serve --help | grep -q 'state-dir'
@@ -45,25 +52,32 @@ jobs:
               assert database.read_one("PRAGMA user_version")[0] == len(migrations)
           CHECK
 
+      - name: Validate production Compose and container image
+        if: matrix.python-version == '3.12'
+        run: |
+          docker compose --env-file deploy/production/.env.example -f deploy/production/compose.yaml config --quiet
+          docker compose --env-file deploy/production/.env.example -f deploy/production/compose.yaml build --quiet
+          docker run --rm --network none --entrypoint python fasp-harness:local -m fasp_harness.healthcheck --help > /dev/null
+
       # The operator gates, run as gates. Each exits non-zero on a failing
       # verdict, so a regression in the safety argument or the timing
       # evidence fails the build rather than being noticed later in a
       # report nobody reads.
       - name: Layer model
-        run: python -m fasp_harness layers
+        run: uv run --locked --extra test --extra dev python -m fasp_harness layers
       - name: Hardware-in-the-loop safety scenarios (simulated device)
-        run: python -m fasp_harness hil
+        run: uv run --locked --extra test --extra dev python -m fasp_harness hil
       - name: Zone and conduit model
-        run: python -m fasp_harness zones
+        run: uv run --locked --extra test --extra dev python -m fasp_harness zones
       - name: Software bill of materials
-        run: python -m fasp_harness sbom > sbom.json
+        run: uv run --locked --extra test --extra dev python -m fasp_harness sbom > sbom.json
       - name: Safety case
         # Exits 1 here by design: E15 requires a real certified safety
         # controller, and CI has a simulator. The check is that every OTHER
         # claim still holds, and that the two that cannot are the two
         # reported.
         run: |
-          python -m fasp_harness safety-case --json > safety-case.json || true
+          uv run --locked --extra test --extra dev python -m fasp_harness safety-case --json > safety-case.json || true
           python - <<'CHECK'
           import json, sys
           report = json.load(open("safety-case.json"))

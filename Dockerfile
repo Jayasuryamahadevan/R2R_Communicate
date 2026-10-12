@@ -1,10 +1,13 @@
 FROM python:3.12-slim
 
 WORKDIR /app
+COPY requirements-prod.txt ./
+RUN pip install --no-cache-dir --require-hashes -r requirements-prod.txt
+
 COPY pyproject.toml README.md ./
 COPY fasp_harness ./fasp_harness
 
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir --no-deps . \
     && useradd --create-home --uid 10001 fasp \
     && install -d --owner=fasp --group=fasp --mode=0700 /home/fasp/.fasp
 

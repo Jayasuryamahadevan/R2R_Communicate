@@ -78,7 +78,11 @@ persistent state, TLS secret mounts and bounded container resources. It
 initializes one durable identity, starts the HTTPS listener, probes `/readyz`
 through mTLS with hostname verification, then starts a supervised `fasp drain
 --watch` process for the same state directory. The service binds to HOST
-loopback for an upstream restricted ingress.
+loopback for an upstream restricted ingress. The image installs hash-checked
+runtime packages from `requirements-prod.txt`, exported from `uv.lock`.
+Regenerate that file with `uv export --locked --no-dev --no-emit-project
+--format requirements-txt --offline --output-file requirements-prod.txt`
+whenever the lockfile changes; CI checks that it is in sync.
 
 Set up the deployment before starting it:
 

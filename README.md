@@ -142,8 +142,8 @@ shell; the editable install and test discovery use the repository root.
 ```bash
 git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
 cd R2R_Communicate
-uv venv --python 3.11 .venv && source .venv/bin/activate
-uv pip install -e ".[test,dev]"
+uv sync --python 3.11 --locked --extra test --extra dev
+source .venv/bin/activate
 
 ruff check fasp_harness tests
 python3 -m unittest discover -s tests -v
