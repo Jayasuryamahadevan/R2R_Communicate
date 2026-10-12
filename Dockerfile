@@ -6,8 +6,7 @@ COPY fasp_harness ./fasp_harness
 
 RUN pip install --no-cache-dir . \
     && useradd --create-home --uid 10001 fasp \
-    && mkdir -p /home/fasp/.fasp \
-    && chown -R fasp:fasp /home/fasp/.fasp
+    && install -d --owner=fasp --group=fasp --mode=0700 /home/fasp/.fasp
 
 USER fasp
 VOLUME ["/home/fasp/.fasp"]
