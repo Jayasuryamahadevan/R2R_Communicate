@@ -67,7 +67,9 @@ def main() -> None:
     parser.add_argument("--ip-rate-limit-per-second", type=float, default=20.0, help="Sustained requests per second, per source address, before authentication.")
     parser.add_argument("--ip-rate-limit-burst", type=int, default=40)
     parser.add_argument("--config", type=Path, help="Node configuration JSON (see examples/node.json): safety controller, fleets, site map, HA. Without it this serves a plain coordination node.")
-    parser.add_argument("--security-profile", choices=["development", "hardened", "production"], default="development", help="Startup gate. `production` refuses to run without mutual TLS, an enforcing ROS 2 domain, 0600 private material, and a real safety controller.")
+    parser.add_argument("--max-inflight-tasks", type=int, default=256, help="Persistent maximum number of active intent tasks.")
+    parser.add_argument("--adapter-concurrency", type=int, default=8, help="Maximum concurrent local adapter calls.")
+    parser.add_argument("--security-profile", choices=["development", "hardened", "production"], default=None, help="Startup gate. `production` refuses to run without mutual TLS, an enforcing ROS 2 domain, 0600 private material, and a real safety controller.")
     args = parser.parse_args()
 
     secure = bool(args.tls_cert or args.tls_key)
@@ -84,7 +86,9 @@ def main() -> None:
     # The security gate runs before anything binds a socket or connects to
     # a controller: a deployment that would be refused is refused before it
     # can do anything at all.
-    profile = SecurityProfile(args.security_profile)
+    profile = SecurityProfile(args.security_profile) if args.security_profile else SecurityProfile.DEVELOPMENT
+    if not 1 <= args.adapter_concurrency <= 64 or args.max_inflight_tasks < 1:
+        raise SystemExit("Adapter concurrency must be 1..64; max-inflight-tasks must be positive.")
     node = None
     if args.config:
         from ..deployment import NodeConfig, build_node
@@ -92,9 +96,30 @@ def main() -> None:
         config = NodeConfig.from_file(args.config)
         config.state_dir = args.state_dir if args.state_dir != Path(".fasp") else config.state_dir
         config.base_url = base_url
-        config.profile = profile
+        config.profile = SecurityProfile(args.security_profile) if args.security_profile else config.profile
+        profile = config.profile
+        listener_posture = DeploymentConfig(
+            profile=profile,
+            host=args.host,
+            tls_cert=args.tls_cert,
+            tls_key=args.tls_key,
+            tls_client_ca=args.tls_client_ca,
+            insecure_http=args.insecure_http,
+            state_dir=config.state_dir,
+            rate_limit_per_peer=args.rate_limit_per_peer,
+            ip_rate_limit_per_second=args.ip_rate_limit_per_second,
+            max_inflight_tasks=args.max_inflight_tasks,
+        )
         try:
-            node = build_node(config, adapter=load_adapter(args.adapter))
+            node = build_node(
+                config,
+                adapter=load_adapter(args.adapter),
+                security_posture=listener_posture,
+                rate_limit_per_second=args.rate_limit_per_peer,
+                rate_limit_burst=args.rate_limit_burst,
+                max_inflight_tasks=args.max_inflight_tasks,
+                adapter_concurrency=args.adapter_concurrency,
+            )
         except FaspError as error:
             raise SystemExit(f"{error.code}: {error.detail}") from error
         harness = node.harness
@@ -108,6 +133,8 @@ def main() -> None:
             load_adapter(args.adapter),
             rate_limit_per_second=args.rate_limit_per_peer,
             rate_limit_burst=args.rate_limit_burst,
+            max_inflight_tasks=args.max_inflight_tasks,
+            adapter_concurrency=args.adapter_concurrency,
         )
         posture = evaluate_posture(
             DeploymentConfig(
@@ -120,6 +147,7 @@ def main() -> None:
                 state_dir=args.state_dir,
                 rate_limit_per_peer=args.rate_limit_per_peer,
                 ip_rate_limit_per_second=args.ip_rate_limit_per_second,
+                max_inflight_tasks=args.max_inflight_tasks,
                 audit_verified=harness.audit.verify()[0],
             )
         )

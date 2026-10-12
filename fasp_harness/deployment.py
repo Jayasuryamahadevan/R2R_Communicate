@@ -285,15 +285,27 @@ def _build_site(config: NodeConfig) -> SiteModel | None:
     return SiteModel(nodes={name: Pose(*coordinates[:2], coordinates[2] if len(coordinates) > 2 else 0.0) for name, coordinates in config.site_nodes.items()}, grid=grid)
 
 
-def build_node(config: NodeConfig, *, adapter: Any = None, enforce_posture: bool = True) -> Node:
+def build_node(
+    config: NodeConfig,
+    *,
+    adapter: Any = None,
+    enforce_posture: bool = True,
+    security_posture: DeploymentConfig | None = None,
+    rate_limit_per_second: float = 10.0,
+    rate_limit_burst: int = 20,
+    max_inflight_tasks: int = 256,
+    adapter_concurrency: int = 8,
+) -> Node:
     """Wire a complete node. Refuses to build an unacceptable deployment."""
     supervisor = _build_supervisor(config)
-    deployment = DeploymentConfig(
+    deployment = security_posture or DeploymentConfig(
         profile=config.profile,
         host=config.base_url.split("://")[-1].split(":")[0],
         state_dir=config.state_dir,
-        safety_controller=supervisor.driver.describe() if supervisor is not None and supervisor.driver is not None else None,
+        rate_limit_per_peer=rate_limit_per_second,
+        max_inflight_tasks=max_inflight_tasks,
     )
+    deployment.safety_controller = supervisor.driver.describe() if supervisor is not None and supervisor.driver is not None else None
     posture = evaluate_posture(deployment)
     if enforce_posture:
         posture.enforce()
@@ -317,12 +329,27 @@ def build_node(config: NodeConfig, *, adapter: Any = None, enforce_posture: bool
         config.name,
         config.base_url,
         adapter,
+        rate_limit_per_second=rate_limit_per_second,
+        rate_limit_burst=rate_limit_burst,
+        adapter_concurrency=adapter_concurrency,
+        max_inflight_tasks=max_inflight_tasks,
         supervisor=supervisor,
         layer_guard=LayerGuard(),
         stream_sharing=StreamSharingPolicy.from_config(config.stream_sharing),
     )
+    # The preliminary gate runs before allocating state; this gate checks
+    # the *actual* audit history before a port is bound or loops start.
+    if enforce_posture:
+        deployment.audit_verified = harness.audit.verify()[0]
+        try:
+            evaluate_posture(deployment).enforce()
+        except BaseException:
+            harness.close()
+            raise
+
     lease = LeaderLease(harness.db, config.lease_name, node_id=config.node_id, ttl_s=config.lease_ttl_s) if config.ha_enabled else None
     outbox = Outbox(harness.db)
+    outbox.recover_inflight()
 
     missions = MissionService(
         harness.db,
