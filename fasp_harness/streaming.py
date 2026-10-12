@@ -23,6 +23,7 @@ from .timestamps import now, parse_stamp
 
 # Base64 plus envelope metadata must remain inside the 64 KiB signed envelope.
 MAX_PACKET_BYTES = 40 * 1024
+MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_WINDOW = 512
 MAX_RETENTION_PACKETS = 4096
 
@@ -37,15 +38,20 @@ def packetize(stream_id: str, epoch: int, sequence_start: int, data: bytes, cont
         raise ValueError("max_payload_bytes must be within the FASP packet bound")
     if content_type == "application/json" and len(data) > max_payload_bytes:
         raise ValueError("application/json records must fit in one FASP packet")
+    if len(data) > MAX_FRAME_BYTES:
+        raise ValueError("frame exceeds the 4 MiB reassembly bound; use an artifact")
     frame_id = str(uuid.uuid4())
-    chunks = [data[index:index + max_payload_bytes] for index in range(0, len(data), max_payload_bytes)] or [b""]
+    fragment_count = max(1, (len(data) + max_payload_bytes - 1) // max_payload_bytes)
+    if fragment_count > MAX_WINDOW:
+        raise ValueError("frame exceeds the maximum fragment count")
     # Milliseconds, not time.monotonic_ns(): this field rides inside a signed
     # envelope payload, which RFC 8785 canonicalization (fasp_harness.crypto.
     # canonical) restricts to the IEEE 754 safe-integer domain (+-2**53-1).
     # Nanosecond-since-boot values cross that after ~104 days of uptime;
     # milliseconds stay safe for roughly 285,000 years.
     sent_ms = time.monotonic_ns() // 1_000_000
-    for index, chunk in enumerate(chunks):
+    for index in range(fragment_count):
+        chunk = data[index * max_payload_bytes : (index + 1) * max_payload_bytes]
         yield {
             "stream_id": stream_id,
             "epoch": epoch,
@@ -54,7 +60,7 @@ def packetize(stream_id: str, epoch: int, sequence_start: int, data: bytes, cont
             "content_type": content_type,
             "frame_id": frame_id,
             "fragment_index": index,
-            "fragment_count": len(chunks),
+            "fragment_count": fragment_count,
             "payload": b64(chunk),
             "checksum": digest(chunk),
         }
@@ -63,7 +69,7 @@ def packetize(stream_id: str, epoch: int, sequence_start: int, data: bytes, cont
 class Reassembler:
     """Bounded reassembly of a fragmented frame on a consumer."""
 
-    def __init__(self, max_frame_bytes: int = 4 * 1024 * 1024) -> None:
+    def __init__(self, max_frame_bytes: int = MAX_FRAME_BYTES) -> None:
         self.max_frame_bytes = max_frame_bytes
         self.frames: dict[str, dict[str, Any]] = {}
 
