@@ -24,7 +24,9 @@ that must never leak.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import tempfile
 import threading
 from pathlib import Path
 
@@ -73,6 +75,28 @@ class Database:
     def read_one(self, sql: str, parameters: tuple = ()) -> sqlite3.Row | None:
         with self.lock:
             return self.connection.execute(sql, parameters).fetchone()
+
+    def backup(self, destination: Path) -> None:
+        """Create a consistent atomic snapshot of committed state, including WAL.
+
+        Artifacts, keys and tokens live outside this database and must be
+        backed up separately. The snapshot is written with owner-only access.
+        """
+        destination = Path(destination)
+        if destination.resolve() == self.path.resolve():
+            raise ValueError("Backup destination must differ from the active database.")
+        destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix=".fasp-backup-", dir=destination.parent)
+        os.close(descriptor)
+        try:
+            with self.lock, sqlite3.connect(temporary) as target:
+                self.connection.backup(target)
+            with open(temporary, "rb") as backup_file:
+                os.fsync(backup_file.fileno())
+            os.replace(temporary, destination)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
 
     def write(self) -> _WriteTransaction:
         """One write transaction: `with db.write() as conn: conn.execute(...)`.

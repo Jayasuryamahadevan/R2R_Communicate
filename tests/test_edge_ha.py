@@ -176,6 +176,28 @@ class OutboxTests(unittest.TestCase):
         self.assertEqual(self.outbox.claim_ready(now_ms=10_000), [])
         self.assertEqual(self.outbox.depth()["dead"], 1)
 
+    def test_inflight_send_recovers_after_restart(self) -> None:
+        self.outbox.enqueue("peer-1", self.envelope("after-restart"))
+        self.assertEqual(len(self.outbox.claim_ready(now_ms=0)), 1)
+        recovered = Outbox(self.db, clock=lambda: self.now_ms)
+        self.assertEqual(recovered.recover_inflight(), 1)
+        self.assertEqual([m.message_id for m in recovered.claim_ready(now_ms=0)], ["after-restart"])
+
+    def test_outbox_rejects_conflicting_message_ids(self) -> None:
+        self.outbox.enqueue("peer-1", self.envelope("same-id"))
+        with self.assertRaises(FaspError) as raised:
+            self.outbox.enqueue("peer-2", self.envelope("same-id"))
+        self.assertEqual(raised.exception.code, "schema.idempotency_conflict")
+
+    def test_signed_envelope_expiry_limits_queue_lifetime(self) -> None:
+        from datetime import UTC, datetime
+        from fasp_harness.timestamps import stamp
+
+        envelope = {**self.envelope("short-lived"), "expires_at": stamp(datetime.fromtimestamp(2, tz=UTC))}
+        self.outbox.enqueue("peer-1", envelope, expires_in_s=3600)
+        self.assertEqual(self.outbox.claim_ready(now_ms=5_000), [])
+        self.assertEqual(self.outbox.depth()["dead"], 1)
+
     def test_capacity_is_bounded_rather_than_filling_the_disk(self) -> None:
         outbox = Outbox(self.db, capacity=3, clock=lambda: self.now_ms)
         for index in range(3):

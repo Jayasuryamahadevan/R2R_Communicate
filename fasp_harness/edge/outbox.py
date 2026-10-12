@@ -40,7 +40,7 @@ from typing import Any
 
 from ..protocol.errors import FaspError
 from ..storage.db import Database
-from ..timestamps import stamp
+from ..timestamps import parse_stamp, stamp
 
 DEFAULT_MAX_ATTEMPTS = 12
 DEFAULT_BASE_BACKOFF_S = 0.5
@@ -103,9 +103,25 @@ class Outbox:
             raise FaspError("schema.invalid", "An outbox message requires the envelope's message_id.")
         now_ms = self.now_ms()
         body = json.dumps(envelope, sort_keys=True, separators=(",", ":"))
+        signed_deadline = None
+        if envelope.get("expires_at") is not None:
+            try:
+                signed_deadline = int(parse_stamp(envelope["expires_at"]).timestamp() * 1000)
+            except (TypeError, ValueError) as exc:
+                raise FaspError("schema.invalid", "Outbox envelope expiry is invalid.") from exc
+        ttl_deadline = now_ms + int(expires_in_s * 1000) if expires_in_s is not None else None
+        candidates = [value for value in (signed_deadline, ttl_deadline) if value is not None]
+        expiry = min(candidates) if candidates else None
+        if expiry is not None and expiry <= now_ms:
+            raise FaspError("auth.envelope_expired", "Cannot enqueue an expired signed envelope.")
         with self.db.write() as conn:
-            existing = conn.execute("SELECT row_id, attempts, created_at FROM outbox WHERE message_id = ?", (message_id,)).fetchone()
+            existing = conn.execute(
+                "SELECT row_id, attempts, created_at, destination, envelope_json FROM outbox WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
             if existing is not None:
+                if existing["destination"] != destination or json.loads(existing["envelope_json"]) != envelope:
+                    raise FaspError("schema.idempotency_conflict", "Outbox message ID already refers to a different destination or envelope.")
                 return OutboxMessage(int(existing["row_id"]), message_id, destination, str(envelope.get("kind", "")), envelope, int(existing["attempts"]), existing["created_at"])
             depth = conn.execute("SELECT COUNT(*) AS n FROM outbox WHERE state IN ('pending', 'inflight')").fetchone()["n"]
             if depth >= self.capacity:
@@ -119,7 +135,7 @@ class Outbox:
                     str(envelope.get("kind", "")),
                     body,
                     now_ms + int(not_before_s * 1000),
-                    now_ms + int(expires_in_s * 1000) if expires_in_s else None,
+                    expiry,
                     stamp(),
                     stamp(),
                 ),
@@ -128,6 +144,21 @@ class Outbox:
         return OutboxMessage(row_id, message_id, destination, str(envelope.get("kind", "")), envelope, 0, stamp())
 
     # -- drain ------------------------------------------------------------
+    def recover_inflight(self) -> int:
+        """Return uncertain sends to pending after exclusive process restart.
+
+        A delivery may have completed before the crash; the receiver must
+        deduplicate with the original signed message ID.
+        """
+        with self.db.write() as conn:
+            cursor = conn.execute(
+                "UPDATE outbox SET state = 'pending', next_attempt_ms = ?, "
+                "last_error = 'recovered after restart; delivery uncertain', updated_at = ? "
+                "WHERE state = 'inflight'",
+                (self.now_ms(), stamp()),
+            )
+            return cursor.rowcount
+
     def claim_ready(self, limit: int = 32, now_ms: int | None = None) -> list[OutboxMessage]:
         """Claim the next due message per destination, marking it inflight.
 
