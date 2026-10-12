@@ -64,9 +64,11 @@ def decode_object(raw: bytes, *, limit: int = MAX_ENVELOPE_BYTES) -> dict[str, A
     return value
 
 
-def accept_envelope(harness: FaspHarness, envelope: dict[str, Any], *, expected_kind: str | None = None, wrap_receipt: bool = True) -> dict[str, Any] | None:
+def accept_envelope(harness: FaspHarness, envelope: dict[str, Any], *, expected_kind: str | None = None, wrap_receipt: bool = True) -> dict[str, Any]:
     """Preserve the existing signed dispatch and receipt semantics."""
     duplicate, response = harness.accept(envelope, expected_kind)
+    if response is None:
+        raise FaspError("transport.response_unavailable", "Envelope has no recorded response; retry after recovery.")
     if wrap_receipt and envelope.get("kind") in RECEIPT_WRAPPED_KINDS:
         return {"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": envelope.get("message_id"), "response": response}
     return response

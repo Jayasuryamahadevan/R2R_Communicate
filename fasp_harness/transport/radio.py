@@ -163,8 +163,7 @@ def dispatch(harness: FaspHarness, request: dict[str, Any]) -> dict[str, Any]:
         envelope = request.get("envelope")
         if not isinstance(envelope, dict):
             raise FaspError("schema.invalid", "A signed envelope object is required.")
-        response = accept_envelope(harness, envelope)
-        return response or {"ok": True}
+        return accept_envelope(harness, envelope)
     raise FaspError("protocol.unsupported_kind", "Unknown Bluetooth request type.")
 
 

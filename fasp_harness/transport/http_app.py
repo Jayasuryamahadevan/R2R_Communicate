@@ -58,6 +58,8 @@ def _error_status(error: FaspError) -> int:
         return HTTPStatus.NOT_FOUND
     if error.code in {"resource.too_large", "resource.exhausted"}:
         return HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    if error.code == "transport.response_unavailable":
+        return HTTPStatus.SERVICE_UNAVAILABLE
     return HTTPStatus.BAD_REQUEST
 
 

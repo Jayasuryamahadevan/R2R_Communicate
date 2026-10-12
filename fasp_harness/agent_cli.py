@@ -228,7 +228,7 @@ def _deliver(harness: FaspHarness, args: argparse.Namespace) -> dict[str, Any]:
                     outbox.mark_dead(message.row_id, str(exc), {"error": {"code": exc.code, "detail": exc.detail}})
                     dead.append(message.message_id)
             except FaspError as exc:
-                if exc.code in {"resource.exhausted", "transport.unreachable"}:
+                if exc.code in {"resource.exhausted", "transport.unreachable", "transport.response_unavailable"}:
                     outbox.mark_failed(message.row_id, f"{exc.code}: {exc.detail}")
                     retried.append(message.message_id)
                 else:
