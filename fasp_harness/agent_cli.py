@@ -10,7 +10,6 @@ import argparse
 import contextlib
 import json
 import os
-import socket
 import ssl
 import sys
 import time
@@ -19,9 +18,9 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 
-from .core import FaspHarness, MAX_INLINE_BYTES
+from .core import MAX_INLINE_BYTES, FaspHarness
 from .crypto.envelope import verify
-from .edge.outbox import Outbox, OutboxMessage
+from .edge.outbox import Outbox
 from .protocol.errors import FaspError
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -93,7 +92,7 @@ def request_json(url: str, payload: dict[str, Any] | None, args: argparse.Namesp
         except (ValueError, UnicodeError):
             detail = {}
         raise RemoteRejection(str(detail.get("code", "transport.http_error")), str(detail.get("detail", "Remote request rejected.")), exc.code) from exc
-    except (error.URLError, TimeoutError, socket.timeout, ConnectionError, OSError) as exc:
+    except (error.URLError, TimeoutError, ConnectionError, OSError) as exc:
         raise TransportFailure(f"Remote transport unavailable ({type(exc).__name__}).") from exc
     try:
         result = json.loads(body)
