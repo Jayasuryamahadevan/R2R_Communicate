@@ -43,9 +43,12 @@ absolute paths). The host launches it on demand; no MCP port is opened:
 ```
 
 Use the host's equivalent server configuration format if it differs. The
-server exposes `identity`, `peers`, `outbox`, `queue_intent`, and `drain`.
-`queue_intent` signs and persists an intent; `drain` attempts one bounded
-delivery batch. For automatic retries, supervise `fasp drain --watch`
+server exposes `identity`, `peers`, `outbox`, `communicate`,
+`queue_intent`, and `drain`. `communicate` signs, queues and attempts delivery
+once; its result says `sent`, `pending`, or `dead` and includes the saved
+response when available. `sent` confirms delivery, not completion of the
+remote task. `queue_intent` persists without contacting the peer, and `drain`
+attempts one bounded delivery batch. For automatic retries, supervise `fasp drain --watch`
 separately. Pair and approve peers with the CLI before asking the MCP host
 to send work. An MCP host with access to the private state directory can
 use this node's identity, so give that host the same local trust level as

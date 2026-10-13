@@ -28,7 +28,7 @@ cd R2R_Communicate
     <p>The default install contains only the FASP node. Use <code>./install.sh --with-bridges</code> for the separate Node integrations. Developers can install the test and lint extras with <code>uv sync --locked --extra test --extra dev</code>.</p>
 
     <p>Direct runtime dependencies are <code>cryptography</code>, <code>starlette</code>, <code>uvicorn</code>, <code>rfc8785</code> and <code>websockets</code>. Their transitive packages are installed too; MCP adds its own dependencies only when requested.</p>
-    <p>To connect an MCP host, configure a local stdio server with command <code>/absolute/path/to/.venv/bin/fasp</code> and arguments <code>["mcp", "--state-dir", "/absolute/path/to/private/state"]</code>. It exposes identity, peers, outbox inspection, signed intent queuing, and one-batch delivery. Pair peers with the CLI first. The host needs access to this node's private state, so treat it as a trusted local process. <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md#mcp-hosts">MCP setup details →</a></p>
+    <p>To connect an MCP host, configure a local stdio server with command <code>/absolute/path/to/.venv/bin/fasp</code> and arguments <code>["mcp", "--state-dir", "/absolute/path/to/private/state"]</code>. Its <code>communicate</code> tool signs, queues and attempts delivery in one call; the result reports sent or pending. Separate tools inspect peers and the outbox, or queue without contacting a peer. Pair peers with the CLI first. The host needs access to this node's private state, so treat it as a trusted local process. <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md#mcp-hosts">MCP setup details →</a></p>
   </div>
 </section>
 
@@ -126,18 +126,18 @@ fasp radio-register AA:BB:CC:DD:EE:FF --state-dir ~/.fasp-agent \
 }</code></pre>
     </div>
 
-    <p>Three fields carry most of the weight. <code>capability</code> must exist in both the pairing scope and the receiving adapter's registered list. <code>idempotency_key</code> is what makes a retry safe, and it is scoped to this peer <em>and</em> this exact payload — reusing it with different content is refused rather than replayed. <code>risk</code> selects the risk class; <code>reversible</code> requires a live grant.</p>
+    <p>Three fields carry most of the weight. <code>capability</code> must exist in both the pairing scope and the receiving adapter's registered list. <code>idempotency_key</code> is what makes a retry safe, and it is scoped to this peer <em>and</em> this exact payload — reusing it with different content is refused rather than replayed. The receiving adapter declares the authoritative risk class; a request cannot lower it. A reversible action requires a live grant.</p>
 
     <div class="code-block">
       <div class="code-head"><span>send it through the durable outbox</span><button class="copy-button" type="button">Copy</button></div>
-      <pre><code>fasp communicate --state-dir ~/.fasp-agent \
-  --peer http://192.168.0.22:8766 \
+      <pre><code>fasp communicate 'fasp:system:PEER_ID' --state-dir ~/.fasp-agent \
   --capability observe.system.status.v1 \
-  --objective <span class="s">"Return a non-sensitive service health summary."</span>
+  --message <span class="s">"Return a non-sensitive service health summary."</span> \
+  --idempotency-key status-001
 
-fasp task-status --state-dir ~/.fasp-agent --id status-001
-fasp drain --watch          <span class="c"># supervised retry loop against the same state</span>
-fasp outbox                 <span class="c"># inspect what is queued, and any dead letters</span></code></pre>
+fasp task-status 'fasp:system:PEER_ID' status-001 --state-dir ~/.fasp-agent
+fasp drain --watch --state-dir ~/.fasp-agent  <span class="c"># supervised retry loop</span>
+fasp outbox --state-dir ~/.fasp-agent         <span class="c"># queued and dead letters</span></code></pre>
     </div>
 
     <p><code>fasp communicate</code> and <code>fasp drain</code> persist and retry. They cannot extend the original roughly two-minute envelope expiry, and they cannot guarantee exactly-once external device effects — retrying is safe, external side effects are your adapter's responsibility to make idempotent.</p>

@@ -6,9 +6,9 @@
 
 <p align="center">
   <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Jayasuryamahadevan/R2R_Communicate/actions/workflows/ci.yml/badge.svg"></a>
-  <img alt="Python" src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue">
-  <img alt="Test cases" src="https://img.shields.io/badge/test%20cases-571-blue">
-  <img alt="Dependencies" src="https://img.shields.io/badge/runtime%20deps-5-brightgreen">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="Test suite" src="https://img.shields.io/badge/test%20suite-CI-blue">
+  <img alt="Direct dependencies" src="https://img.shields.io/badge/direct%20runtime%20deps-5-brightgreen">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-Apache%202.0-lightgrey"></a>
 </p>
 
@@ -160,9 +160,9 @@ cd R2R_Communicate
 
 For MCP hosts, run `./install.sh --with-mcp`, then configure a local stdio
 server with command `/absolute/path/to/.venv/bin/fasp` and arguments
-`["mcp", "--state-dir", "/absolute/path/to/your/state"]`. The five tools
-read identity and peers, inspect the outbox, queue a signed intent, and drain
-one delivery batch. Pair peers with the CLI first; the MCP server does not
+`["mcp", "--state-dir", "/absolute/path/to/your/state"]`. Its tools
+read identity and peers, inspect the outbox, send or queue a signed intent,
+and drain one delivery batch. Pair peers with the CLI first; the MCP server does not
 grant trust. See [MCP setup](AGENT_CLI.md#mcp-hosts).
 
 The server prints its system ID, public profile URL, and the path to its
@@ -181,14 +181,18 @@ actually use; the server refuses to advertise a wildcard or loopback address.
 
 ```bash
 docker build -t fasp-harness .
-# LAN development mode only; HTTP is explicitly opted-in and bound to host loopback:
-docker run -p 127.0.0.1:8766:8766 -v fasp-state:/home/fasp/.fasp \
-  fasp-harness serve --host 0.0.0.0 --port 8766 \
+# Isolated development LAN only; replace 192.168.0.22 with this host's reachable IP:
+docker run --rm -v fasp-state:/home/fasp/.fasp fasp-harness init \
+  --name dev-node --base-url http://192.168.0.22:8766 \
+  --state-dir /home/fasp/.fasp --insecure-http
+docker run -p 8766:8766 -v fasp-state:/home/fasp/.fasp \
+  fasp-harness serve --name dev-node --host 0.0.0.0 --port 8766 \
+  --public-url http://192.168.0.22:8766 \
   --state-dir /home/fasp/.fasp --insecure-http
 ```
 
 ```bash
-python3 -m fasp_harness serve --state-dir .fasp/laptop --public-url https://192.168.0.22:8766 \
+python3 -m fasp_harness serve --host 0.0.0.0 --state-dir .fasp/laptop --public-url https://192.168.0.22:8766 \
   --tls-cert cert.pem --tls-key key.pem --tls-client-ca client-ca.pem \
   --rate-limit-per-peer 10 --rate-limit-burst 20 \
   --ip-rate-limit-per-second 20 --ip-rate-limit-burst 40
@@ -204,6 +208,20 @@ Any PEP 517 installer works; `uv` is just fast. Runtime dependencies are
 suite on every push across Python 3.11–3.13.
 
 </details>
+
+---
+
+## Where it helps
+
+| Deployment | What FASP carries | What stays local |
+|:--|:--|:--|
+| Laptop and Raspberry Pi agents | Signed task packets over HTTPS, or Linux Bluetooth when IP is unavailable | Each agent's model, capabilities, and approval policy |
+| Edge gateway with intermittent connectivity | Bounded stream packets and immutable artifacts with durable delivery state | Sensor validation and retention choices |
+| Robot and fleet service in separate hosts or containers | Goals, status and space-time reservations | Motion control and the independent safety controller |
+
+All three use the same canonical packet, stream and artifact forms. The
+adapter and bearer vary by deployment. The default adapter only echoes a
+request; attach a reviewed local adapter for real agent or device work.
 
 ---
 

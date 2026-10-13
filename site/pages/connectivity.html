@@ -3,7 +3,7 @@ slug: connectivity
 nav: Connectivity
 title: Connectivity and integration
 eyebrow: 05 / Connectivity
-heading: Bears, carriers, adapters
+heading: Bearers, carriers, adapters
 lede: Adding every protocol to the FASP core would duplicate authorization, framing and storage once per ecosystem. Instead each source terminates at a small adapter and enters the same signed path. This page tells you which is which — and which ones this repository actually implements.
 facts:
   - [Native, HTTPS, WebSocket, RFCOMM, LE L2CAP]
@@ -121,7 +121,7 @@ facts:
 
     <div class="code-block">
       <div class="code-head"><span>production-shaped listener</span><button class="copy-button" type="button">Copy</button></div>
-      <pre><code>python3 -m fasp_harness serve --state-dir .fasp/laptop \
+      <pre><code>python3 -m fasp_harness serve --host 0.0.0.0 --state-dir .fasp/laptop \
   --public-url https://192.168.0.22:8766 \
   --tls-cert cert.pem --tls-key key.pem --tls-client-ca client-ca.pem \
   --rate-limit-per-peer 10 --rate-limit-burst 20 \
@@ -149,8 +149,7 @@ python3 -m fasp_harness serve --state-dir .fasp/laptop \
   --ble-psm 0x0080 --ble-address-type random
 
 <span class="c"># repeat registration on the other node with its peer address</span>
-fasp radio-register --state-dir ~/.fasp-agent \
-  --peer http://127.0.0.1:8766 \
+fasp radio-register AA:BB:CC:DD:EE:FF --state-dir ~/.fasp-agent \
   --mode classic --channel 8</code></pre>
     </div>
 

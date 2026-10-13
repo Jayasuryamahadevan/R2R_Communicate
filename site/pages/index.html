@@ -244,7 +244,38 @@ description: FASP is a signed-envelope coordination layer for autonomous systems
   </div>
 </section>
 
-<section id="reality" class="section" data-nav="What is real" data-num="05">
+<section id="uses" class="section" data-nav="Where it helps" data-num="05">
+  <div class="shell">
+    <div class="section-head">
+      <div><h2>Useful where systems must <em>agree across a boundary.</em></h2></div>
+      <p>FASP is most useful when two separately operated nodes need signed requests, local authorization and a durable record. Each example below uses the same packet, stream and artifact forms; the link and local adapter change with the site.</p>
+    </div>
+
+    <div class="card-grid card-grid--3">
+      <article class="card">
+        <p class="card-kicker">Laptop ↔ Pi</p>
+        <h3>Two agents, one accountable request</h3>
+        <p>An MCP host asks a local FASP node to contact a paired peer. The request is signed, queued before delivery and reported as sent or pending. The receiving agent keeps its own capability policy.</p>
+        <p class="card-foot">MCP stdio → HTTPS or Bluetooth packet</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Device ↔ gateway</p>
+        <h3>Intermittent edge telemetry</h3>
+        <p>A Pi or gateway forwards bounded observations as a leased stream and stores a larger immutable result by digest. A network outage delays delivery; it does not grant new authority or extend an expired lease.</p>
+        <p class="card-foot">Stream → optional artifact</p>
+      </article>
+      <article class="card">
+        <p class="card-kicker">Robot ↔ fleet service</p>
+        <h3>Coordinate goals, leave safety local</h3>
+        <p>Container or host nodes exchange task and reservation packets. A local adapter may accept a goal, while motor control and the certified safety path stay on the robot.</p>
+        <p class="card-foot">Signed packets → reviewed local adapter</p>
+      </article>
+    </div>
+    <p class="source-note">Start with the <a href="guide.html">practical guide</a> · choose a bearer in <a href="connectivity.html">connectivity</a> · review deployment limits in <a href="operations.html">operations</a>.</p>
+  </div>
+</section>
+
+<section id="reality" class="section" data-nav="What is real" data-num="06">
   <div class="shell">
     <div class="section-head">
       <div>
@@ -254,18 +285,18 @@ description: FASP is a signed-envelope coordination layer for autonomous systems
     </div>
 
     <dl class="stat-strip">
-      <div class="stat"><dt>Python</dt><dd>18.8k</dd><small>lines across 102 modules</small></div>
-      <div class="stat"><dt>Tests</dt><dd>605</dd><small>test functions, 52 modules</small></div>
-      <div class="stat"><dt>Wire</dt><dd>23</dd><small>envelope kinds, one dispatcher</small></div>
-      <div class="stat"><dt>Surface</dt><dd>19</dd><small>HTTP and WebSocket endpoints</small></div>
-      <div class="stat"><dt>Deps</dt><dd>5</dd><small>runtime, audited on an edge install</small></div>
+      <div class="stat"><dt>Forms</dt><dd>3</dd><small>packet, stream, artifact</small></div>
+      <div class="stat"><dt>Identity</dt><dd>1</dd><small>per independently trusted node</small></div>
+      <div class="stat"><dt>Runtime</dt><dd>5</dd><small>direct core dependencies</small></div>
+      <div class="stat"><dt>Bearer families</dt><dd>2</dd><small>IP and opt-in Linux radio</small></div>
+      <div class="stat"><dt>Delivery</dt><dd>1</dd><small>durable outbox per node</small></div>
     </dl>
 
     <div class="card-grid card-grid--2">
       <article class="card">
         <p class="card-kicker">Built and tested</p>
         <h3>Enforcement, durability, observability</h3>
-        <p>Ed25519 identity with RFC 8785 canonicalisation verified against the official vectors · capability-scoped pairing and revocable grants · a durable work lifecycle with idempotency · SQLite in WAL mode with versioned migrations · a hash-chained audit log · two-layer token-bucket rate limiting · mutual TLS · Prometheus metrics.</p>
+        <p>Ed25519 identity with RFC 8785 canonicalisation verified against the official vectors · capability-scoped pairing and revocable grants · a durable work lifecycle with idempotency · SQLite in WAL mode with versioned migrations · a hash-chained audit log · two-layer token-bucket rate limiting · mutual TLS · Prometheus metrics · optional MCP stdio tools.</p>
       </article>
       <article class="card">
         <p class="card-kicker">Deliberately absent</p>
@@ -278,7 +309,7 @@ description: FASP is a signed-envelope coordination layer for autonomous systems
   </div>
 </section>
 
-<section id="next" class="section" data-nav="Read this next" data-num="06">
+<section id="next" class="section" data-nav="Read this next" data-num="07">
   <div class="shell">
     <div class="section-head">
       <div>
@@ -304,7 +335,7 @@ description: FASP is a signed-envelope coordination layer for autonomous systems
         <p>Envelope schema, identity and pairing, the full envelope-kind catalog, stream contracts, the HTTP and WebSocket surface, and every error code with its status.</p>
         <div class="path-links">
           <a href="protocol.html">Protocol reference</a>
-          <a href="connectivity.html">Bears, carriers, adapters</a>
+          <a href="connectivity.html">Bearers, carriers, adapters</a>
           <a href="guide.html#adapter">Write an adapter</a>
         </div>
       </div>
