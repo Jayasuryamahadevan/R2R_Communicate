@@ -72,23 +72,22 @@
         </ol>
       </aside><article class="doc-body"><section id="install" data-nav="Install" data-num="01">
   <div class="shell"><p class="sec-num">01</p>
-    <p class="lede-out"><strong>Requirements.</strong> Python 3.11 or newer, Git, and <code>uv</code> — though <code>uv</code> is only the fast option. Any PEP 517 installer works, because the package has no unusual build requirements.</p>
+    <p class="lede-out"><strong>Requirements.</strong> Python 3.11 or newer and Git. The installer uses a locked <code>uv</code> environment when available, or a standard Python virtual environment. Node is needed only for the optional bridges.</p>
 
     <div class="code-block">
       <div class="code-head"><span>clone and create the environment</span><button class="copy-button" type="button">Copy</button></div>
       <pre><code>git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
 cd R2R_Communicate
-uv sync --python 3.11 --locked --extra test --extra dev
-source .venv/bin/activate
+./install.sh
 
-<span class="c"># prove the build is sound before trusting it</span>
-ruff check fasp_harness tests
-python3 -m unittest discover -s tests -v</code></pre>
+<span class="c"># optional local MCP server for an agent host</span>
+./install.sh --with-mcp</code></pre>
     </div>
 
-    <p>The lint and test commands are not optional decoration — they are exactly what CI runs, on every push, across 3.11 to 3.13. Running them locally first turns a confusing CI failure into a clear one.</p>
+    <p>The default install contains only the FASP node. Use <code>./install.sh --with-bridges</code> for the separate Node integrations. Developers can install the test and lint extras with <code>uv sync --locked --extra test --extra dev</code>.</p>
 
-    <p>Runtime dependencies are <code>cryptography</code>, <code>starlette</code>, <code>uvicorn</code>, <code>rfc8785</code> and <code>websockets</code>. Five wheels on an audited edge appliance is a short list, which is the point.</p>
+    <p>Direct runtime dependencies are <code>cryptography</code>, <code>starlette</code>, <code>uvicorn</code>, <code>rfc8785</code> and <code>websockets</code>. Their transitive packages are installed too; MCP adds its own dependencies only when requested.</p>
+    <p>To connect an MCP host, configure a local stdio server with command <code>/absolute/path/to/.venv/bin/fasp</code> and arguments <code>["mcp", "--state-dir", "/absolute/path/to/private/state"]</code>. It exposes identity, peers, outbox inspection, signed intent queuing, and one-batch delivery. Pair peers with the CLI first. The host needs access to this node's private state, so treat it as a trusted local process. <a href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/AGENT_CLI.md#mcp-hosts">MCP setup details →</a></p>
   </div>
 </section>
 
@@ -145,7 +144,7 @@ curl -s http://127.0.0.1:8766/openapi.json | head -40</code></pre>
 
     <ol class="steps">
       <li class="step"><strong>Read the other card</strong><span>Fetch its <code>/.well-known/fasp/id-card.json</code>, or discover it with <code>fasp discover</code> on a CIDR you administer.</span></li>
-      <li class="step"><strong>Register, in both directions</strong><span><code>fasp register --peer http://192.168.0.22:8766</code> on A, and the equivalent on B. This creates a <em>pending</em> relationship and returns a pair code. It grants nothing.</span></li>
+      <li class="step"><strong>Register, in both directions</strong><span><code>fasp register https://peer.example:8766 --state-dir ~/.fasp-agent</code> on A, and the equivalent on B. This creates a <em>pending</em> relationship and returns a pair code. It grants nothing.</span></li>
       <li class="step"><strong>Compare the same code on both machines</strong><span>On both trusted local displays, or over a channel you already trust. If the codes differ, stop here.</span></li>
       <li class="step"><strong>Approve locally, on each node</strong><span><code>fasp approve</code> with the peer ID, pair code, and only the capability prefixes you actually intend to allow — for example <code>observe.</code> and <code>coordinate.</code></span></li>
       <li class="step"><strong>Confirm the relationship</strong><span><code>fasp peers</code> shows the pairing, its scope and its expiry. It lasts 90 days by default; re-pair deliberately.</span></li>
@@ -153,12 +152,11 @@ curl -s http://127.0.0.1:8766/openapi.json | head -40</code></pre>
 
     <div class="code-block">
       <div class="code-head"><span>over a radio bearer, repeat on both nodes</span><button class="copy-button" type="button">Copy</button></div>
-      <pre><code>fasp radio-register --state-dir ~/.fasp-agent \
-  --peer http://127.0.0.1:8766 --mode classic --channel 8
+      <pre><code>fasp radio-register AA:BB:CC:DD:EE:FF --state-dir ~/.fasp-agent \
+  --mode classic --channel 8
 
 <span class="c"># or BLE on Python 3.14+; pick the address type BlueZ reports</span>
-fasp radio-register --state-dir ~/.fasp-agent \
-  --peer http://127.0.0.1:8766 \
+fasp radio-register AA:BB:CC:DD:EE:FF --state-dir ~/.fasp-agent \
   --mode ble --psm 0x0080 --address-type random</code></pre>
     </div>
 
@@ -321,7 +319,8 @@ python -m fasp_harness security-report --config examples/node.json</code></pre>
       <a class="card" href="https://github.com/Jayasuryamahadevan/R2R_Communicate/blob/main/COMMUNICATION_CATALOG.md"><p class="card-kicker">Catalog</p><h3>Communication catalog</h3><p>Every communication family, its FASP entry point, and whether it is native or needs an adapter.</p><span class="card-arrow">Open in repository →</span></a>
     </div>
   </div>
-</section><nav class="pager" aria-label="Page navigation"><a class="pager-link pager-prev" href="operations.html">
+</section>
+<nav class="pager" aria-label="Page navigation"><a class="pager-link pager-prev" href="operations.html">
           <span class="pager-dir">Previous</span>
           <span class="pager-title">Operations</span>
         </a><span></span></nav></article></div></main>

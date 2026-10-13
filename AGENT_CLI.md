@@ -10,14 +10,51 @@ chat system, or universal NAT traversal layer.
 From the repository:
 
 ```bash
-python -m pip install -e .
-fasp --help
+./install.sh
+.venv/bin/fasp --help
 ```
 
 If your shell cannot find the installed script, use
 `python -m fasp_harness init|register|...` instead. The existing
 `python -m fasp_harness serve` entrypoint remains compatible, and
 `fasp serve` is also supported.
+
+## MCP hosts
+
+Install the optional [official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk), then initialize a node:
+
+```bash
+./install.sh --with-mcp
+.venv/bin/fasp init --name my-node --state-dir ~/.fasp-agent
+```
+
+Add this local stdio server to your MCP host's configuration (replace both
+absolute paths). The host launches it on demand; no MCP port is opened:
+
+```json
+{
+  "mcpServers": {
+    "fasp": {
+      "command": "/absolute/path/to/R2R_Communicate/.venv/bin/fasp",
+      "args": ["mcp", "--state-dir", "/absolute/path/to/private/fasp-state"]
+    }
+  }
+}
+```
+
+Use the host's equivalent server configuration format if it differs. The
+server exposes `identity`, `peers`, `outbox`, `queue_intent`, and `drain`.
+`queue_intent` signs and persists an intent; `drain` attempts one bounded
+delivery batch. For automatic retries, supervise `fasp drain --watch`
+separately. Pair and approve peers with the CLI before asking the MCP host
+to send work. An MCP host with access to the private state directory can
+use this node's identity, so give that host the same local trust level as
+the `fasp` CLI. Keep each node's state on persistent storage and use a
+different state directory for each identity.
+
+The MCP extra is installed only when requested. For a minimal runtime,
+`./install.sh` installs only the five FASP dependencies. The optional Node
+bridges are installed with `./install.sh --with-bridges` and require Node 20+.
 
 ## Two-node setup
 

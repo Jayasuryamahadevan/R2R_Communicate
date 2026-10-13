@@ -131,7 +131,7 @@ a build enforces.
 
 ## Agent CLI — `fasp`
 
-Install the package with `pip install -e .`, then use `fasp init`,
+Install with `./install.sh` (or `pip install .`), then use `fasp init`,
 `fasp register`, `fasp approve`, `fasp communicate`, and
 `fasp drain --watch` to exchange signed agent messages over a durable
 outbox. Registration requires explicit two-sided approval; calls never
@@ -145,23 +145,25 @@ fasp peers --state-dir ~/.fasp-agent
 
 ## Quick start
 
-Requires Python 3.11 or newer, Git, and `uv`. Run these commands in a POSIX
-shell; the editable install and test discovery use the repository root.
+Requires Python 3.11 or newer and Git. `uv` is preferred for the locked
+install; the installer also supports a plain Python virtual environment.
 
 ```bash
 git clone https://github.com/Jayasuryamahadevan/R2R_Communicate.git
 cd R2R_Communicate
-uv sync --python 3.11 --locked --extra test --extra dev
-source .venv/bin/activate
-
-ruff check fasp_harness tests
-python3 -m unittest discover -s tests -v
-
-python3 -m fasp_harness serve \
-  --host 0.0.0.0 --port 8766 \
-  --public-url http://192.168.0.22:8766 \
+./install.sh
+.venv/bin/fasp init --name laptop-agent --state-dir .fasp/laptop
+.venv/bin/fasp serve \
+  --host 127.0.0.1 --port 8766 \
   --name laptop-agent --state-dir .fasp/laptop --insecure-http
 ```
+
+For MCP hosts, run `./install.sh --with-mcp`, then configure a local stdio
+server with command `/absolute/path/to/.venv/bin/fasp` and arguments
+`["mcp", "--state-dir", "/absolute/path/to/your/state"]`. The five tools
+read identity and peers, inspect the outbox, queue a signed intent, and drain
+one delivery batch. Pair peers with the CLI first; the MCP server does not
+grant trust. See [MCP setup](AGENT_CLI.md#mcp-hosts).
 
 The server prints its system ID, public profile URL, and the path to its
 private admin token. **Do not expose the admin token or the identity private
