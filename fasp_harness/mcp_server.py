@@ -29,6 +29,17 @@ def build_server(args: argparse.Namespace) -> Any:
 
     server = MCPServer("FASP")
 
+    def enqueue_intent(h: Any, peer_id: str, message: str, capability: str, idempotency_key: str | None, grant_id: str | None) -> dict[str, Any]:
+        h._peer(peer_id)
+        payload: dict[str, Any] = {"objective": message, "capability": capability, "idempotency_key": idempotency_key or str(uuid.uuid4())}
+        if grant_id:
+            payload["grant"] = {"id": grant_id}
+        envelope = h.make_envelope("intent.propose", peer_id, payload)
+        if len(json.dumps(envelope, ensure_ascii=False).encode("utf-8")) > MAX_INLINE_BYTES:
+            raise FaspError("resource.too_large", "Signed intent exceeds 64 KiB.")
+        queued = Outbox(h.db).enqueue(peer_id, envelope)
+        return {"state": "queued", "message_id": queued.message_id, "idempotency_key": payload["idempotency_key"], "expires_at": envelope["expires_at"]}
+
     @server.tool()
     async def identity() -> dict[str, Any]:
         """Return this node's public signed identity card (no private key or token)."""
@@ -72,23 +83,42 @@ def build_server(args: argparse.Namespace) -> Any:
         """Sign and durably queue an intent for an already paired peer. Call drain to send it."""
         try:
             with _agent(args) as h:
-                h._peer(peer_id)
-                payload: dict[str, Any] = {"objective": message, "capability": capability, "idempotency_key": idempotency_key or str(uuid.uuid4())}
-                if grant_id:
-                    payload["grant"] = {"id": grant_id}
-                envelope = h.make_envelope("intent.propose", peer_id, payload)
-                if len(json.dumps(envelope, ensure_ascii=False).encode("utf-8")) > MAX_INLINE_BYTES:
-                    raise FaspError("resource.too_large", "Signed intent exceeds 64 KiB.")
-                queued = Outbox(h.db).enqueue(peer_id, envelope)
-                return {"state": "queued", "message_id": queued.message_id, "idempotency_key": payload["idempotency_key"], "expires_at": envelope["expires_at"]}
+                return enqueue_intent(h, peer_id, message, capability, idempotency_key, grant_id)
+        except FaspError as exc:
+            raise ToolError(f"{exc.code}: {exc.detail}") from exc
+
+    @server.tool()
+    async def communicate(peer_id: str, message: str, capability: str = "coordinate.chat.v1", idempotency_key: str | None = None, grant_id: str | None = None) -> dict[str, Any]:
+        """Queue a signed intent, attempt delivery once, and report its saved delivery state."""
+        def send_once() -> dict[str, Any]:
+            with _agent(args) as h:
+                queued = enqueue_intent(h, peer_id, message, capability, idempotency_key, grant_id)
+                _deliver(h, args)
+                record = Outbox(h.db).get(queued["message_id"])
+                if record is None:
+                    raise ToolError("Queued intent disappeared from the outbox.")
+                return {
+                    **queued,
+                    "state": record["state"],
+                    "response": record["response"],
+                    "last_error": record["last_error"],
+                }
+        try:
+            return await asyncio.to_thread(send_once)
         except FaspError as exc:
             raise ToolError(f"{exc.code}: {exc.detail}") from exc
 
     @server.tool()
     async def drain() -> dict[str, Any]:
         """Attempt one bounded delivery batch using the registered HTTPS or Bluetooth endpoint."""
-        with _agent(args) as h:
-            return await asyncio.to_thread(_deliver, h, args)
+        def drain_once() -> dict[str, Any]:
+            with _agent(args) as h:
+                return _deliver(h, args)
+
+        try:
+            return await asyncio.to_thread(drain_once)
+        except FaspError as exc:
+            raise ToolError(f"{exc.code}: {exc.detail}") from exc
 
     return server
 
