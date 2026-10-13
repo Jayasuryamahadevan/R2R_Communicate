@@ -40,3 +40,21 @@ no safety integrity (the `production` posture check and the safety case
 both refuse it, deliberately), and the simulated fleet is a test double.
 Swap `{"kind": "simulated"}` for `{"kind": "modbus", "host": ...}` and a
 `vda5050` or `rest` fleet to point the same coordinator at real equipment.
+
+## Local microscope preview
+
+`microscope_viewer.py` serves a UVC camera's MJPEG feed to a browser on the
+same laptop. It uses the system Python with PyGObject and GStreamer, and does
+not publish camera frames through FASP.
+
+Find the camera under `/dev/v4l/by-id/`, then run:
+
+```bash
+/usr/bin/python3 examples/microscope_viewer.py --device /dev/video2
+```
+
+Open `http://127.0.0.1:8765/`. The defaults are 1296×972 at 50 fps; use
+`--width`, `--height`, and `--fps` to select another mode advertised by the
+camera. Press Ctrl+C to stop the stream. On Debian or Ubuntu, the system
+packages `python3-gi`, `gir1.2-gstreamer-1.0`, `gstreamer1.0-plugins-base`,
+and `gstreamer1.0-plugins-good` provide the required bindings and plugins.
