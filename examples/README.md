@@ -47,18 +47,20 @@ Swap `{"kind": "simulated"}` for `{"kind": "modbus", "host": ...}` and a
 same laptop. It uses the system Python with PyGObject and GStreamer, and does
 not publish camera frames through FASP.
 
-Find the camera under `/dev/v4l/by-id/`, then run with its stable `video-index0`
-path (replace the example path with your camera's):
+Find the microscope's capture node under `/dev/v4l/by-id/`, or use the current
+`/dev/videoN` capture node. The latter may change after unplugging the camera.
+On this laptop the current node is `/dev/video2`:
 
 ```bash
-/usr/bin/python3 examples/microscope_viewer.py \
-  --device /dev/v4l/by-id/usb-TP_C2CMOS05100KPB_01.00.00-video-index0
+/usr/bin/python3 examples/microscope_viewer.py --device /dev/video2
 ```
 
 Open `http://127.0.0.1:8765/`. The defaults are 1296×972 at 50 fps; use
 `--width`, `--height`, and `--fps` to select another mode advertised by the
 camera. The page shows connection status, retries if the USB camera drops,
-and has a **Capture photo** link. If the camera is connected but the image is
+and has a **Capture photo** link. The preview supports 1–8× digital zoom and
+drag-to-pan; the photo link saves the full uncropped frame. Optical
+magnification is set on the microscope. If the camera is connected but the image is
 black, check its illumination, lens cap, and microscope camera light path.
 Repeated USB disconnects in the kernel log call for checking the data cable,
 port, and any USB hub. Press Ctrl+C to stop the stream. On Debian or Ubuntu, the system

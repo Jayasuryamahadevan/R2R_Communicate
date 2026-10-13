@@ -125,20 +125,56 @@ class Camera:
             self.pipeline.set_state(Gst.State.NULL)
 
 
-PAGE = b"""<!doctype html>
+PAGE = """<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Microscope live view</title>
-<style>body{margin:0;background:#111;color:#eee;font:16px system-ui;text-align:center}
-header{padding:12px}#status{margin:0 10px 10px}a{color:#9cf}img{display:block;max-width:100vw;
-max-height:calc(100vh - 110px);margin:auto;object-fit:contain}</style>
-<header>Microscope live view &middot; <a href="/snapshot.jpg" download="microscope.jpg">Capture photo</a></header>
-<div id="status">Connecting to camera...</div><img src="/stream.mjpg" alt="Live microscope camera feed">
-<script>async function update(){try{let r=await fetch('/status');let s=await r.json();
+<style>
+body{margin:0;background:#111;color:#eee;font:16px system-ui;text-align:center}
+header,.controls{display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;padding:8px}
+a{color:#9cf}button{font:inherit;cursor:pointer}input[type=range]{width:min(220px,45vw)}
+#status{min-height:24px;padding:4px}#viewport{height:calc(100vh - 145px);min-height:220px;
+display:flex;align-items:center;justify-content:center;overflow:hidden;touch-action:none;cursor:grab}
+#viewport.dragging{cursor:grabbing}#feed{display:block;max-width:none;max-height:none;user-select:none}
+small{display:block;padding:5px;color:#aaa}
+</style>
+<header><strong>Microscope live view</strong><a href="/snapshot.jpg" download="microscope.jpg">Capture photo</a></header>
+<div class="controls"><label for="zoom">Digital zoom</label><input id="zoom" type="range" min="1" max="8" step="0.1" value="1">
+<output id="zoom-value" for="zoom">1.0&times;</output><button id="reset" type="button">Reset view</button></div>
+<div id="status">Connecting to camera...</div>
+<div id="viewport"><img id="feed" src="/stream.mjpg" alt="Live microscope camera feed" draggable="false"></div>
+<small>Use the slider or mouse wheel to zoom; drag to pan. Capture photo saves the full camera frame.</small>
+<script>
+const viewport=document.getElementById('viewport'),feed=document.getElementById('feed');
+const slider=document.getElementById('zoom'),value=document.getElementById('zoom-value');
+let zoom=1,panX=0,panY=0,dragging=false,lastX=0,lastY=0;
+function render(){
+  const vw=viewport.clientWidth,vh=viewport.clientHeight;
+  const ratio=(feed.naturalWidth||4)/(feed.naturalHeight||3);
+  const w=Math.min(vw,vh*ratio),h=w/ratio;
+  feed.style.width=w+'px';feed.style.height=h+'px';
+  panX=Math.max(-Math.max(0,(w*zoom-vw)/2),Math.min(Math.max(0,(w*zoom-vw)/2),panX));
+  panY=Math.max(-Math.max(0,(h*zoom-vh)/2),Math.min(Math.max(0,(h*zoom-vh)/2),panY));
+  feed.style.transform=`translate(${panX}px,${panY}px) scale(${zoom})`;
+  value.textContent=zoom.toFixed(1)+'×';slider.value=zoom.toFixed(1);
+}
+function setZoom(next){zoom=Math.max(1,Math.min(8,Number(next)));render()}
+slider.addEventListener('input',()=>setZoom(slider.value));
+document.getElementById('reset').addEventListener('click',()=>{zoom=1;panX=0;panY=0;render()});
+viewport.addEventListener('wheel',event=>{event.preventDefault();setZoom(zoom*Math.exp(-event.deltaY/500))},{passive:false});
+viewport.addEventListener('pointerdown',event=>{if(zoom===1)return;dragging=true;lastX=event.clientX;lastY=event.clientY;
+  viewport.setPointerCapture(event.pointerId);viewport.classList.add('dragging')});
+viewport.addEventListener('pointermove',event=>{if(!dragging)return;panX+=event.clientX-lastX;panY+=event.clientY-lastY;
+  lastX=event.clientX;lastY=event.clientY;render()});
+function endDrag(){dragging=false;viewport.classList.remove('dragging')}
+viewport.addEventListener('pointerup',endDrag);viewport.addEventListener('pointercancel',endDrag);
+feed.addEventListener('load',render);new ResizeObserver(render).observe(viewport);render();
+async function update(){try{const r=await fetch('/status');const s=await r.json();
 document.getElementById('status').textContent=s.connected
 ?'Camera connected. If the image is black, check microscope illumination and the camera light path.'
 :'Camera disconnected or unavailable. Check the USB cable and port; reconnecting automatically.';
 }catch{document.getElementById('status').textContent='Viewer connection lost.'}}
-update();setInterval(update,1500)</script></html>"""
+update();setInterval(update,1500)
+</script></html>""".encode("utf-8")
 
 
 class ViewerHandler(BaseHTTPRequestHandler):
