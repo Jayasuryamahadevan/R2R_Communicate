@@ -13,6 +13,7 @@ dependencies = ["cryptography>=42", "starlette>=0.37", "uvicorn>=0.30", "rfc8785
 fasp = "fasp_harness.agent_cli:main_entry"
 
 [project.optional-dependencies]
+mcp = ["mcp>=2,<3"]
 test = ["pytest>=8.0", "hypothesis>=6.100", "httpx2>=2.0"]
 dev = ["ruff>=0.16"]
 

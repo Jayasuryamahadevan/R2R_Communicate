@@ -287,6 +287,7 @@ class FaspHarness:
         exists to recover from; this path exists so a clean shutdown
         doesn't need that recovery in the first place)."""
         self._executor.shutdown(wait=True, cancel_futures=False)
+        self.db.close()
 
     def id_card(self) -> dict[str, Any]:
         card = {

@@ -538,6 +538,20 @@ def main_entry() -> int:
         sys.argv.pop(1)
         serve()
         return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "discover":
+        from .discovery import main as discover
+
+        sys.argv.pop(1)
+        discover()
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] in {"-h", "--help"}:
+        build_parser().print_help()
+        print("\nAlso available: serve, discover, mcp (optional extra).")
+        return 0
+    if len(sys.argv) > 1 and sys.argv[1] == "mcp":
+        from .mcp_server import main as mcp_main
+
+        return mcp_main(sys.argv[2:])
     return main()
 
 

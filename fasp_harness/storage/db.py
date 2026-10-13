@@ -72,6 +72,10 @@ class Database:
         with self.lock:
             return self.connection.execute(sql, parameters).fetchall()
 
+    def close(self) -> None:
+        with self.lock:
+            self.connection.close()
+
     def read_one(self, sql: str, parameters: tuple = ()) -> sqlite3.Row | None:
         with self.lock:
             return self.connection.execute(sql, parameters).fetchone()

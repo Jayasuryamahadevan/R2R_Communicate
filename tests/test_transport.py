@@ -101,14 +101,14 @@ class TransportTests(unittest.TestCase):
 
     def test_oversized_body_is_rejected(self) -> None:
         posted = self.client.post("/fasp/v1/envelopes", content=b"x" * (70 * 1024), headers={"Content-Type": "application/json"})
-        self.assertEqual(posted.status_code, 400)
-        self.assertEqual(posted.json()["error"]["code"], "schema.invalid")
+        self.assertEqual(posted.status_code, 413)
+        self.assertEqual(posted.json()["error"]["code"], "resource.too_large")
 
     def test_streaming_request_cannot_exceed_size_limit(self) -> None:
         chunks = iter([b"x" * 32768, b"y" * 32768, b"z"])
         posted = self.client.post("/fasp/v1/envelopes", content=chunks, headers={"Content-Type": "application/json"})
-        self.assertEqual(posted.status_code, 400)
-        self.assertEqual(posted.json()["error"]["code"], "schema.invalid")
+        self.assertEqual(posted.status_code, 413)
+        self.assertEqual(posted.json()["error"]["code"], "resource.too_large")
 
     def test_websocket_oversized_frame_is_rejected(self) -> None:
         with self.client.websocket_connect("/fasp/v1/channel") as socket:
