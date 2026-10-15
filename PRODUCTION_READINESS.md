@@ -269,3 +269,11 @@ do NOT deploy multiple writer replicas over a shared SQLite volume.
   https://www.iso.org/standard/83545.html
 - ROS 2 DDS-Security and enclaves:
   https://design.ros2.org/articles/ros2_dds_security
+
+## Concurrent transport and access lifetimes
+
+See [Transport reliability](TRANSPORT_RELIABILITY.md) for bounded ingress
+capacity, reserved observation/control execution, authentication/body deadlines,
+revocation-aware push delivery, the corrected TypeScript handshake and its
+remaining delivery/TLS limitations. These controls and local measurements do
+not replace deployment-specific load, security or physical safety validation.

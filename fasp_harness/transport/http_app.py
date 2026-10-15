@@ -32,6 +32,7 @@ import logging
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
+from functools import partial
 from http import HTTPStatus
 from typing import Any
 
@@ -47,12 +48,15 @@ from ..edge.health import HealthRegistry
 from ..observability.logging import configure, log
 from ..protocol.contracts import operator_payload
 from .canonical import MAX_ENVELOPE_BYTES, accept_envelope, decode_object
+from .runtime import ChannelSession, IngressDispatcher, TransportLimits
 
 logger = configure()
 
 MAX_BODY_BYTES = MAX_ENVELOPE_BYTES
 
 def _error_status(error: FaspError) -> int:
+    if error.code == "transport.read_timeout":
+        return HTTPStatus.REQUEST_TIMEOUT
     if error.code.startswith("auth."):
         return HTTPStatus.UNAUTHORIZED
     if error.code in {"capability.unavailable", "protocol.unsupported_kind"}:
@@ -61,7 +65,7 @@ def _error_status(error: FaspError) -> int:
         return HTTPStatus.TOO_MANY_REQUESTS
     if error.code == "resource.too_large":
         return HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-    if error.code == "transport.response_unavailable":
+    if error.code in {"transport.response_unavailable", "transport.overloaded"}:
         return HTTPStatus.SERVICE_UNAVAILABLE
     return HTTPStatus.BAD_REQUEST
 
@@ -70,7 +74,7 @@ def _error_response(error: FaspError) -> JSONResponse:
     return JSONResponse(
         {"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}},
         status_code=_error_status(error),
-        headers={"Cache-Control": "no-store"},
+        headers={"Cache-Control": "no-store", **({"Retry-After": "1"} if error.code == "transport.overloaded" else {})},
     )
 
 
@@ -87,6 +91,8 @@ def _catching(harness: FaspHarness) -> Callable[[Callable[[Request], Awaitable[J
             try:
                 return await handler(request)
             except FaspError as error:
+                if error.code == "transport.overloaded":
+                    return _error_response(error)
                 harness.metrics.increment("fasp_auth_failures_total", code=error.code)
                 log(logger, logging.WARNING, "request.rejected", code=error.code, path=request.url.path)
                 return _error_response(error)
@@ -96,12 +102,16 @@ def _catching(harness: FaspHarness) -> Callable[[Callable[[Request], Awaitable[J
     return decorator
 
 
-async def _read_json_body(request: Request) -> dict[str, Any]:
+async def _read_json_body(request: Request, *, timeout_s: float = 10.0) -> dict[str, Any]:
     body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > MAX_BODY_BYTES:
-            raise FaspError("resource.too_large", "Body exceeds 64 KiB.")
-        body.extend(chunk)
+    try:
+        async with asyncio.timeout(timeout_s):
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > MAX_BODY_BYTES:
+                    raise FaspError("resource.too_large", "Body exceeds 64 KiB.")
+                body.extend(chunk)
+    except TimeoutError as error:
+        raise FaspError("transport.read_timeout", "Request body did not arrive before its deadline.") from error
     payload = decode_object(body)
     operator_payload(request.url.path, payload)
     return payload
@@ -191,9 +201,12 @@ def default_health(harness: FaspHarness) -> HealthRegistry:
     return health
 
 
-def create_app(harness: FaspHarness, health: HealthRegistry | None = None, before_close: Callable[[], None] | None = None) -> Starlette:
+def create_app(harness: FaspHarness, health: HealthRegistry | None = None, before_close: Callable[[], None] | None = None, *, transport_limits: TransportLimits | None = None) -> Starlette:
     catching = _catching(harness)
     health = health or default_health(harness)
+    limits = transport_limits or TransportLimits()
+    ingress = IngressDispatcher(limits, harness.metrics)
+    active_channels = 0
 
     @catching
     async def get_profile(request: Request) -> JSONResponse:
@@ -224,6 +237,8 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
     async def get_metrics(request: Request) -> PlainTextResponse:
         _require_admin(request, harness)
         gauges = await run_in_threadpool(_live_gauges, harness)
+        gauges.update(ingress.gauges())
+        gauges["fasp_channel_sessions"] = active_channels
         return PlainTextResponse(harness.metrics.render(gauges), headers={"Cache-Control": "no-store"})
 
     @catching
@@ -268,14 +283,14 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
 
     @catching
     async def post_pair_hello(request: Request) -> JSONResponse:
-        payload = await _read_json_body(request)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
         result = await run_in_threadpool(harness.hello, payload.get("id_card", {}))
         return _json_ok(result)
 
     @catching
     async def post_pair_confirm(request: Request) -> JSONResponse:
         _require_admin(request, harness)
-        payload = await _read_json_body(request)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
         result = await run_in_threadpool(
             harness.confirm_peer, payload.get("peer_id", ""), payload.get("pair_code", ""), payload.get("allowed_capability_prefixes")
         )
@@ -284,7 +299,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
     @catching
     async def post_pair_revoke(request: Request) -> JSONResponse:
         _require_admin(request, harness)
-        payload = await _read_json_body(request)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
         result = await run_in_threadpool(
             harness.revoke_peer, payload.get("peer_id", ""), payload.get("reason", "revoked by local operator"), payload.get("revocation_ref")
         )
@@ -293,7 +308,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
     @catching
     async def post_grants_issue(request: Request) -> JSONResponse:
         _require_admin(request, harness)
-        payload = await _read_json_body(request)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
         duration = timedelta(seconds=payload.get("duration_seconds", 3600))
         result = await run_in_threadpool(
             harness.issue_grant, payload.get("subject_peer", ""), payload.get("capability_prefixes", []), duration, payload.get("purpose"), payload.get("constraints")
@@ -303,77 +318,97 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
     @catching
     async def post_grants_revoke(request: Request) -> JSONResponse:
         _require_admin(request, harness)
-        payload = await _read_json_body(request)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
         result = await run_in_threadpool(harness.revoke_grant, payload.get("grant_id", ""))
         return _json_ok(result)
 
     @catching
     async def post_envelopes(request: Request) -> JSONResponse:
-        payload = await _read_json_body(request)
-        response = await run_in_threadpool(accept_envelope, harness, payload)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
+        response = await ingress.run(payload, partial(accept_envelope, harness, payload))
         return _json_ok(response)
 
     @catching
     async def post_receipts(request: Request) -> JSONResponse:
-        payload = await _read_json_body(request)
-        response = await run_in_threadpool(accept_envelope, harness, payload, expected_kind="receipt.processed", wrap_receipt=False)
+        payload = await _read_json_body(request, timeout_s=limits.body_timeout_s)
+        response = await ingress.run(payload, partial(accept_envelope, harness, payload, expected_kind="receipt.processed", wrap_receipt=False))
         return _json_ok(response)
 
     async def channel_endpoint(websocket: WebSocket) -> None:
-        """`/fasp/v1/channel`: the same signed-envelope protocol as
-        `/fasp/v1/envelopes`, just carried over a persistent, full-duplex
-        connection instead of one HTTP request per envelope (ss13's
-        transport-agnostic framing: only the wire *transport* differs here,
-        never the envelope format, auth, or dedup semantics).
-
-        There is no separate handshake message: the first authenticated
-        frame's `from` registers this connection for push delivery (see
-        `channels.py` and `FaspHarness._apply_task_outcome`), and every
-        later frame -- of any dispatchable kind -- is handled exactly as an
-        HTTP POST would handle it.
-        """
-        await websocket.accept()
+        nonlocal active_channels
+        # Include unauthenticated and closing sockets in the same bound.
+        if active_channels >= limits.max_channels:
+            harness.metrics.increment("fasp_channel_rejected_total", reason="capacity")
+            await websocket.close(code=1013)
+            return
+        active_channels += 1
+        session = ChannelSession(websocket, limits.send_timeout_s)
         registered_peer: str | None = None
+        failures = 0
+        loop = asyncio.get_running_loop()
+        auth_deadline = loop.time() + limits.auth_timeout_s
+        close_code = 1000
         try:
+            await websocket.accept()
             while True:
-                try:
+                async with asyncio.timeout_at(auth_deadline if registered_peer is None else None):
                     frame = await websocket.receive()
                     if frame["type"] == "websocket.disconnect":
                         break
                     if frame.get("text") is None:
-                        await websocket.close(code=1003)
+                        close_code = 1003
                         break
-                    raw = frame["text"]
-                except (ValueError, WebSocketDisconnect):
-                    break
-                if len(raw.encode("utf-8")) > MAX_BODY_BYTES:
-                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": "resource.too_large", "detail": "WebSocket frame exceeds 64 KiB."}})
-                    await websocket.close(code=1009)
-                    break
-                try:
-                    payload = decode_object(raw.encode("utf-8"))
-                except FaspError as error:
-                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
-                    await websocket.close(code=1007)
-                    break
-                try:
-                    response = await run_in_threadpool(accept_envelope, harness, payload)
-                except FaspError as error:
-                    harness.metrics.increment("fasp_auth_failures_total", code=error.code)
-                    await websocket.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
-                    continue
-                sender = payload.get("from")
-                if isinstance(sender, str) and sender != registered_peer:
-                    if registered_peer is not None:
-                        harness.channels.unregister(registered_peer, websocket)
-                    if not harness.channels.register(sender, websocket):
-                        await websocket.close(code=1013)
+                    raw = frame["text"].encode("utf-8")
+                    try:
+                        payload = decode_object(raw)
+                    except FaspError as error:
+                        await session.send_json({"fasp": PROTOCOL, "type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
+                        close_code = 1009 if error.code == "resource.too_large" else 1007
                         break
-                    registered_peer = sender
-                await websocket.send_json(response)
+                    message_id = payload.get("message_id")
+                    correlation = {"in_reply_to": message_id} if isinstance(message_id, str) and 1 <= len(message_id) <= 128 else {}
+                    # Reject a different claimed identity before any effects or
+                    # dispatch. An unverified frame can never rebind this socket.
+                    if registered_peer is not None and payload.get("from") != registered_peer:
+                        await session.send_json({"fasp": PROTOCOL, "type": "protocol.error", **correlation,
+                                                 "error": {"code": "auth.channel_identity", "detail": "Open a separate channel for a different peer identity."}})
+                        close_code = 1008
+                        break
+                    try:
+                        response = await ingress.run(payload, partial(accept_envelope, harness, payload))
+                    except FaspError as error:
+                        harness.metrics.increment("fasp_channel_errors_total", code=error.code)
+                        await session.send_json({"fasp": PROTOCOL, "type": "protocol.error", **correlation,
+                                                 "error": {"code": error.code, "detail": error.detail}})
+                        # Saturation is retryable, and must not disconnect a
+                        # healthy authenticated client. Invalid traffic is bounded.
+                        if error.code != "transport.overloaded":
+                            failures += 1
+                        if failures >= limits.max_invalid_frames:
+                            close_code = 1008
+                            break
+                        continue
+                    if registered_peer is None:
+                        sender = payload["from"]
+                        if not harness.channels.register(sender, session):
+                            close_code = 1013
+                            break
+                        registered_peer = sender
+                    failures = 0
+                    await session.send_json({**response, **correlation})
+        except TimeoutError:
+            harness.metrics.increment("fasp_channel_rejected_total", reason="timeout")
+            close_code = 1008 if registered_peer is None else 1013
+        except (WebSocketDisconnect, ConnectionError, OSError):
+            pass
         finally:
             if registered_peer is not None:
-                harness.channels.unregister(registered_peer, websocket)
+                harness.channels.unregister(registered_peer, session)
+            try:
+                with contextlib.suppress(WebSocketDisconnect, RuntimeError, TimeoutError, OSError):
+                    await session.close(code=close_code)
+            finally:
+                active_channels -= 1
 
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
@@ -389,6 +424,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
                 # Graceful drain (ss15 #5/#6): let in-flight adapter calls
                 # finish on their own rather than abandoning them mid-call the
                 # moment the process is asked to stop.
+                await run_in_threadpool(ingress.close)
                 await run_in_threadpool(harness.close)
 
     return Starlette(

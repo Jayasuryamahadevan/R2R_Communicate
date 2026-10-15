@@ -285,6 +285,7 @@ async function postJson(
 
 export class FaspClient {
 	private readonly identityPath: string;
+	private readonly verifiedPeers = new Map<string, string>();
 
 	constructor(stateDir: string) {
 		this.identityPath = join(stateDir, "fasp_identity.json");
@@ -379,6 +380,11 @@ export class FaspClient {
 				`${baseUrl} answered as ${result.system_id} but returned an id_card for a different system_id -- refusing to trust it.`,
 			);
 		}
+		const peerUrl = baseUrl.replace(/\/$/, "");
+		const pinned = this.verifiedPeers.get(peerUrl);
+		if (pinned && pinned !== result.system_id) throw new AICError("auth.identity_mismatch", "Previously verified peer identity changed.");
+		if (!pinned && this.verifiedPeers.size >= 256) this.verifiedPeers.delete(this.verifiedPeers.keys().next().value!);
+		this.verifiedPeers.set(peerUrl, result.system_id);
 		return result;
 	}
 
@@ -499,174 +505,151 @@ export class FaspClient {
 		return postJson(`${baseUrl.replace(/\/$/, "")}/fasp/v1/envelopes`, signed);
 	}
 
-	/** Open a persistent connection to a FASP harness's
-	 * `/fasp/v1/channel` websocket -- the real answer to "communicate
-	 * autonomously, without either side polling": the first envelope
-	 * frame sent on it registers this connection for push delivery
-	 * (fasp_harness/channels.py's `ConnectionRegistry`), so a task that
-	 * outlives its synchronous wait budget (`max_runtime_s`) gets its
-	 * real result delivered here the moment it's ready, with nobody
-	 * asking "did you get a new message" -- see fasp_harness/core.py's
-	 * `_apply_task_outcome`/`_on_adapter_done`.
-	 *
-	 * `onMessage` fires for every frame this channel receives: the
-	 * immediate response to whatever this agent sends over it (a
-	 * `task.progress` if a task's synchronous window has already
-	 * elapsed), any later `task.push` for that same task, and anything
-	 * else pushed to this agent's system_id independently of a request it
-	 * made (fasp_harness/core.py also pushes stream messages the same
-	 * way). Node's built-in global `WebSocket` -- no dependency, matching
-	 * the rest of this file.
-	 *
-	 * Reconnects on its own, with backoff, if the connection drops after
-	 * being established -- a real, confirmed gap this closes: without it,
-	 * killing and restarting the harness mid-session (a redeploy, a
-	 * network blip, anything short of the caller itself calling
-	 * `close()`) left this channel silently, permanently dead. Proved by
-	 * doing exactly that against a real running harness: the socket
-	 * closed, nothing reconnected, and 20+ seconds of heartbeats sent
-	 * afterward -- including well after the harness was healthy and
-	 * answering `/health` again -- produced zero further messages. A
-	 * demo or a long-running agent that opens a channel once and expects
-	 * it to just keep working cannot tolerate that.
-	 *
-	 * `onStatusChange`, if given, fires `"open"` on every successful
-	 * (re)connect and `"reconnecting"` the instant an established
-	 * connection drops -- purely informational, since reconnection itself
-	 * is automatic; a caller that doesn't care can omit it entirely. */
+	/** Open a persistent channel to an operator-approved receiver. Profiles are
+	 * pinned again on reconnect; an acknowledged heartbeat registers each socket.
+	 * Durable reconnect buffering is bounded and RAM-only. Volatile observations
+	 * fail offline; callers reconcile missing acknowledgements by message/task ID.
+	 * Host fetch/WebSocket implementations own TLS/client-certificate handling. */
 	async openChannel(
 		baseUrl: string,
 		onMessage: (message: Record<string, unknown>) => void,
 		onStatusChange?: (status: "open" | "reconnecting" | "closed") => void,
+		expectedSystemId?: string,
 	): Promise<FaspChannel> {
-		const { systemId } = this.loadOrCreateIdentity();
+		const remoteId = expectedSystemId ?? this.verifiedPeers.get(baseUrl.replace(/\/$/, ""));
+		if (!remoteId || !/^fasp:system:[A-Za-z0-9_-]{43}$/.test(remoteId)) {
+			throw new AICError("auth.peer_required", "Pass the approved remote system ID, or complete hello() before opening its channel.");
+		}
 		const wsUrl = `${baseUrl.replace(/^http/, "ws").replace(/\/$/, "")}/fasp/v1/channel`;
 		let socket: WebSocket;
 		let closedByCaller = false;
+		let ready = false;
 		let reconnectAttempt = 0;
-		// Outgoing frames sent while reconnecting are held, not dropped or
-		// thrown away silently -- flushed the moment the next connection
-		// lands. Bounded because a harness that stays down for a long time
-		// must not turn a slow reconnect loop into unbounded memory growth
-		// (the same reasoning as `MAX_RESPONSE_BYTES` above, just for the
-		// outbound side of this same client).
-		const pending: string[] = [];
+		let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+		let flushTimer: ReturnType<typeof setTimeout> | undefined;
+		const pending: { line: string; bytes: number; expiresAt: number }[] = [];
+		let pendingBytes = 0;
 		const MAX_QUEUED = 50;
-
-		const connectOnce = (): Promise<WebSocket> =>
-			new Promise((resolve, reject) => {
+		const MAX_PENDING_BYTES = 1024 * 1024;
+		const MAX_SOCKET_BYTES = 256 * 1024;
+		const notify = (message: Record<string, unknown>): void => {
+			try { onMessage(message); } catch { /* A consumer cannot interrupt reconnection. */ }
+		};
+		const status = (value: "open" | "reconnecting" | "closed"): void => {
+			try { onStatusChange?.(value); } catch { /* Keep transport state independent of observers. */ }
+		};
+		const flushPending = (): void => {
+			clearTimeout(flushTimer);
+			while (pending.length && ready && socket.readyState === WebSocket.OPEN) {
+				const item = pending.shift()!;
+				pendingBytes -= item.bytes;
+				if (item.expiresAt <= Date.now()) {
+					notify({ type: "protocol.error", error: { code: "channel.expired", detail: "Queued envelope expired before reconnection." } });
+					continue;
+				}
+				if (socket.bufferedAmount + item.bytes > MAX_SOCKET_BYTES) {
+					pending.unshift(item); pendingBytes += item.bytes;
+					// Retry draining once the native socket buffer has room.
+					break;
+				}
+				socket.send(item.line);
+			}
+			if (pending.length && ready && !closedByCaller) flushTimer = setTimeout(flushPending, 10);
+		};
+		const connectOnce = async (): Promise<WebSocket> => {
+			// Pin the service identity again before reconnecting to its URL.
+			const url = `${baseUrl.replace(/\/$/, "")}/profile`;
+			const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+			if (!response.ok) throw new Error(`Profile fetch failed: HTTP ${response.status}`);
+			const card = await readBoundedJson(response, url);
+			verifyFaspIdCard(card);
+			if (card.system_id !== remoteId) throw new AICError("auth.identity_mismatch", "Channel URL no longer identifies the approved peer.");
+			if (closedByCaller) throw new AICError("channel.closed", "Channel was closed.");
+			return new Promise((resolve, reject) => {
 				const attempt = new WebSocket(wsUrl);
-				attempt.addEventListener("open", () => resolve(attempt), {
-					once: true,
+				const heartbeat = this.buildEnvelope("heartbeat", remoteId, {});
+				let established = false;
+				const timer = setTimeout(() => { reject(new Error("Channel authentication timed out.")); attempt.close(); }, 5000);
+				attempt.addEventListener("open", () => {
+					if (closedByCaller) { attempt.close(); return; }
+					attempt.send(JSON.stringify(heartbeat));
+				}, { once: true });
+				attempt.addEventListener("message", (event) => {
+					if (typeof event.data !== "string" || Buffer.byteLength(event.data, "utf8") > MAX_RESPONSE_BYTES) { attempt.close(1009); return; }
+					let message: Record<string, unknown>;
+					try { message = JSON.parse(event.data); } catch { attempt.close(1007); return; }
+					if (!message || typeof message !== "object" || Array.isArray(message)) { attempt.close(1007); return; }
+					if (!established) {
+						if (message.type !== "heartbeat" || (message.in_reply_to !== undefined && message.in_reply_to !== heartbeat.message_id)) {
+							reject(new Error("Channel registration was rejected.")); attempt.close(); return;
+						}
+						established = true; clearTimeout(timer);
+						if (closedByCaller) { attempt.close(); return; }
+						resolve(attempt);
+					} else { notify(message); }
 				});
-				attempt.addEventListener(
-					"error",
-					() => reject(new Error(`Could not open FASP channel at ${wsUrl}`)),
-					{ once: true },
-				);
+				attempt.addEventListener("error", () => { if (!established) { clearTimeout(timer); reject(new Error(`Could not open FASP channel at ${wsUrl}`)); attempt.close(); } });
+				attempt.addEventListener("close", () => {
+					clearTimeout(timer);
+					if (!established) { reject(new Error("Channel closed before registration.")); return; }
+					ready = false;
+					if (!closedByCaller) { status("reconnecting"); scheduleReconnect(); }
+				});
 			});
-
+		};
 		const scheduleReconnect = (): void => {
-			reconnectAttempt += 1;
-			const backoff = Math.min(
-				RECONNECT_MAX_DELAY_MS,
-				RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempt - 1),
-			);
-			const jitter = Math.random() * backoff * 0.5;
-			setTimeout(async () => {
-				if (closedByCaller) return;
+			if (closedByCaller) return;
+			reconnectAttempt = Math.min(reconnectAttempt + 1, 16);
+			const backoff = Math.min(RECONNECT_MAX_DELAY_MS, RECONNECT_BASE_DELAY_MS * 2 ** (reconnectAttempt - 1));
+			reconnectTimer = setTimeout(async () => {
 				try {
 					socket = await connectOnce();
-					reconnectAttempt = 0;
-					onStatusChange?.("open");
-					attachHandlers();
-					// The server registers a new socket for push delivery off
-					// the `from` of the FIRST frame it sees on it (see
-					// channel_endpoint in http_app.py) -- flushing whatever was
-					// actually queued does that; if nothing was queued, an
-					// explicit heartbeat still re-registers this connection so
-					// the caller doesn't have to know reconnection happened at
-					// all to keep receiving pushes.
-					if (pending.length > 0) {
-						flushPending();
-					} else {
-						socket.send(
-							JSON.stringify(this.buildEnvelope("heartbeat", systemId, {})),
-						);
-					}
-				} catch {
-					scheduleReconnect();
+					if (closedByCaller) { socket.close(); return; }
+					ready = true; reconnectAttempt = 0; status("open"); flushPending();
+				} catch (error) {
+					if (error instanceof AICError && error.code.startsWith("auth.")) {
+						closedByCaller = true; ready = false; pending.length = 0; pendingBytes = 0;
+						notify({ type: "protocol.error", error: { code: error.code, detail: error.detail } }); status("closed");
+					} else { scheduleReconnect(); }
 				}
-			}, backoff + jitter);
+			}, backoff + Math.random() * backoff * .5);
 		};
-
-		const flushPending = (): void => {
-			while (pending.length > 0 && socket.readyState === WebSocket.OPEN) {
-				socket.send(pending.shift() as string);
-			}
-		};
-
-		const attachHandlers = (): void => {
-			socket.addEventListener("message", (event) => {
-				try {
-					onMessage(JSON.parse(event.data as string));
-				} catch {
-					// A malformed frame is dropped, not fatal to the channel --
-					// this is a best-effort optimization layer by design (see
-					// channels.py), never the only path to a result.
-				}
-			});
-			socket.addEventListener("close", () => {
-				if (closedByCaller) {
-					onStatusChange?.("closed");
-					return;
-				}
-				onStatusChange?.("reconnecting");
-				scheduleReconnect();
-			});
-		};
-
 		socket = await connectOnce();
-		attachHandlers();
-
+		ready = true; status("open");
 		return {
 			send: (envelope) => {
-				const line = JSON.stringify(envelope);
-				if (socket.readyState === WebSocket.OPEN) {
-					socket.send(line);
-					return;
+				if (closedByCaller) throw new AICError("channel.closed", "Channel was closed by its caller.");
+				if (envelope.to !== remoteId || envelope.from !== this.systemId) throw new AICError("auth.wrong_audience", "Envelope must use this channel's approved identities.");
+				const expiresAt = typeof envelope.expires_at === "string" ? Date.parse(envelope.expires_at) : NaN;
+				if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new AICError("channel.expired", "Envelope is expired or has no valid expiry.");
+				const line = JSON.stringify(envelope), bytes = Buffer.byteLength(line, "utf8");
+				if (bytes > 65536) throw new AICError("resource.too_large", "Envelope exceeds 64 KiB.");
+				if (ready && socket.readyState === WebSocket.OPEN) {
+					flushPending();
+					if (pending.length || socket.bufferedAmount + bytes > MAX_SOCKET_BYTES) throw new AICError("channel.queue_full", "Socket send budget is full; retry with backoff.");
+					socket.send(line); return;
 				}
-				if (pending.length >= MAX_QUEUED) {
-					throw new AICError(
-						"channel.queue_full",
-						`FASP channel to ${baseUrl} has been reconnecting long enough that ${MAX_QUEUED} queued outgoing envelopes is the limit -- this one was dropped rather than buffered forever.`,
-					);
-				}
-				pending.push(line);
+				if (envelope.delivery === "volatile") throw new AICError("channel.offline", "Live observations cannot be buffered across reconnection.");
+				if (pending.length >= MAX_QUEUED || pendingBytes + bytes > MAX_PENDING_BYTES) throw new AICError("channel.queue_full", "Reconnect queue is full; retry with backoff.");
+				pending.push({ line, bytes, expiresAt }); pendingBytes += bytes;
 			},
 			close: () => {
-				closedByCaller = true;
-				socket.close();
+				closedByCaller = true; ready = false;
+				clearTimeout(reconnectTimer); clearTimeout(flushTimer); pending.length = 0; pendingBytes = 0;
+				socket.close(); status("closed");
 			},
 		};
 	}
+
 }
 
-/** A short base delay and a low cap on purpose: this is a long-lived
- * background connection a caller opens once and expects to "just keep
- * working" (see `openChannel`'s own doc comment) -- a brief network
- * blip or a harness restart during a live demo has to recover in
- * single-digit seconds, not tens of seconds, for that promise to hold.
- * Still exponential + jittered so a harness that's down for a while
- * doesn't get hammered every 300ms forever. */
+/** Bounded exponential reconnect delay with jitter. */
 const RECONNECT_BASE_DELAY_MS = 300;
 const RECONNECT_MAX_DELAY_MS = 5_000;
 
 export interface FaspChannel {
-	/** Send an already-built, already-signed envelope (see
-	 * `buildEnvelope()`) as a raw frame on this channel. Queued (bounded)
-	 * rather than lost if the channel is mid-reconnect when this is
-	 * called. */
+	/** Accept a signed record locally. This is not a server acknowledgement.
+	 * Durable records may queue during reconnect; volatile records fail offline. */
 	send(envelope: Record<string, unknown>): void;
 	close(): void;
 }

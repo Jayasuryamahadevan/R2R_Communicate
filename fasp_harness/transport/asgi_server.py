@@ -23,6 +23,7 @@ from ..protocol.errors import FaspError
 from ..security.posture import DeploymentConfig, SecurityProfile, evaluate_posture
 from .http_app import MAX_BODY_BYTES, create_app, default_health
 from .middleware import IPRateLimitMiddleware
+from .runtime import TransportLimits
 
 
 def load_adapter(reference: str | None) -> object | None:
@@ -40,8 +41,8 @@ def load_adapter(reference: str | None) -> object | None:
         raise SystemExit(f"Cannot load --adapter {reference!r}: {exc}") from exc
 
 
-def build_asgi_app(harness: FaspHarness, ip_rate_limit_per_second: float = 20.0, ip_rate_limit_burst: int = 40, health=None, before_close=None):
-    return IPRateLimitMiddleware(create_app(harness, health, before_close), ip_rate_limit_per_second, ip_rate_limit_burst)
+def build_asgi_app(harness: FaspHarness, ip_rate_limit_per_second: float = 20.0, ip_rate_limit_burst: int = 40, health=None, before_close=None, *, transport_limits: TransportLimits | None = None):
+    return IPRateLimitMiddleware(create_app(harness, health, before_close, transport_limits=transport_limits), ip_rate_limit_per_second, ip_rate_limit_burst)
 
 
 def _tls13_only_context_factory(config: uvicorn.Config, default_factory):
@@ -109,7 +110,23 @@ def main() -> None:
     parser.add_argument("--max-inflight-tasks", type=int, default=256, help="Persistent maximum number of active intent tasks.")
     parser.add_argument("--adapter-concurrency", type=int, default=8, help="Maximum concurrent local adapter calls.")
     parser.add_argument("--security-profile", choices=["development", "hardened", "production"], default=None, help="Startup gate. `production` requires mutual TLS and private state; configured ROS 2 and safety hardware must pass their own checks.")
+    parser.add_argument("--ingress-work-workers", type=int, default=8, help="Concurrent work handlers; excess requests receive retryable overload.")
+    parser.add_argument("--ingress-control-workers", type=int, default=4, help="Reserved control/status handlers, independent of work and telemetry.")
+    parser.add_argument("--ingress-observation-workers", type=int, default=4, help="Reserved heartbeat/packet handlers.")
+    parser.add_argument("--ingress-per-peer", type=int, default=2, help="In-flight requests per claimed peer in each ingress lane.")
+    parser.add_argument("--max-channels", type=int, default=128, help="Total WebSockets, including those awaiting authentication.")
+    parser.add_argument("--channel-auth-timeout", type=float, default=5.0, help="Seconds to complete the first authenticated channel exchange.")
+    parser.add_argument("--body-timeout", type=float, default=10.0, help="Seconds to receive a complete bounded HTTP request body.")
+    parser.add_argument("--max-connections", type=int, default=256, help="Uvicorn connection/task concurrency limit, including HTTP and WebSockets.")
     args = parser.parse_args()
+    if not 1 <= args.max_connections <= 4096:
+        parser.error("--max-connections must be from 1 to 4096.")
+    try:
+        transport_limits = TransportLimits(work_workers=args.ingress_work_workers, control_workers=args.ingress_control_workers,
+                                           observation_workers=args.ingress_observation_workers, per_peer_per_lane=args.ingress_per_peer,
+                                           max_channels=args.max_channels, auth_timeout_s=args.channel_auth_timeout, body_timeout_s=args.body_timeout)
+    except ValueError as error:
+        parser.error(str(error))
 
     secure = bool(args.tls_cert or args.tls_key)
     if bool(args.tls_cert) != bool(args.tls_key):
@@ -231,7 +248,7 @@ def main() -> None:
         for listener in radio_listeners:
             listener.close()
 
-    app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst, health, close_radios)
+    app = build_asgi_app(harness, args.ip_rate_limit_per_second, args.ip_rate_limit_burst, health, close_radios, transport_limits=transport_limits)
 
     print(f"FASP harness for {harness.identity.system_id}")
     print(f"Profile: {base_url}/profile  ({profile.value} security profile)")
@@ -251,7 +268,7 @@ def main() -> None:
 
     server_config = uvicorn.Config(
         app, host=args.host, port=args.port, log_level="info",
-        ws_max_size=MAX_BODY_BYTES, ws_max_queue=16, **config_kwargs,
+        ws_max_size=MAX_BODY_BYTES, ws_max_queue=16, limit_concurrency=args.max_connections, **config_kwargs,
     )
     try:
         uvicorn.Server(server_config).run()

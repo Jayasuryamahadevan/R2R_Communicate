@@ -124,41 +124,21 @@ process's RSS climbing past 3 GiB with no cap anywhere to stop it. The
 patched client aborts and throws once a response crosses the limit
 instead.
 
-## Autonomous communication: no polling, no "did you get my message"
+## Persistent communication
 
-`FaspClient.openChannel()` is what makes two agents genuinely
-autonomous with each other instead of one having to keep asking the
-other "any news yet": a persistent `/fasp/v1/channel` websocket
-connection (Node's own built-in `WebSocket`, no dependency), matching
-fasp_harness's own real push-delivery mechanism
-(`channels.py`'s `ConnectionRegistry`, `core.py`'s
-`_apply_task_outcome`/`_on_adapter_done`) -- a task that outlives its
-synchronous wait budget (`max_runtime_s`) has its real result delivered
-here the instant it's ready, not on the next poll.
+`FaspClient.openChannel(baseUrl, onMessage, onStatusChange?, expectedSystemId?)`
+opens a channel to an approved remote identity. Supply the fourth argument or
+call `hello()` first on this client to verify its identity. Operator pairing
+approval is still required; opening a socket does not grant capabilities.
 
-Verified end to end, not asserted from the docstrings: a capability
-whose declared `max_runtime_s` (1s) is deliberately shorter than how
-long it actually takes (a real 3-second sleep) -- the only way its real
-result can reach the caller at all is this push path. Across four
-separate runs: an immediate `task.progress` acknowledgement at ~1.0s,
-then the real result arriving, unprompted, at ~3.0s -- the client never
-polled once in between, it just listened on the channel it opened at
-the start.
+The helper re-verifies the receiver profile and sends a registration heartbeat
+to the remote system ID on initial connection and every reconnect. It waits for
+acknowledgement before flushing its bounded reconnect queue. A changed peer
+identity stops reconnecting. Closing cancels timers and clears queued frames.
+Live observations are never queued offline, and expired queued frames are
+reported and discarded. The RAM queue is not a durable delivery guarantee.
 
-The channel reconnects on its own, with backoff, if it drops after
-being established -- a real, confirmed gap this closes: killing and
-restarting a real running harness mid-session left the unpatched
-channel silently, permanently dead (proved by running a client against
-a real harness, killing the harness's process outright, and watching
-20+ seconds of heartbeats sent afterward -- well past the point the
-harness was healthy and answering `/health` again -- produce zero
-further messages). The patched version detects the drop, retries with
-short, jittered, capped backoff (single-digit seconds, not tens -- a
-live demo or a long-running agent can't tolerate a slow recovery any
-more than no recovery), and re-registers itself the moment it's back:
-verified against the same kill/restart, reconnecting in ~5s and
-resuming push delivery with nothing but a log line -- no restart, no
-re-pairing, no code on the caller's side. Anything sent while the
-channel is down is queued (bounded, so a harness that stays down for a
-long time can't turn this into unbounded memory growth) and flushed
-the instant the reconnect lands, rather than silently lost.
+The actual SDK is exercised against the Python ASGI server and with injected
+socket failures in CI. See [Transport reliability](../TRANSPORT_RELIABILITY.md)
+for all bounds, identity/correlation rules, tests, overload behavior, and the
+host-runtime TLS/mTLS requirements.

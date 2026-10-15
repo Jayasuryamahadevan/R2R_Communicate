@@ -46,7 +46,9 @@ remaining release blockers and reproducible evaluation plan are in
 
 For lightweight startup, persistent connections and explicit live-only
 observations, see [performance and delivery modes](PERFORMANCE.md). The
-default coordination path remains durable; memory streams are opt-in.
+default coordination path remains durable; memory streams are opt-in. For
+concurrent traffic, channel identity and bounded overload behavior, see
+[transport reliability](TRANSPORT_RELIABILITY.md).
 
 Two or more autonomous systems — models, robots, phones, Raspberry Pis, edge
 gateways — need to agree on who does what, where, and when. FASP is the layer

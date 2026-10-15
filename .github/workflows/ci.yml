@@ -61,6 +61,8 @@ jobs:
         run: uv run --locked --extra test --extra dev python -m unittest discover -s tests -v
       - name: Persistent TLS and volatile-delivery smoke benchmark
         run: uv run --locked --extra test --extra dev python -m benchmarks.channel --iterations 100 > channel-benchmark.json
+      - name: Record bounded ingress saturation behavior
+        run: uv run --locked --extra test --extra dev python -m benchmarks.saturation > saturation-benchmark.json
       - name: Verify installed wheel and packaged migrations
         run: |
           python -m pip wheel --no-deps --wheel-dir dist .
@@ -135,6 +137,7 @@ jobs:
             sbom.json
             safety-case.json
             channel-benchmark.json
+            saturation-benchmark.json
           if-no-files-found: ignore
 
   mcp:

@@ -178,3 +178,12 @@ a reviewed gateway. It does not automatically add arbitrary USB, BLE, MQTT,
 DDS, Modbus, Android or proprietary-device support. Domain adapters must
 agree on units, frames, timestamps, schemas, privacy and effect semantics.
 The protocol itself needs no language model.
+
+## Persistent channel lifecycle
+
+Use a signed heartbeat to register a channel, then keep its sender identity
+fixed. Direct channel replies/errors carry an additive `in_reply_to` field when
+a bounded request message ID is available. Unsolicited pushes remain distinct.
+Authentication deadlines, overload/retry semantics and queue bounds are detailed
+in [Transport reliability](TRANSPORT_RELIABILITY.md). HTTP and radio response
+formats retain their existing behavior.
