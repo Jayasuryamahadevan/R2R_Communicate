@@ -53,6 +53,9 @@ class Identity:
             record = json.loads(path.read_text(encoding="utf-8"))
             private = Ed25519PrivateKey.from_private_bytes(unb64(record["private_key"]))
             public = b64(private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw))
+            expected_id = "fasp:system:" + b64(hashlib.sha256(unb64(public)).digest())
+            if record["system_id"] != expected_id or not isinstance(record["kid"], str) or not 1 <= len(record["kid"]) <= 128:
+                raise ValueError("Stored identity does not match its private key or has an invalid key identifier.")
             return cls(private, public, record["system_id"], record["kid"])
         private = Ed25519PrivateKey.generate()
         public_raw = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)

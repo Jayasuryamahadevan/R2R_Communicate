@@ -10,8 +10,10 @@ restart.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 
@@ -22,12 +24,15 @@ class _Bucket:
 
 
 class TokenBucketLimiter:
-    def __init__(self, rate_per_second: float, burst: int) -> None:
-        if rate_per_second <= 0 or burst <= 0:
-            raise ValueError("rate_per_second and burst must be positive.")
+    def __init__(self, rate_per_second: float, burst: int, *, max_keys: int = 4096) -> None:
+        if not math.isfinite(rate_per_second) or rate_per_second <= 0 or isinstance(burst, bool) or not isinstance(burst, int) or burst <= 0:
+            raise ValueError("rate_per_second must be finite and positive; burst must be a positive integer.")
+        if isinstance(max_keys, bool) or not isinstance(max_keys, int) or max_keys <= 0:
+            raise ValueError("max_keys must be a positive integer.")
         self.rate_per_second = rate_per_second
         self.burst = burst
-        self._buckets: dict[str, _Bucket] = {}
+        self.max_keys = max_keys
+        self._buckets: OrderedDict[str, _Bucket] = OrderedDict()
         self._lock = threading.Lock()
 
     def allow(self, key: str) -> bool:
@@ -36,12 +41,21 @@ class TokenBucketLimiter:
         with self._lock:
             bucket = self._buckets.get(key)
             if bucket is None:
+                if len(self._buckets) >= self.max_keys:
+                    # Evict only an idle, fully replenished bucket. Evicting
+                    # an exhausted identity would reset its quota and allow
+                    # churn to bypass rate limits. Otherwise fail closed.
+                    oldest_key, oldest = next(iter(self._buckets.items()))
+                    if now - oldest.last_refill < self.burst / self.rate_per_second:
+                        return False
+                    del self._buckets[oldest_key]
                 bucket = _Bucket(tokens=float(self.burst), last_refill=now)
                 self._buckets[key] = bucket
             else:
                 elapsed = now - bucket.last_refill
                 bucket.tokens = min(float(self.burst), bucket.tokens + elapsed * self.rate_per_second)
                 bucket.last_refill = now
+            self._buckets.move_to_end(key)
             if bucket.tokens < 1:
                 return False
             bucket.tokens -= 1

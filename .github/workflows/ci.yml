@@ -44,6 +44,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
       - name: Install locked package and test dependencies
         run: |
           python -m pip install uv==0.12.6
@@ -53,7 +56,7 @@ jobs:
           uv export --locked --no-dev --no-emit-project --format requirements-txt --offline --output-file requirements-prod.txt > /dev/null
           git diff --exit-code -- requirements-prod.txt
       - name: Lint
-        run: uv run --locked --extra test --extra dev ruff check fasp_harness tests
+        run: uv run --locked --extra test --extra dev ruff check fasp_harness tests benchmarks
       - name: Run test suite
         run: uv run --locked --extra test --extra dev python -m unittest discover -s tests -v
       - name: Verify installed wheel and packaged migrations

@@ -15,6 +15,7 @@ from enum import StrEnum
 from typing import Any
 
 from ..audit.chain import AuditChain
+from ..protocol.errors import AdmissionRejected
 from .db import Database
 
 
@@ -99,9 +100,25 @@ class WorkItemsRepo:
         phase: str | None = None,
         audit_event: str | None = None,
         audit_detail: dict[str, Any] | None = None,
+        max_active: int | None = None,
     ) -> bool:
         try:
             with self.db.write() as conn:
+                # Resolve idempotency before capacity: an existing result is
+                # readable even while unrelated work fills the queue. The
+                # count and insert share BEGIN IMMEDIATE across connections.
+                existing = conn.execute(
+                    "SELECT 1 FROM work_items WHERE work_id = ? OR (kind = ? AND idempotency_key = ?)",
+                    (work_id, kind, idempotency_key),
+                ).fetchone()
+                if existing is not None:
+                    return False
+                if max_active is not None:
+                    active = conn.execute(
+                        "SELECT COUNT(*) AS n FROM work_items WHERE kind = ? AND state IN ('queued', 'running')", (kind,),
+                    ).fetchone()["n"]
+                    if active >= max_active:
+                        raise AdmissionRejected()
                 conn.execute(
                     "INSERT INTO work_items (work_id, kind, owner, idempotency_key, capability, intent_id, "
                     "state, phase, payload_json, metadata_json, priority, deadline_at, created_at, updated_at) "

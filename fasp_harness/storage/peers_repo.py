@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import secrets
+from datetime import timedelta
 from typing import Any
 
 from ..audit.chain import AuditChain
+from ..protocol.errors import FaspError
+from ..timestamps import parse_stamp, stamp
 from .db import Database
 
 
@@ -14,6 +17,7 @@ class PeersRepo:
     def __init__(self, db: Database, audit: AuditChain) -> None:
         self.db = db
         self.audit = audit
+        self.max_pending = 256
 
     def get(self, peer_id: str) -> dict[str, Any] | None:
         row = self.db.read_one("SELECT * FROM peers WHERE peer_id = ?", (peer_id,))
@@ -34,8 +38,15 @@ class PeersRepo:
         not silently reset it to pending or widen its grants.
         """
         with self.db.write() as conn:
-            existing = conn.execute("SELECT peer_id FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
+            existing = conn.execute("SELECT peer_id, state, card_json FROM peers WHERE peer_id = ?", (peer_id,)).fetchone()
             if existing is None:
+                # Self-signed identities are cheap to generate. Pending
+                # discovery must not provide an unlimited disk-write API.
+                cutoff = stamp(parse_stamp(seen_at) - timedelta(minutes=15))
+                conn.execute("DELETE FROM peers WHERE state = 'pending' AND seen_at < ?", (cutoff,))
+                pending = conn.execute("SELECT COUNT(*) AS n FROM peers WHERE state = 'pending'").fetchone()["n"]
+                if pending >= self.max_pending:
+                    raise FaspError("resource.exhausted", "Pending pairing capacity reached; retry later.")
                 conn.execute(
                     "INSERT INTO peers "
                     "(peer_id, public_key, display_name, card_json, state, allowed_capability_prefixes_json, pair_code, seen_at, paired_at) "
@@ -43,6 +54,12 @@ class PeersRepo:
                     (peer_id, card["public_key"], card.get("display_name"), json.dumps(card), json.dumps(default_prefixes), pair_code, seen_at),
                 )
             else:
+                previous = json.loads(existing["card_json"])
+                if existing["state"] == "paired" and (
+                    previous["signature"]["kid"] != card["signature"]["kid"]
+                    or ("key_id" in previous and "key_id" not in card)
+                ):
+                    raise FaspError("auth.identity_mismatch", "A paired key identifier cannot be changed through discovery.")
                 conn.execute(
                     "UPDATE peers SET public_key = ?, display_name = ?, card_json = ?, pair_code = ?, seen_at = ? WHERE peer_id = ?",
                     (card["public_key"], card.get("display_name"), json.dumps(card), pair_code, seen_at, peer_id),

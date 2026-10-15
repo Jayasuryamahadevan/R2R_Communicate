@@ -36,6 +36,18 @@ from .policy.capabilities import allows as capability_allowed
 from .policy.grants import validate_grant_if_required
 from .policy.ratelimit import TokenBucketLimiter
 from .policy.sharing import StreamSharingPolicy
+from .protocol.contracts import (
+    MAX_CLOCK_SKEW_SECONDS,
+    MAX_RECORD_BYTES,
+    PROTOCOL,
+    envelope_shape,
+    id_card_shape,
+    payload_shape,
+    scopes,
+    text,
+    wire_support,
+)
+from .protocol.errors import AdmissionRejected
 from .robotics import LocalSafetyGate, ReservationBook
 from .safety.interlock import SafetySupervisor
 from .storage.db import Database
@@ -77,9 +89,7 @@ __all__ = [
     "MAX_CLOCK_SKEW_SECONDS",
 ]
 
-PROTOCOL = "fasp/1.0"
-MAX_INLINE_BYTES = 64 * 1024
-MAX_CLOCK_SKEW_SECONDS = 60
+MAX_INLINE_BYTES = MAX_RECORD_BYTES
 
 
 def _task_response(task: dict[str, Any]) -> dict[str, Any]:
@@ -297,6 +307,8 @@ class FaspHarness:
             "display_name": self.display_name,
             "runtime": runtime_profile(),
             "public_key": self.identity.public_b64,
+            "key_id": self.identity.kid,
+            "protocol_support": wire_support(list(self.DISPATCH)),
             "endpoints": {
                 "profile": self.base_url + "/profile",
                 "pair_hello": self.base_url + "/pair/hello",
@@ -315,10 +327,9 @@ class FaspHarness:
 
     @staticmethod
     def verify_id_card(card: dict[str, Any]) -> None:
-        required = {"fasp", "type", "system_id", "public_key", "endpoints", "expires_at", "signature"}
-        if not required.issubset(card) or card.get("fasp") != PROTOCOL or card.get("type") != "id_card":
-            raise FaspError("schema.invalid", "Invalid FASP ID card.")
-        if parse_stamp(card["expires_at"]) <= now():
+        issued, expires = id_card_shape(card)
+        current = now()
+        if expires <= current or (issued is not None and issued > current + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS)):
             raise FaspError("auth.card_expired", "ID card has expired.")
         verify(card, card["public_key"])
         raw = unb64(card["public_key"])
@@ -335,6 +346,10 @@ class FaspHarness:
         return sign({"fasp": PROTOCOL, "type": "hello.ready", "system_id": self.identity.system_id, "id_card": self.id_card(), "pair_code": fingerprint, "pairing_required": peer["state"] != "paired", "issued_at": stamp()}, self.identity.private, self.identity.kid)
 
     def confirm_peer(self, peer_id: str, pair_code: str, prefixes: list[str] | None = None) -> dict[str, Any]:
+        text(peer_id, "peer_id")
+        text(pair_code, "pair_code")
+        if prefixes is not None:
+            scopes(prefixes)
         expires_at = stamp(now() + PEER_PAIRING_VALIDITY)
         peer = self.peers.confirm(peer_id, pair_code, stamp(), expires_at, prefixes)
         if peer is None:
@@ -416,21 +431,14 @@ class FaspHarness:
         """Schema, audience, timing, signature, and per-peer rate limit only
         -- kind support/dispatch is `accept()`'s job, not this method's, so
         there is exactly one place that decides what a `kind` means."""
-        required = {"fasp", "kind", "message_id", "from", "to", "issued_at", "expires_at", "nonce", "payload", "signature"}
-        if not required.issubset(envelope) or envelope.get("fasp") != PROTOCOL:
-            raise FaspError("schema.invalid", "Envelope misses required FASP fields.")
+        issued, expires = envelope_shape(envelope)
         if envelope["to"] != self.identity.system_id:
             raise FaspError("auth.wrong_audience", "Envelope is addressed to another system.")
-        try:
-            issued, expires = parse_stamp(envelope["issued_at"]), parse_stamp(envelope["expires_at"])
-        except (TypeError, ValueError) as exc:
-            raise FaspError("schema.invalid", "Envelope timestamps are invalid.") from exc
-        if expires <= now() or issued > now() + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS):
+        current = now()
+        if expires <= current or issued > current + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS):
             raise FaspError("auth.envelope_expired", "Envelope is expired or issued too far in the future.")
-        if len(_plain_json(envelope)) > MAX_INLINE_BYTES:
-            raise FaspError("resource.too_large", "Inline envelope exceeds 64 KiB.")
         peer = self._peer(envelope["from"])
-        verify(envelope, peer["card"]["public_key"])
+        verify(envelope, peer["card"]["public_key"], expected_kid=peer["card"]["signature"]["kid"])
         # Rate-limited by authenticated peer_id, after signature verification
         # -- an unauthenticated flood is the transport layer's job (ss10);
         # this is the per-relationship budget once we know who is asking.
@@ -493,11 +501,17 @@ class FaspHarness:
         handler_name = self.DISPATCH.get(kind)
         if handler_name is None:
             raise FaspError("protocol.unsupported_kind", f"Unsupported envelope kind: {kind!r}.")
+        payload_shape(kind, envelope["payload"])
         self.metrics.increment("fasp_envelopes_total", kind=kind)
         if not self.inbox.insert_if_new(envelope, stamp()):
             return True, self.inbox.get_response(envelope["message_id"])
         try:
             response = getattr(self, handler_name)(envelope, peer)
+        except AdmissionRejected:
+            # No work item or effect was admitted. Preserve the sender's
+            # ability to retry this exact envelope once capacity is free.
+            self.inbox.discard_unprocessed(envelope["message_id"])
+            raise
         except FaspError as error:
             # Recorded (not just raised) so a replay of this exact envelope
             # returns the same rejection deterministically instead of
@@ -521,15 +535,12 @@ class FaspHarness:
         # queue's depth counter, so the bound holds across a restart rather
         # than resetting with an in-memory one -- a saturated backlog is
         # rejected up front instead of growing without limit.
-        if self.tasks.count_inflight() >= self.max_inflight_tasks:
-            raise FaspError("resource.exhausted", "Task queue is at capacity; retry later.")
-
         # Creation of the queued work item is what makes this idempotent (ss7.1):
         # a duplicate of the same idempotency_key can never race past this
         # point twice, and a duplicate arriving on a later request always
         # finds the first one already terminal (or still genuinely in
         # flight on the adapter pool, in which case it is told to wait).
-        if not self.tasks.propose(key, intent.get("intent_id"), capability, envelope["from"], stamp(), payload=intent):
+        if not self.tasks.propose(key, intent.get("intent_id"), capability, envelope["from"], stamp(), payload=intent, max_active=self.max_inflight_tasks):
             existing = self.tasks.get(key)
             if existing is None or existing["from_peer"] != envelope["from"]:
                 raise FaspError("auth.not_authorized", "This task identity is owned by another peer.")

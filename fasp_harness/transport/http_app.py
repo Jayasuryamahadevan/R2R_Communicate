@@ -45,6 +45,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..core import PROTOCOL, FaspError, FaspHarness
 from ..edge.health import HealthRegistry
 from ..observability.logging import configure, log
+from ..protocol.contracts import operator_payload
 from .canonical import MAX_ENVELOPE_BYTES, accept_envelope, decode_object
 
 logger = configure()
@@ -56,7 +57,9 @@ def _error_status(error: FaspError) -> int:
         return HTTPStatus.UNAUTHORIZED
     if error.code in {"capability.unavailable", "protocol.unsupported_kind"}:
         return HTTPStatus.NOT_FOUND
-    if error.code in {"resource.too_large", "resource.exhausted"}:
+    if error.code == "resource.exhausted":
+        return HTTPStatus.TOO_MANY_REQUESTS
+    if error.code == "resource.too_large":
         return HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     if error.code == "transport.response_unavailable":
         return HTTPStatus.SERVICE_UNAVAILABLE
@@ -99,7 +102,9 @@ async def _read_json_body(request: Request) -> dict[str, Any]:
         if len(body) + len(chunk) > MAX_BODY_BYTES:
             raise FaspError("resource.too_large", "Body exceeds 64 KiB.")
         body.extend(chunk)
-    return decode_object(body)
+    payload = decode_object(body)
+    operator_payload(request.url.path, payload)
+    return payload
 
 
 def _live_gauges(harness: FaspHarness) -> dict[str, int]:
@@ -198,6 +203,12 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
 
         return _json_ok(schema())
 
+    async def get_wire_schema(request: Request) -> JSONResponse:
+        del request
+        from ..protocol.schemas import wire_schema
+
+        return _json_ok(wire_schema())
+
     @catching
     async def get_health(request: Request) -> JSONResponse:
         return _json_ok({"ok": True, "fasp": PROTOCOL, "system_id": harness.identity.system_id})
@@ -281,7 +292,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
     async def post_grants_issue(request: Request) -> JSONResponse:
         _require_admin(request, harness)
         payload = await _read_json_body(request)
-        duration = timedelta(seconds=int(payload.get("duration_seconds", 3600)))
+        duration = timedelta(seconds=payload.get("duration_seconds", 3600))
         result = await run_in_threadpool(
             harness.issue_grant, payload.get("subject_peer", ""), payload.get("capability_prefixes", []), duration, payload.get("purpose"), payload.get("constraints")
         )
@@ -324,7 +335,13 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
         try:
             while True:
                 try:
-                    raw = await websocket.receive_text()
+                    frame = await websocket.receive()
+                    if frame["type"] == "websocket.disconnect":
+                        break
+                    if frame.get("text") is None:
+                        await websocket.close(code=1003)
+                        break
+                    raw = frame["text"]
                 except (ValueError, WebSocketDisconnect):
                     break
                 if len(raw.encode("utf-8")) > MAX_BODY_BYTES:
@@ -374,6 +391,7 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
         lifespan=lifespan,
         routes=[
             Route("/openapi.json", get_openapi, methods=["GET"]),
+            Route("/schemas/fasp-wire-v1.json", get_wire_schema, methods=["GET"]),
             Route("/profile", get_profile, methods=["GET"]),
             Route("/.well-known/fasp/id-card.json", get_profile, methods=["GET"]),
             Route("/health", get_health, methods=["GET"]),

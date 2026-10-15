@@ -58,7 +58,7 @@ class TasksRepo:
         """Durable admission bound for intent execution."""
         return self.work_items.count_active("intent")
 
-    def propose(self, idempotency_key: str, intent_id: str | None, capability: str, from_peer: str, at: str, payload: dict[str, Any] | None = None) -> bool:
+    def propose(self, idempotency_key: str, intent_id: str | None, capability: str, from_peer: str, at: str, payload: dict[str, Any] | None = None, *, max_active: int | None = None) -> bool:
         return self.work_items.create(
             work_id=self._work_id(idempotency_key),
             kind="intent",
@@ -70,6 +70,7 @@ class TasksRepo:
             at=at,
             audit_event="task.proposed",
             audit_detail={"capability": capability, "from_peer": from_peer},
+            max_active=max_active,
         )
 
     def reject(self, idempotency_key: str, error: dict[str, Any], at: str) -> bool:
