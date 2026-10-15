@@ -1,8 +1,16 @@
 # Federated Autonomous Systems Protocol (FASP) 1.0
 
-**Status:** implementation-ready protocol proposal  
+**Status:** draft protocol and reference implementation; not an independently validated standard
+
 **Audience:** autonomous AI agents, phones, laptops, embedded systems, robots,
 industrial controllers, gateways, and their human operators.
+
+The implemented JSON/Ed25519 contract is defined precisely in
+[WIRE_PROFILE.md](WIRE_PROFILE.md) and its [portable schema](spec/fasp-wire-v1.schema.json).
+Sections describing other transports, remote grants, encrypted relays or
+physical conformance are design requirements, not claims that this harness
+implements them. The signed ID card lists accepted request kinds; configured
+capabilities and local policy determine which operations are available.
 
 FASP is a secure coordination protocol for *independent autonomous systems*.
 It answers a different question from a model-to-tool API: how can two systems
@@ -88,7 +96,7 @@ support for **Ed25519** and permits a hardware-backed or attested key where the
 platform provides one. A system identity is:
 
 ```text
-fasp:system:<base32(SHA-256(public-key))>
+fasp:system:<base64url-no-padding(SHA-256(raw-32-byte-public-key))>
 ```
 
 The public key, key identifier, and identity are bound in a signed System
@@ -123,12 +131,13 @@ wildcard meaning, and an empty scope grants nothing.
 
 - Routable networks MUST use TLS 1.3 or a transport with equivalent
   authenticated encryption. LAN deployments SHOULD use mutual TLS.
-- Every FASP envelope MUST be signed by the sender. HTTP deployments MAY use
-  HTTP Message Signatures; other transports sign the canonical envelope.
-- JSON envelopes MUST use RFC 8785 canonicalization before signing. CBOR/COSE
-  is an allowed compact profile for constrained devices.
+- Every baseline envelope MUST use an Ed25519 signature over its RFC 8785
+  canonical JSON content. HTTP Message Signatures are not a substitute in
+  this implementation. A future CBOR/COSE profile requires its own specified
+  encoding, negotiation and conformance vectors.
 - Receivers MUST check signature, peer identity, audience, expiry, nonce,
-  replay window, schema version, and grant before processing payload content.
+  replay window, schema version, and local authority (including a grant when
+  required) before executing payload content.
 - Bearer secrets MAY bootstrap a local pairing flow but MUST NOT be the sole
   production identity or be placed in a task, transcript, screenshot, or
   source repository.
@@ -143,10 +152,12 @@ Every profile MUST be signed and contain:
 
 ```json
 {
-  "fasp": "1.0",
+  "fasp": "fasp/1.0",
+  "type": "id_card",
   "system_id": "fasp:system:7Q…",
   "display_name": "mobile-observer",
-  "endpoints": [{"transport":"https","uri":"https://peer.example/fasp"}],
+  "public_key": "base64url-raw-Ed25519-public-key",
+  "endpoints": {"profile":"https://peer.example/profile","envelopes":"https://peer.example/fasp/v1/envelopes"},
   "capabilities": [{
     "id": "observe.environment.proximity.v1",
     "risk": "observe",
@@ -155,7 +166,6 @@ Every profile MUST be signed and contain:
     "limits": {"max_duration_s": 5, "continuous": false},
     "required_grant": "observe.environment"
   }],
-  "policy_digest": "sha-256:…",
   "key_id": "2026-01",
   "issued_at": "2026-08-31T00:00:00Z",
   "expires_at": "2026-09-30T00:00:00Z"
@@ -166,6 +176,12 @@ Profiles MUST disclose limitations that affect correctness, such as “sensor AP
 unavailable inside container” or “camera access disabled”. They MUST NOT claim
 a capability merely because hardware exists.
 
+This example is illustrative, with abbreviated keys and identities. Fields
+such as capability input/output schemas describe domain profiles; this
+harness does not automatically fetch or execute remote schemas. Legacy
+client-only cards may use null endpoint values and omit issued_at/key_id.
+New harness cards include a signed `key_id` and `protocol_support` metadata.
+
 ## 5. Universal envelope
 
 FASP messages are UTF-8 JSON for the baseline profile. Maximum inline payload
@@ -173,7 +189,7 @@ size is 64 KiB; larger data MUST be an artifact reference.
 
 ```json
 {
-  "fasp": "1.0",
+  "fasp": "fasp/1.0",
   "kind": "intent.propose",
   "message_id": "018f…",
   "conversation_id": "018f…",
@@ -191,11 +207,19 @@ size is 64 KiB; larger data MUST be an artifact reference.
 ```
 
 `message_id` MUST be globally unique. `conversation_id` groups a collaboration;
-`causation_id` names the message that caused this one. `sequence` is monotonic
-per sender and conversation but is not a substitute for idempotency.
+`causation_id` names the message that caused this one. The baseline generates
+UUIDs and accepts bounded opaque ID strings for compatibility. `sequence`
+is an optional domain field; only the stream profile enforces sequence
+ordering. Task grants belong in `payload.grant`, not an assumed global grant.
 
-The signature covers every field except `signature`. The receiver MUST retain a
-bounded replay cache of `(from, message_id, nonce)` through `expires_at`.
+The signature covers every field except `signature`. Accepted message IDs
+are durably bound to the authenticated sender and exact signed record.
+Duplicates return the prior outcome; conflicting reuse is rejected. The
+signed nonce is not a separate uniqueness index in this implementation.
+Expiration is checked before replay lookup. Durable journal retention and
+disk quotas remain deployment responsibilities; there is no automatic
+inbox/audit compactor. A queue-capacity refusal before work creation may be
+retried with the same signed envelope within its expiry.
 
 ## 6. Message families
 
@@ -214,6 +238,12 @@ bounded replay cache of `(from, message_id, nonce)` through `expires_at`.
 
 Unknown `kind` values MUST be rejected with `protocol.unsupported_kind`, not
 silently ignored when a response channel exists.
+
+The table includes proposed message families. Implemented signed request
+kinds come from `FaspHarness.DISPATCH` and the ID card's
+`protocol_support.accepted_kinds`. Responses generally use `type`, not
+`kind`. Do not infer implementation of `session.*`, `presence.*`, remote
+`grant.*` or `intent.commit` from this vocabulary table.
 
 ## 7. Work lifecycle and exactly-once effects
 
@@ -374,8 +404,10 @@ records SHOULD exclude task payloads and sensitive raw data by default.
 
 ## 12. Failure and security handling
 
-Errors are signed `task.fail` or `protocol.error` messages with machine-readable
-codes. Implementations MUST NOT place secrets, stack traces, raw private logs,
+Baseline errors are `task.fail` or `protocol.error` records with machine-readable
+codes, protected in transit by TLS. General response records are not yet
+signed envelopes and cannot serve as independent third-party receipts.
+Implementations MUST NOT place secrets, stack traces, raw private logs,
 or identifiers in errors.
 
 Required codes include:
@@ -401,8 +433,11 @@ are still required.
 
 ### HTTPS profile
 
-`POST /fasp/v1/envelopes` accepts a signed envelope and returns relay receipt.
-`GET /fasp/v1/inbox?cursor=…` returns only envelopes addressed to the caller.
+`POST /fasp/v1/envelopes` accepts a signed envelope and returns its application
+response (wrapped in `receipt.delivered` for intent/cancel/artifact requests).
+The harness is a direct node, not a relay. A signed `inbox.pull` request
+returns a mirror of that peer's own previously submitted messages; there is
+no `GET /fasp/v1/inbox` route or general peer-to-peer mailbox in this build.
 `POST /fasp/v1/receipts` reports delivered/processed states. `GET /profile`
 returns the signed System Profile. HTTPS deployments SHOULD use HTTP/2+ and
 TLS 1.3.
@@ -445,7 +480,9 @@ silently turn a gateway credential into authority to actuate the node.
 An implementation may claim **FASP 1.0 Core** only if it passes all of these:
 
 1. Rejects an unsigned, expired, wrong-audience, malformed, or replayed envelope.
-2. Rejects a validly signed request lacking a matching grant.
+2. Rejects a validly signed request lacking local capability authority or a
+   matching grant when its risk or sharing policy requires one. Pairing scopes
+   can authorize the baseline's low-risk observe/chat operations.
 3. Demonstrates idempotent duplicate intent handling without repeating effect.
 4. Distinguishes relay receipt, recipient delivery, application processing, and
    terminal completion in its API and UI.
@@ -488,7 +525,7 @@ and local safety.
 - [NIST SP 800-207: Zero Trust Architecture](https://csrc.nist.gov/pubs/sp/800/207/final)
 - [RFC 9421: HTTP Message Signatures](https://www.rfc-editor.org/info/rfc9421/)
 - [RFC 8785: JSON Canonicalization Scheme](https://www.rfc-editor.org/rfc/rfc8785.html)
-- [TLS 1.3 specification / update](https://www.rfc-editor.org/info/rfc9846/)
+- [TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446.html)
 - [ROS 2 DDS-Security integration](https://design.ros2.org/articles/ros2_dds_security.html)
 - [A2A specification, consulted for ecosystem interoperability only](https://google-a2a.github.io/A2A/specification/)
 

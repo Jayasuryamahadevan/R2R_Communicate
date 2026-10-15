@@ -17,6 +17,17 @@ class FaspError(Exception):
         self.detail = detail
 
 
+class AdmissionRejected(FaspError):
+    """Transient refusal before a work item or external effect was created.
+
+    Only admission checks may raise this. It permits an identical signed
+    envelope to be retried without caching the capacity refusal forever.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("resource.exhausted", "Task queue is at capacity; retry later.")
+
+
 # The required codes enumerated in ss12, kept here as documentation and for
 # call sites that want a symbol instead of a string literal. FaspError does
 # not restrict `code` to this set -- new families (e.g. `stream.*`,

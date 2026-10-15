@@ -39,19 +39,24 @@
 > deployment, consult [production-readiness architecture](PRODUCTION_READINESS.md)
 > for security gates, operations, and unimplemented production dependencies.
 
+The implemented wire contract, schema, version rules and resource bounds are
+in [WIRE_PROFILE.md](WIRE_PROFILE.md). The candid feasibility assessment,
+remaining release blockers and reproducible evaluation plan are in
+[RESEARCH_ASSESSMENT.md](RESEARCH_ASSESSMENT.md).
+
 Two or more autonomous systems — models, robots, phones, Raspberry Pis, edge
 gateways — need to agree on who does what, where, and when. FASP is the layer
 where that agreement happens, and this repository is a runnable reference
 implementation of it.
 
-The harness **never executes instructions received over the network.** A model
-or a machine is attached through a *local* adapter with declared capabilities.
+Network requests select capabilities provided by a **locally configured
+adapter**. Executable code and adapter import paths come from local configuration.
 The harness authenticates the peer, verifies its authorization scope, checks
 the layer boundary, journals idempotency — and only then invokes that adapter.
 
-Everything below is enforced in code and covered by tests. Where something
-cannot be guaranteed, it is [stated plainly](#what-this-is-not) rather than
-implied.
+The implementation has automated checks for its declared boundaries. These
+checks do not establish the safety of arbitrary adapter code or attached
+hardware. See [production acceptance gates](PRODUCTION_READINESS.md).
 
 <table>
 <tr>

@@ -55,6 +55,11 @@ class InboxRepo:
                 (json.dumps(response) if response is not None else None, message_id),
             )
 
+    def discard_unprocessed(self, message_id: str) -> None:
+        """Release a pre-effect capacity refusal; never discard a recorded outcome."""
+        with self.db.write() as conn:
+            conn.execute("DELETE FROM envelopes_inbox WHERE message_id = ? AND response_json IS NULL", (message_id,))
+
     def get_response(self, message_id: str) -> dict[str, Any] | None:
         row = self.db.read_one("SELECT response_json FROM envelopes_inbox WHERE message_id = ?", (message_id,))
         if row is None or row["response_json"] is None:

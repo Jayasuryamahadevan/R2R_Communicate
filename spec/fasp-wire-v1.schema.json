@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fasp:schema:wire:v1",
+  "title": "fasp-json-ed25519-v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Envelope"
+    },
+    {
+      "$ref": "#/$defs/IdCard"
+    }
+  ],
+  "$defs": {
+    "Signature": {
+      "type": "object",
+      "required": [
+        "alg",
+        "kid",
+        "value"
+      ],
+      "properties": {
+        "alg": {
+          "const": "Ed25519"
+        },
+        "kid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "value": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        }
+      }
+    },
+    "Envelope": {
+      "type": "object",
+      "required": [
+        "fasp",
+        "kind",
+        "message_id",
+        "from",
+        "to",
+        "issued_at",
+        "expires_at",
+        "nonce",
+        "payload",
+        "signature"
+      ],
+      "properties": {
+        "fasp": {
+          "const": "fasp/1.0"
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "message_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "conversation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "causation_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^fasp:system:[A-Za-z0-9_-]{43}$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^fasp:system:[A-Za-z0-9_-]{43}$"
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        },
+        "nonce": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "payload": {
+          "type": "object"
+        },
+        "signature": {
+          "type": "object",
+          "required": [
+            "alg",
+            "kid",
+            "value"
+          ],
+          "properties": {
+            "alg": {
+              "const": "Ed25519"
+            },
+            "kid": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{86}$"
+            }
+          }
+        },
+        "required_features": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "additionalProperties": true,
+      "description": "Signature covers every field except signature. Unknown required_features MUST fail closed. Domain payload validation and authorization follow authentication."
+    },
+    "IdCard": {
+      "type": "object",
+      "required": [
+        "fasp",
+        "type",
+        "system_id",
+        "public_key",
+        "endpoints",
+        "expires_at",
+        "signature"
+      ],
+      "properties": {
+        "fasp": {
+          "const": "fasp/1.0"
+        },
+        "type": {
+          "const": "id_card"
+        },
+        "system_id": {
+          "type": "string",
+          "pattern": "^fasp:system:[A-Za-z0-9_-]{43}$"
+        },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "public_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?(?:Z|[+-]\\d{2}:\\d{2})$"
+        },
+        "signature": {
+          "type": "object",
+          "required": [
+            "alg",
+            "kid",
+            "value"
+          ],
+          "properties": {
+            "alg": {
+              "const": "Ed25519"
+            },
+            "kid": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "value": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{86}$"
+            }
+          }
+        },
+        "required_features": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "protocol_support": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "x-fasp-limits": {
+    "max_record_bytes": 65536,
+    "max_json_depth": 32,
+    "max_json_nodes": 8192
+  }
+}

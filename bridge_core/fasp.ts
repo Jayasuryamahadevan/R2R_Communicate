@@ -32,7 +32,6 @@ import {
 	type AgentIdentity,
 	AICError,
 	b64,
-	canonicalize,
 	generateIdentity,
 	identityFromRawPrivateKey,
 	privateKeyRawBytes,
@@ -41,6 +40,7 @@ import {
 } from "./crypto.js";
 import { readJson, writeJson } from "./fsjson.js";
 import { stamp } from "./timestamps.js";
+import { canonicalizeFasp as canonicalize } from "./fasp_canonical.mjs";
 
 const PROTOCOL = "fasp/1.0";
 const CARD_VALIDITY_MS = 30 * 24 * 60 * 60 * 1000;
@@ -118,7 +118,7 @@ function verifyFaspIdCard(card: Record<string, unknown>): void {
 		throw new AICError("schema.invalid", "Invalid FASP ID card.");
 	}
 	const expiresAt = card.expires_at;
-	if (typeof expiresAt !== "string" || Date.parse(expiresAt) <= Date.now()) {
+	if (typeof expiresAt !== "string" || !Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= Date.now()) {
 		throw new AICError("auth.card_expired", "ID card has expired.");
 	}
 	const signature = card.signature as

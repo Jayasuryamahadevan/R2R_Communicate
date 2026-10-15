@@ -13,6 +13,7 @@ import math
 from typing import Any
 
 from ..core import MAX_INLINE_BYTES, PROTOCOL, FaspHarness
+from ..protocol.contracts import validate_json
 from ..protocol.errors import FaspError
 
 MAX_ENVELOPE_BYTES = MAX_INLINE_BYTES
@@ -61,6 +62,7 @@ def decode_object(raw: bytes, *, limit: int = MAX_ENVELOPE_BYTES) -> dict[str, A
         raise FaspError("schema.invalid", "Packet must contain valid UTF-8 JSON without duplicate keys or non-finite numbers.") from exc
     if not isinstance(value, dict):
         raise FaspError("schema.invalid", "Packet must contain a JSON object.")
+    validate_json(value)
     return value
 
 
@@ -69,6 +71,9 @@ def accept_envelope(harness: FaspHarness, envelope: dict[str, Any], *, expected_
     duplicate, response = harness.accept(envelope, expected_kind)
     if response is None:
         raise FaspError("transport.response_unavailable", "Envelope has no recorded response; retry after recovery.")
+    if response.get("type") == "protocol.error":
+        error = response["error"]
+        raise FaspError(error["code"], error["detail"])
     if wrap_receipt and envelope.get("kind") in RECEIPT_WRAPPED_KINDS:
         return {"fasp": PROTOCOL, "type": "receipt.delivered", "duplicate": duplicate, "message_id": envelope.get("message_id"), "response": response}
     return response

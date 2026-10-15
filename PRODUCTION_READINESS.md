@@ -4,6 +4,12 @@
 penetration-tested or safety-certified.** CI passing, even with hundreds of
 tests, does not establish field reliability or compliance.
 
+See [WIRE_PROFILE.md](WIRE_PROFILE.md) for the implemented protocol boundary
+and [RESEARCH_ASSESSMENT.md](RESEARCH_ASSESSMENT.md) for confirmed defects,
+validation evidence and remaining release gates. In particular, durable
+history retention/pagination, general signed responses, independent device
+testing and review of optional clients remain unfinished.
+
 ## System architecture and trust boundaries
 
     Enterprise or peer service (allowlisted, authenticated)
@@ -71,6 +77,12 @@ independent of FASP. A network fault must not remove the local safety response.
 9. Outbox inflight recovery for a single-owner restarted node, with retries
    bounded by signed message expiry, dead letters and durable ordering.
 10. Online WAL-aware snapshot backup API for database contents.
+11. Bounded, typed wire records and timezone-aware lifetimes before DB access;
+    canonical signature encodings and paired key selectors.
+12. Atomic queue admission with retriable pre-effect refusals; completed work
+    remains readable when capacity is full.
+13. Count-bounded rate-limit maps and pending-pairing records; portable wire
+    schemas shared with OpenAPI and Python–Node signing conformance tests.
 
 These are guards implemented in code, not a third-party audit attestation.
 

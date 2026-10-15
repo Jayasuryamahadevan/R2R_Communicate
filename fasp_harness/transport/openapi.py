@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..protocol.schemas import definitions
+
 
 def schema() -> dict[str, Any]:
     def ref(name: str) -> dict[str, str]:
@@ -16,7 +18,7 @@ def schema() -> dict[str, Any]:
         operation: dict[str, Any] = {
             "summary": summary,
             "requestBody": {"required": True, "content": {"application/json": {"schema": request_schema}}},
-            "responses": {"200": ok, "400": error, "401": error, "413": error},
+            "responses": {"200": ok, "400": error, "401": error, "404": error, "413": error, "429": error, "503": error},
         }
         if admin:
             operation["security"] = [{"AdminToken": []}]
@@ -41,6 +43,7 @@ def schema() -> dict[str, Any]:
         "servers": [{"url": "/"}],
         "paths": {
             "/profile": get("Get this node's signed ID card", response_schema=ref("IdCard")),
+            "/schemas/fasp-wire-v1.json": get("Get the portable baseline wire schema"),
             "/.well-known/fasp/id-card.json": get("Get this node's signed ID card", response_schema=ref("IdCard")),
             "/livez": get("Process liveness"),
             "/readyz": get("Node readiness"),
@@ -61,17 +64,7 @@ def schema() -> dict[str, Any]:
         "components": {
             "securitySchemes": {"AdminToken": {"type": "apiKey", "in": "header", "name": "X-FASP-Admin-Token", "description": "Read from the node's private state/admin_token file. Never place it in a URL."}},
             "schemas": {
-                "IdCard": {
-                    "type": "object", "required": ["fasp", "type", "system_id", "public_key", "endpoints", "expires_at", "signature"],
-                    "properties": {"fasp": {"type": "string"}, "type": {"const": "id_card"}, "system_id": {"type": "string"}, "display_name": {"type": "string"}, "public_key": {"type": "string"}, "endpoints": {"type": "object", "additionalProperties": {"type": "string"}}, "expires_at": {"type": "string", "format": "date-time"}, "signature": {"type": "object"}},
-                    "additionalProperties": True,
-                },
-                "Envelope": {
-                    "type": "object", "required": ["fasp", "kind", "message_id", "from", "to", "issued_at", "expires_at", "nonce", "payload", "signature"],
-                    "properties": {"fasp": {"type": "string"}, "kind": {"type": "string"}, "message_id": {"type": "string", "format": "uuid"}, "conversation_id": {"type": "string", "format": "uuid"}, "causation_id": {"type": ["string", "null"]}, "from": {"type": "string"}, "to": {"type": "string"}, "issued_at": {"type": "string", "format": "date-time"}, "expires_at": {"type": "string", "format": "date-time"}, "nonce": {"type": "string"}, "payload": {"type": "object"}, "signature": {"type": "object"}},
-                    "additionalProperties": True,
-                    "description": "Ed25519 signature over RFC 8785 canonical JSON; the sender must already be paired and authorized for the requested capability.",
-                },
+                **definitions(),
                 "ProtocolError": {"type": "object", "required": ["fasp", "type", "error"], "properties": {"fasp": {"type": "string"}, "type": {"const": "protocol.error"}, "error": {"type": "object", "required": ["code", "detail"], "properties": {"code": {"type": "string"}, "detail": {"type": "string"}}}}},
             },
         },
