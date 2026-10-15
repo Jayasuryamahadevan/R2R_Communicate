@@ -112,6 +112,8 @@ def _live_gauges(harness: FaspHarness) -> dict[str, int]:
     tracked incrementally -- these change on their own (a lease expiring,
     a stream closing) independent of any request coming through here."""
     gauges: dict[str, int] = {}
+    gauges["fasp_push_dropped_total"] = harness.channels.dropped
+    gauges["fasp_push_pending_bytes"] = harness.channels.pending_bytes
     legacy_task_states = {
         "queued": "PROPOSED",
         "running": "RUNNING",
@@ -364,7 +366,9 @@ def create_app(harness: FaspHarness, health: HealthRegistry | None = None, befor
                 if isinstance(sender, str) and sender != registered_peer:
                     if registered_peer is not None:
                         harness.channels.unregister(registered_peer, websocket)
-                    harness.channels.register(sender, websocket)
+                    if not harness.channels.register(sender, websocket):
+                        await websocket.close(code=1013)
+                        break
                     registered_peer = sender
                 await websocket.send_json(response)
         finally:

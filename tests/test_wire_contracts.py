@@ -15,6 +15,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from starlette.testclient import TestClient
 
 from fasp_harness.core import FaspError, FaspHarness, now, stamp
+from fasp_harness.crypto.canonical import canonicalize
 from fasp_harness.crypto.envelope import sign, unb64, verify
 from fasp_harness.protocol.contracts import MAX_JSON_DEPTH
 from fasp_harness.protocol.schemas import definitions, wire_schema
@@ -210,3 +211,17 @@ class WireContractsTests(unittest.TestCase):
             envelope["signature"] = signature
             with self.assertRaises(FaspError):
                 verify(envelope, self.alice.identity.public_b64)
+
+    def test_reused_canonical_bytes_preserve_the_exact_wire_size_limit(self) -> None:
+        envelope = self.envelope()
+        envelope["payload"] = {"padding": ""}
+        envelope = self.resign(envelope)
+        padding = 65536 - len(canonicalize(envelope))
+        envelope["payload"]["padding"] = "x" * padding
+        envelope = self.resign(envelope)
+        self.assertEqual(len(canonicalize(envelope)), 65536)
+        self.assertEqual(self.bob.accept(envelope)[1]["type"], "heartbeat")
+        envelope["payload"]["padding"] += "x"
+        with self.assertRaises(FaspError) as error:
+            self.bob.accept(self.resign(envelope))
+        self.assertEqual(error.exception.code, "resource.too_large")

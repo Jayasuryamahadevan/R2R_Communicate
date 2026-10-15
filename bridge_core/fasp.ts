@@ -46,6 +46,11 @@ const PROTOCOL = "fasp/1.0";
 const CARD_VALIDITY_MS = 30 * 24 * 60 * 60 * 1000;
 const ENVELOPE_VALIDITY_MS = 5 * 60 * 1000;
 
+export interface FaspDeliveryOptions {
+	delivery?: "durable" | "volatile";
+	receiverInstance?: string;
+}
+
 interface StoredFaspIdentity {
 	system_id: string;
 	kid: string;
@@ -448,6 +453,7 @@ export class FaspClient {
 		kind: string,
 		toSystemId: string,
 		payload: Record<string, unknown>,
+		options: FaspDeliveryOptions = {},
 	): Record<string, unknown> {
 		const { identity, kid, systemId } = this.loadOrCreateIdentity();
 		const issuedAt = stamp();
@@ -462,6 +468,19 @@ export class FaspClient {
 			nonce: b64(randomBytes(16)),
 			payload,
 		};
+		if (kind === "stream.open" && payload.storage === "memory") {
+			Object.assign(envelope, { required_features: ["fasp.volatile.v1"] });
+		}
+		if (options.delivery === "volatile") {
+			if (!["heartbeat", "stream.packet"].includes(kind) || !options.receiverInstance) {
+				throw new AICError("protocol.unsupported_delivery", "Volatile observations require a receiver instance from its verified profile.");
+			}
+			Object.assign(envelope, {
+				delivery: "volatile", receiver_instance: options.receiverInstance,
+				required_features: ["fasp.volatile.v1"],
+				expires_at: stamp(new Date(Date.parse(issuedAt) + 1000)),
+			});
+		}
 		return faspSign(envelope, identity, kid);
 	}
 
@@ -474,8 +493,9 @@ export class FaspClient {
 		kind: string,
 		toSystemId: string,
 		payload: Record<string, unknown>,
+		options: FaspDeliveryOptions = {},
 	): Promise<Record<string, unknown>> {
-		const signed = this.buildEnvelope(kind, toSystemId, payload);
+		const signed = this.buildEnvelope(kind, toSystemId, payload, options);
 		return postJson(`${baseUrl.replace(/\/$/, "")}/fasp/v1/envelopes`, signed);
 	}
 

@@ -15,7 +15,7 @@ class InboxRepo:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def insert_if_new(self, envelope: dict[str, Any], received_at: str) -> bool:
+    def insert_if_new(self, envelope: dict[str, Any], received_at: str, *, response: dict[str, Any] | None = None) -> bool:
         """Insert `envelope`; return False if `message_id` was already seen.
 
         The UNIQUE constraint on `message_id` is the replay-detection
@@ -25,8 +25,8 @@ class InboxRepo:
             with self.db.write() as conn:
                 conn.execute(
                     "INSERT INTO envelopes_inbox "
-                    "(message_id, conversation_id, causation_id, from_peer, kind, issued_at, received_at, envelope_json) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(message_id, conversation_id, causation_id, from_peer, kind, issued_at, received_at, envelope_json, response_json) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         envelope["message_id"],
                         envelope.get("conversation_id"),
@@ -36,6 +36,7 @@ class InboxRepo:
                         envelope["issued_at"],
                         received_at,
                         json.dumps(envelope),
+                        json.dumps(response) if response is not None else None,
                     ),
                 )
         except sqlite3.IntegrityError as exc:

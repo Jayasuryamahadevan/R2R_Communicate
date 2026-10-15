@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+from functools import lru_cache
 from typing import Any
 
 from cryptography.exceptions import InvalidSignature
@@ -47,6 +48,21 @@ def sign(value: dict[str, Any], key: Ed25519PrivateKey, kid: str) -> dict[str, A
 
 
 def verify(value: dict[str, Any], public_b64: str, *, expected_kid: str | None = None) -> None:
+    try:
+        content = canonicalize(unsigned(value)) if isinstance(value, dict) else b""
+    except (ValueError, TypeError, RecursionError) as exc:
+        raise FaspError("auth.invalid_signature", "Signature content is invalid.") from exc
+    _verify_canonical(value, public_b64, content, expected_kid=expected_kid)
+
+
+@lru_cache(maxsize=256)
+def _public_key(public_b64: str) -> Ed25519PublicKey:
+    """Cache immutable decoded keys, never authorization or verification results."""
+    return Ed25519PublicKey.from_public_bytes(unb64(public_b64))
+
+
+def _verify_canonical(value: dict[str, Any], public_b64: str, content: bytes, *, expected_kid: str | None = None) -> None:
+    """Internal primitive; content must come from this request's validated record."""
     if not isinstance(value, dict):
         raise FaspError("auth.invalid_signature", "Signed record must be an object.")
     signature = value.get("signature", {})
@@ -60,6 +76,6 @@ def verify(value: dict[str, Any], public_b64: str, *, expected_kid: str | None =
     ):
         raise FaspError("auth.invalid_signature", "Envelope has no supported Ed25519 signature.")
     try:
-        Ed25519PublicKey.from_public_bytes(unb64(public_b64)).verify(unb64(signature["value"]), canonicalize(unsigned(value)))
+        _public_key(public_b64).verify(unb64(signature["value"]), content)
     except (InvalidSignature, ValueError, TypeError, RecursionError) as exc:
         raise FaspError("auth.invalid_signature", "Signature verification failed.") from exc

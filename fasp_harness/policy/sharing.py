@@ -54,6 +54,7 @@ class StreamShareRule:
     max_retention_packets: int
     forward_to: frozenset[str]
     require_grant: bool = True
+    storage_modes: frozenset[str] = frozenset({"disk"})
 
     @classmethod
     def from_mapping(cls, item: Any) -> StreamShareRule:
@@ -62,7 +63,7 @@ class StreamShareRule:
         allowed = {
             "capability", "peer_ids", "purposes", "fields", "content_types",
             "delivery_modes", "max_rate_hz", "max_duration_s", "max_payload_bytes",
-            "max_window", "max_retention_packets", "forward_to", "require_grant",
+            "max_window", "max_retention_packets", "forward_to", "require_grant", "storage_modes",
         }
         unknown = sorted(set(item) - allowed)
         if unknown:
@@ -82,6 +83,9 @@ class StreamShareRule:
         require_grant = item.get("require_grant", True)
         if not isinstance(require_grant, bool):
             raise FaspError("schema.invalid", "Stream sharing rule require_grant must be a boolean.")
+        storage_modes = _strings(item.get("storage_modes", ["disk"]), "storage_modes")
+        if not storage_modes <= {"disk", "memory"}:
+            raise FaspError("schema.invalid", "Stream storage_modes may contain only disk and memory.")
         return cls(
             capability=capability,
             peer_ids=peer_ids,
@@ -96,6 +100,7 @@ class StreamShareRule:
             max_retention_packets=_positive_integer(item.get("max_retention_packets"), "max_retention_packets", zero=True),
             forward_to=_strings(item.get("forward_to", []), "forward_to", nonempty=False),
             require_grant=require_grant,
+            storage_modes=storage_modes,
         )
 
 
@@ -140,6 +145,11 @@ class StreamSharingPolicy:
         max_payload = _positive_integer(payload.get("max_payload_bytes"), "max_payload_bytes")
         window = _positive_integer(payload.get("window"), "window")
         retention = _positive_integer(payload.get("retention_packets"), "retention_packets", zero=True)
+        storage = payload.get("storage", "disk")
+        if not isinstance(storage, str) or storage not in rule.storage_modes:
+            raise FaspError("auth.not_authorized", "Stream storage mode is not allowed by local policy.")
+        if storage == "memory" and (delivery != "latest" or retention != 0):
+            raise FaspError("schema.invalid", "Memory streams require latest delivery and zero packet retention.")
         if rate > rule.max_rate_hz or duration > rule.max_duration_s or max_payload > rule.max_payload_bytes or window > rule.max_window or retention > rule.max_retention_packets:
             raise FaspError("auth.not_authorized", "Stream limits exceed the local sharing rule.")
 
@@ -181,4 +191,6 @@ class StreamSharingPolicy:
             "retention_packets": retention,
             "forward_to": sorted(forward_to),
         }
+        if "storage" in payload:
+            contract["storage"] = storage
         return rule, contract

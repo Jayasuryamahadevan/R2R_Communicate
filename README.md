@@ -44,6 +44,10 @@ in [WIRE_PROFILE.md](WIRE_PROFILE.md). The candid feasibility assessment,
 remaining release blockers and reproducible evaluation plan are in
 [RESEARCH_ASSESSMENT.md](RESEARCH_ASSESSMENT.md).
 
+For lightweight startup, persistent connections and explicit live-only
+observations, see [performance and delivery modes](PERFORMANCE.md). The
+default coordination path remains durable; memory streams are opt-in.
+
 Two or more autonomous systems — models, robots, phones, Raspberry Pis, edge
 gateways — need to agree on who does what, where, and when. FASP is the layer
 where that agreement happens, and this repository is a runnable reference

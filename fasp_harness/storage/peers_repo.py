@@ -23,6 +23,25 @@ class PeersRepo:
         row = self.db.read_one("SELECT * FROM peers WHERE peer_id = ?", (peer_id,))
         return _row_to_peer(row) if row else None
 
+    def authentication(self, peer_id: str) -> dict[str, Any]:
+        """Current authority in one read, without decoding the whole ID card.
+
+        This is deliberately not cached: a second connection's revocation,
+        changed scopes or pairing expiry must be visible on the next request.
+        """
+        row = self.db.read_one(
+            "SELECT p.state, p.expires_at, p.public_key, p.allowed_capability_prefixes_json, "
+            "json_extract(p.card_json, '$.signature.kid') AS kid, "
+            "EXISTS(SELECT 1 FROM revocations r WHERE r.peer_id = q.peer_id) AS revoked "
+            "FROM (SELECT ? AS peer_id) q LEFT JOIN peers p ON p.peer_id = q.peer_id",
+            (peer_id,),
+        )
+        return {
+            "state": row["state"], "expires_at": row["expires_at"], "revoked": bool(row["revoked"]),
+            "card": {"public_key": row["public_key"], "signature": {"kid": row["kid"]}},
+            "allowed_capability_prefixes": json.loads(row["allowed_capability_prefixes_json"] or "[]"),
+        }
+
     def upsert_pending_or_seen(
         self,
         peer_id: str,

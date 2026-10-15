@@ -101,6 +101,8 @@ def main() -> None:
     parser.add_argument("--ble-address-type", choices=("public", "random"), default="public")
     parser.add_argument("--rate-limit-per-peer", type=float, default=10.0, help="Sustained signed-envelope requests per second, per paired peer.")
     parser.add_argument("--rate-limit-burst", type=int, default=20, help="Burst allowance on top of --rate-limit-per-peer.")
+    parser.add_argument("--volatile-rate-limit-per-peer", type=float, default=1000.0, help="Separate signed live-observation budget per second over a persistent channel.")
+    parser.add_argument("--volatile-rate-limit-burst", type=int, default=256)
     parser.add_argument("--ip-rate-limit-per-second", type=float, default=20.0, help="Sustained requests per second, per source address, before authentication.")
     parser.add_argument("--ip-rate-limit-burst", type=int, default=40)
     parser.add_argument("--config", type=Path, help="Node configuration JSON (see examples/node.json): safety controller, fleets, site map, HA. Without it this serves a plain coordination node.")
@@ -162,6 +164,8 @@ def main() -> None:
                 rate_limit_burst=args.rate_limit_burst,
                 max_inflight_tasks=args.max_inflight_tasks,
                 adapter_concurrency=args.adapter_concurrency,
+                volatile_rate_limit_per_second=args.volatile_rate_limit_per_peer,
+                volatile_rate_limit_burst=args.volatile_rate_limit_burst,
             )
         except FaspError as error:
             raise SystemExit(f"{error.code}: {error.detail}") from error
@@ -178,6 +182,8 @@ def main() -> None:
             rate_limit_burst=args.rate_limit_burst,
             max_inflight_tasks=args.max_inflight_tasks,
             adapter_concurrency=args.adapter_concurrency,
+            volatile_rate_limit_per_second=args.volatile_rate_limit_per_peer,
+            volatile_rate_limit_burst=args.volatile_rate_limit_burst,
         )
         posture = evaluate_posture(
             DeploymentConfig(

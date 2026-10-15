@@ -98,8 +98,9 @@ record. Optional metadata must not change authorization or execution rules.
 
 An extension that changes required behavior must name that behavior in the
 signed `required_features` array. Unknown required names fail with
-`protocol.unsupported_feature`. The initial implemented feature name is
-`fasp.required-features.v1`, indicating enforcement of this mechanism. A
+`protocol.unsupported_feature`. The implemented feature names are
+`fasp.required-features.v1`, indicating enforcement of this mechanism, and
+`fasp.volatile.v1` for explicitly memory-only observations. A
 future feature must have a specification, validator, handlers and tests
 before being added to the advertised feature set.
 
@@ -112,6 +113,19 @@ feature discovery, not a completed general session-negotiation protocol.
 The endpoint map permits null values for client-only participants. Signed
 endpoint URLs are advertisements, not permission to connect to arbitrary
 addresses. Maintain URL/source restrictions and verify the identity reached.
+
+### Explicit volatile observations
+
+The default remains durable. The optional `fasp.volatile.v1` feature permits
+only heartbeat and memory-stream packet envelopes to request `delivery:
+volatile`. Such requests must name the receiver's signed profile
+`instance_id` in `receiver_instance` and use a short expiry (generated 1 s,
+maximum total/remaining 5 s). They still require signatures and current
+pairing/domain authority. A bounded in-memory replay window replaces the
+SQLite inbox for these eligible observations; old-instance replay is refused.
+Memory stream contracts require local policy opt-in, latest delivery and
+zero retention. Stream controls stay durable. See [PERFORMANCE.md](PERFORMANCE.md)
+for exact limits, loss/restart semantics, client examples and measurements.
 
 ## Admission, replay and errors
 
