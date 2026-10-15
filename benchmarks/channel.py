@@ -134,6 +134,7 @@ def run(iterations: int) -> dict:
             thread.join(timeout=10)
             listener.close()
             alice.close()
+            bob.close()
             if thread.is_alive():
                 raise RuntimeError("Benchmark TLS server did not shut down")
 
