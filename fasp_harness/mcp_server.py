@@ -76,7 +76,7 @@ def build_server(args: argparse.Namespace) -> Any:
         try:
             return await asyncio.to_thread(action)
         except (FaspError, ValueError) as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(f"{exc.code}: {exc.detail}" if isinstance(exc, FaspError) else str(exc)) from exc
 
     @server.tool()
     async def inspect(reference: str) -> dict[str, Any]:
@@ -87,7 +87,7 @@ def build_server(args: argparse.Namespace) -> Any:
         try:
             return await asyncio.to_thread(action)
         except (FaspError, ValueError, OSError) as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(f"{exc.code}: {exc.detail}" if isinstance(exc, FaspError) else str(exc)) from exc
 
     @server.tool()
     async def connect(reference: str) -> dict[str, Any]:
@@ -98,7 +98,7 @@ def build_server(args: argparse.Namespace) -> Any:
         try:
             return await asyncio.to_thread(action)
         except (FaspError, ValueError, OSError) as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(f"{exc.code}: {exc.detail}" if isinstance(exc, FaspError) else str(exc)) from exc
 
     @server.tool()
     async def approve(peer_id: str, pair_code: str, scopes: list[str]) -> dict[str, Any]:
@@ -137,7 +137,7 @@ def build_server(args: argparse.Namespace) -> Any:
         try:
             return await asyncio.to_thread(action)
         except (FaspError, ValueError, OSError) as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(f"{exc.code}: {exc.detail}" if isinstance(exc, FaspError) else str(exc)) from exc
 
     @server.tool()
     async def ping(peer_id: str) -> dict[str, Any]:
@@ -148,7 +148,7 @@ def build_server(args: argparse.Namespace) -> Any:
         try:
             return await asyncio.to_thread(action)
         except (FaspError, ValueError, OSError) as exc:
-            raise ToolError(str(exc)) from exc
+            raise ToolError(f"{exc.code}: {exc.detail}" if isinstance(exc, FaspError) else str(exc)) from exc
 
     @server.tool()
     async def outbox(message_id: str | None = None) -> dict[str, Any]:
