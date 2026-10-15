@@ -21,11 +21,16 @@ class _NoRedirect(request.HTTPRedirectHandler):
         return None
 
 
-def probe(address: str, port: int, timeout: float, scheme: str = "http", ca_cert: str | None = None) -> dict | None:
+def probe(address: str, port: int, timeout: float, scheme: str = "http", ca_cert: str | None = None, client_cert: str | None = None, client_key: str | None = None) -> dict | None:
     display_host = f"[{address}]" if ":" in address else address
     url = f"{scheme}://{display_host}:{port}/.well-known/fasp/id-card.json"
     try:
-        handlers = [request.HTTPSHandler(context=ssl.create_default_context(cafile=ca_cert))] if scheme == "https" else []
+        handlers = []
+        if scheme == "https":
+            context = ssl.create_default_context(cafile=ca_cert)
+            if client_cert:
+                context.load_cert_chain(client_cert, client_key)
+            handlers.append(request.HTTPSHandler(context=context))
         opener = request.build_opener(*handlers, _NoRedirect())
         with opener.open(url, timeout=timeout) as response:  # nosec B310: explicitly user-authorized CIDR and fixed FASP path
             if response.status != 200:
@@ -35,12 +40,12 @@ def probe(address: str, port: int, timeout: float, scheme: str = "http", ca_cert
                 return None
             card = decode_object(body)
         FaspHarness.verify_id_card(card)
-        return {"address": address, "port": port, "card": card, "discovered_at": stamp()}
+        return {"address": address, "port": port, "scheme": scheme, "card": card, "discovered_at": stamp()}
     except Exception:  # Probe failures are expected on unused local addresses.
         return None
 
 
-def discover(cidr: str, port: int, timeout: float, workers: int, state_dir: Path, allow_large: bool = False, scheme: str = "http", ca_cert: str | None = None) -> list[dict]:
+def discover(cidr: str, port: int, timeout: float, workers: int, state_dir: Path, allow_large: bool = False, scheme: str = "http", ca_cert: str | None = None, client_cert: str | None = None, client_key: str | None = None) -> list[dict]:
     if scheme not in {"http", "https"} or not 1 <= port <= 65535 or not math.isfinite(timeout) or not 0 < timeout <= 30 or not 1 <= workers <= 32:
         raise ValueError("Expected http(s), port 1..65535, timeout 0..30 seconds, and workers 1..32.")
     network = ipaddress.ip_network(cidr, strict=False)
@@ -51,7 +56,7 @@ def discover(cidr: str, port: int, timeout: float, workers: int, state_dir: Path
         raise ValueError("Refusing to scan more than 1024 hosts; use a narrower CIDR or --allow-large.")
     results: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(max(workers, 1), 32)) as pool:
-        futures = [pool.submit(probe, str(host), port, timeout, scheme, ca_cert) for host in targets]
+        futures = [pool.submit(probe, str(host), port, timeout, scheme, ca_cert, client_cert, client_key) for host in targets]
         for future in concurrent.futures.as_completed(futures):
             if result := future.result():
                 results.append(result)

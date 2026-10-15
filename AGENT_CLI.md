@@ -59,6 +59,48 @@ The MCP extra is installed only when requested. For a minimal runtime,
 `./install.sh` installs only the five FASP dependencies. The optional Node
 bridges are installed with `./install.sh --with-bridges` and require Node 20+.
 
+
+## Human-friendly device management (CLI and MCP)
+
+The CLI name is `fasp` (commands use a space, e.g. `fasp scan`). The MCP server named `FASP` exposes tools named `scan`, `inspect`, `connect`, `approve`, `disconnect`, `capabilities`, and `ping`, in addition to the existing identity, peers, communicate, queue_intent, drain, and outbox tools. Depending on the MCP host, these appear as `FASP.scan` or similarly qualified tool names.
+
+**Scope:** discovery scans for **FASP-enabled nodes**, not arbitrary Bluetooth, USB, CAN, MQTT, Modbus, cameras or smart-home appliances. Such devices require an explicit reviewed gateway/adapter that provides FASP identity, capabilities and consent boundaries. No network scan can safely turn an unknown device into an authorized robot controller.
+
+Initialize a distinct identity on each node, persist each state directory, and start each node's network listener with correctly configured TLS and a reachable advertised URL. A representative commissioning flow:
+
+```bash
+# Use a CIDR you control. By default, scanning requires HTTPS and validates TLS.
+fasp scan --cidr 192.168.10.0/24 --port 8766 \
+  --scheme https --ca-cert /etc/fasp/ca.pem --state-dir ~/.fasp-agent
+
+# Read-only live signed-card verification. Scan results are cached by system ID.
+fasp inspect 'fasp:system:EXACT_DISCOVERED_ID' \
+  --ca-cert /etc/fasp/ca.pem --state-dir ~/.fasp-agent
+
+# Starts pending mutual pairing, never grants authority.
+fasp connect 'fasp:system:EXACT_DISCOVERED_ID' \
+  --ca-cert /etc/fasp/ca.pem --state-dir ~/.fasp-agent
+
+# Verify the printed 12-character pairing fingerprint through an independent
+# trusted channel; complete the reverse connect and approve ON BOTH nodes.
+fasp approve 'fasp:system:PEER_ID' --code 'VERIFIED_CODE' \
+  --scope observe. --scope coordinate. --state-dir ~/.fasp-agent
+
+fasp devices --state-dir ~/.fasp-agent
+fasp capabilities 'fasp:system:PEER_ID' --ca-cert /etc/fasp/ca.pem --state-dir ~/.fasp-agent
+fasp ping 'fasp:system:PEER_ID' --ca-cert /etc/fasp/ca.pem --state-dir ~/.fasp-agent
+fasp communicate 'fasp:system:PEER_ID' --capability coordinate.chat.v1 \
+  --message 'Inspect target' --ca-cert /etc/fasp/ca.pem --state-dir ~/.fasp-agent
+
+# Local revocation; the other node must manage its own trust state.
+fasp disconnect 'fasp:system:PEER_ID' --reason 'Device retired' --state-dir ~/.fasp-agent
+fasp status --state-dir ~/.fasp-agent
+```
+
+For isolated loopback testing, use `fasp scan --cidr 127.0.0.0/30 --scheme http`. For non-loopback cleartext HTTP, `--insecure-http` is required for development, and is unsuitable for production. Discovery is restricted to explicitly supplied private/local CIDRs, refuses more than 1,024 hosts without CLI-only `--allow-large` (hard cap 65,536), limits workers to 32, and never automatically connects or authorizes. All data returned from an unknown node is an untrusted self-signed claim until its actual key is independently verified. The client verifies the key again when connecting, and refuses a mismatched pinned key or discovery identity. Direct public HTTPS endpoints can be inspected/connected by explicit URL without public-range scanning.
+
+TLS client certificates are supported during scanning as well as direct connection using `--client-cert` and `--client-key`. The optional local stdio MCP server inherits its configured TLS credentials. **MCP tools execute with the authority of the host process that can access the local identity and state.** Restrict that filesystem access, require human approval for the `approve` and `disconnect` actions, and never expose stdio MCP as an unauthenticated network server. A `connect` operation by itself does not grant a capability; an approved scope does not bypass local adapter risk classifications or hardware safety.
+
 ## Two-node setup
 
 Run on **machine A**:

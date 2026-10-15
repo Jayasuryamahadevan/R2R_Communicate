@@ -161,5 +161,75 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
 
 
+    def test_connect_inspect_ping_disconnect_and_reapprove(self):
+        rc, pending = self._run("connect", self.bob_url, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, pending)
+        self.assertEqual(pending["state"], "pending")
+        self.assertTrue(pending["approval_required"])
+        rc, info = self._run("inspect", self.bob_url, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, info)
+        self.assertFalse(info["trusted"])
+        self.assertEqual(info["peer_id"], self.bob.identity.system_id)
+        rc, denied = self._run("ping", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2, denied)
+        self.assertEqual(denied["error"]["code"], "auth.not_paired")
+        rc, other = self._run("connect", self.alice_url, "--state-dir", self.bob_path)
+        self.assertEqual(rc, 0, other)
+        self.assertEqual(pending["pair_code"], other["pair_code"])
+        for path, peer_id in ((self.alice_path, self.bob.identity.system_id), (self.bob_path, self.alice.identity.system_id)):
+            rc, approved = self._run("approve", peer_id, "--code", pending["pair_code"], "--scope", "observe.", "--state-dir", path)
+            self.assertEqual(rc, 0, approved)
+        rc, pong = self._run("ping", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, pong)
+        self.assertEqual(pong["response"]["type"], "heartbeat")
+        rc, info = self._run("inspect", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, info)
+        self.assertTrue(info["trusted"])
+        rc, status = self._run("status", "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, status)
+        self.assertEqual(status["peers"]["paired"], 1)
+        rc, result = self._run("disconnect", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, result)
+        self.assertTrue(result["revoked"])
+        rc, denied = self._run("ping", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2, denied)
+        self.assertEqual(denied["error"]["code"], "auth.peer_revoked")
+
+    def test_scan_caches_identity_and_connect_by_discovered_id(self):
+        import fasp_harness.discovery as discovery
+
+        card = self.bob.id_card()
+        found = {"address": "127.0.0.1", "port": 8862, "scheme": "http", "card": card, "discovered_at": card["issued_at"]}
+        def fake_discover(cidr, port, timeout, workers, state_dir, **kwargs):
+            from fasp_harness.core import JsonState
+            state = JsonState(state_dir)
+            state.put("discovered.json", {card["system_id"]: found})
+            return [found]
+        with patch.object(discovery, "discover", side_effect=fake_discover):
+            rc, result = self._run("scan", "--cidr", "127.0.0.0/30", "--port", "8862", "--scheme", "http", "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, result)
+        self.assertEqual(result["count"], 1)
+        self.assertFalse(result["devices"][0]["trusted"])
+        rc, connected = self._run("connect", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 0, connected)
+        self.assertEqual(connected["state"], "pending")
+
+    def test_scan_scope_tls_and_identity_pin_fail_closed(self):
+        rc, error = self._run("scan", "--cidr", "8.8.8.0/30", "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(error["error"]["code"], "policy.discovery_scope")
+        rc, error = self._run("scan", "--cidr", "192.168.1.0/30", "--scheme", "http", "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(error["error"]["code"], "transport.tls_required")
+        rc, error = self._run("connect", "http://10.0.0.55:8766", "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(error["error"]["code"], "transport.tls_required")
+        self._run("connect", self.bob_url, "--state-dir", self.alice_path)
+        with patch.object(agent_cli, "request_json", return_value=self.alice.id_card()):
+            rc, error = self._run("inspect", self.bob.identity.system_id, "--state-dir", self.alice_path)
+        self.assertEqual(rc, 2)
+        self.assertEqual(error["error"]["code"], "auth.peer_identity_changed")
+
+
 if __name__ == "__main__":
     unittest.main()

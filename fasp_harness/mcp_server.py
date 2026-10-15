@@ -14,7 +14,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .agent_cli import _agent, _deliver
+from .agent_cli import _agent, _deliver, connect_device, disconnect_device, inspect_device, ping_device, scan_devices
 from .core import MAX_INLINE_BYTES
 from .edge.outbox import Outbox
 from .protocol.errors import FaspError
@@ -65,6 +65,90 @@ def build_server(args: argparse.Namespace) -> Any:
                 for peer_id, entry in sorted(h.peers.all().items())
             ]
             return {"peers": entries}
+
+
+    @server.tool()
+    async def scan(cidr: str, port: int = 8766, scheme: str = "https", timeout: float = 0.35, workers: int = 16) -> dict[str, Any]:
+        """Scan an EXPLICIT operator-authorized private/local CIDR for signed FASP nodes. Never automatically pair; limited to 1024 hosts."""
+        def action() -> dict[str, Any]:
+            with _agent(args) as h:
+                return scan_devices(h, cidr, port, scheme, timeout, workers, args)
+        try:
+            return await asyncio.to_thread(action)
+        except (FaspError, ValueError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool()
+    async def inspect(reference: str) -> dict[str, Any]:
+        """Check the live signed FASP card for one HTTPS URL or exact discovered/registered system ID; read-only."""
+        def action() -> dict[str, Any]:
+            with _agent(args) as h:
+                return inspect_device(h, reference, args)
+        try:
+            return await asyncio.to_thread(action)
+        except (FaspError, ValueError, OSError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool()
+    async def connect(reference: str) -> dict[str, Any]:
+        """Start pending FASP pairing. Requires explicit out-of-band fingerprint verification and approval ON BOTH devices."""
+        def action() -> dict[str, Any]:
+            with _agent(args) as h:
+                return connect_device(h, reference, args)
+        try:
+            return await asyncio.to_thread(action)
+        except (FaspError, ValueError, OSError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool()
+    async def approve(peer_id: str, pair_code: str, scopes: list[str]) -> dict[str, Any]:
+        """ADMIN ACTION: Approve ONE pending peer locally only after an operator verifies the fingerprint independently. Empty scopes deny all capabilities."""
+        def action() -> dict[str, Any]:
+            if not isinstance(scopes, list) or any(not isinstance(item, str) or not item or "*" in item for item in scopes):
+                raise FaspError("schema.invalid", "Explicit scopes must be a list of nonempty capability names without wildcard.")
+            with _agent(args) as h:
+                return h.confirm_peer(peer_id, pair_code, scopes)
+        try:
+            return await asyncio.to_thread(action)
+        except FaspError as exc:
+            raise ToolError(f"{exc.code}: {exc.detail}") from exc
+
+    @server.tool()
+    async def disconnect(peer_id: str, reason: str = "operator disconnected peer") -> dict[str, Any]:
+        """ADMIN ACTION: Revoke one known peer locally. Does not alter the remote node; re-pairing is required."""
+        def action() -> dict[str, Any]:
+            with _agent(args) as h:
+                return disconnect_device(h, peer_id, reason)
+        try:
+            return await asyncio.to_thread(action)
+        except FaspError as exc:
+            raise ToolError(f"{exc.code}: {exc.detail}") from exc
+
+    @server.tool()
+    async def capabilities(reference: str | None = None) -> dict[str, Any]:
+        """Read this node's declared capabilities or a verified remote device's published capabilities; self-signature is not pairing."""
+        def action() -> dict[str, Any]:
+            with _agent(args) as h:
+                if reference is None:
+                    card = h.id_card()
+                    return {"peer_id": card["system_id"], "name": card["display_name"], "trusted": True, "capabilities": card["capabilities"]}
+                info = inspect_device(h, reference, args)
+                return {key: info[key] for key in ("peer_id", "name", "trusted", "state", "capabilities")}
+        try:
+            return await asyncio.to_thread(action)
+        except (FaspError, ValueError, OSError) as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool()
+    async def ping(peer_id: str) -> dict[str, Any]:
+        """Send a signed FASP heartbeat to an already paired peer; a network port alone never authenticates a node."""
+        def action() -> dict[str, Any]:
+            with _agent(args) as h:
+                return ping_device(h, peer_id, args)
+        try:
+            return await asyncio.to_thread(action)
+        except (FaspError, ValueError, OSError) as exc:
+            raise ToolError(str(exc)) from exc
 
     @server.tool()
     async def outbox(message_id: str | None = None) -> dict[str, Any]:

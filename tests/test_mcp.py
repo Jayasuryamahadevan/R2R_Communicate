@@ -146,5 +146,37 @@ class McpTests(unittest.TestCase):
         self.assertEqual(failures, [])
 
 
+    def test_device_management_tools_exist_and_are_fail_closed(self) -> None:
+        async def list_names() -> set[str]:
+            async with Client(build_server(self.args), raise_exceptions=True) as client:
+                return {tool.name for tool in (await client.list_tools()).tools}
+
+        self.assertTrue({"scan", "inspect", "connect", "approve", "disconnect", "capabilities", "ping"}.issubset(asyncio.run(list_names())))
+        local = self._call("capabilities")
+        self.assertEqual(local["peer_id"], self.alice.identity.system_id)
+        denied = self._call("ping", {"peer_id": self.bob.identity.system_id})
+        self.assertIn("auth.not_paired", denied["error"])
+        denied = self._call("scan", {"cidr": "8.8.8.0/30"})
+        self.assertIn("policy.discovery_scope", denied["error"])
+        denied = self._call("disconnect", {"peer_id": self.bob.identity.system_id})
+        self.assertIn("auth.pairing_not_found", denied["error"])
+
+    def test_mcp_connect_and_local_approval(self) -> None:
+        client = TestClient(create_app(self.bob))
+        def local_request(url: str, payload: dict | None, args: argparse.Namespace) -> dict:
+            del args
+            path = urlsplit(url).path
+            response = client.get(path) if payload is None else client.post(path, json=payload)
+            return response.json()
+        with patch.object(agent_cli, "request_json", side_effect=local_request):
+            pending = self._call("connect", {"reference": "http://127.0.0.1:8862"})
+        self.assertEqual(pending["state"], "pending")
+        self.assertTrue(pending["approval_required"])
+        approved = self._call("approve", {"peer_id": self.bob.identity.system_id, "pair_code": pending["pair_code"], "scopes": ["observe."]})
+        self.assertEqual(approved["state"], "paired")
+        revoked = self._call("disconnect", {"peer_id": self.bob.identity.system_id, "reason": "test revocation"})
+        self.assertTrue(revoked["revoked"])
+
+
 if __name__ == "__main__":
     unittest.main()

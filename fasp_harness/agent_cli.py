@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import ipaddress
 import json
 import math
 import os
@@ -27,7 +28,7 @@ from .protocol.errors import FaspError
 from .transport.canonical import decode_object
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-AGENT_COMMANDS = frozenset({"init", "id", "register", "radio-register", "approve", "peers", "communicate", "send", "drain", "outbox", "task-status"})
+AGENT_COMMANDS = frozenset({"init", "id", "scan", "inspect", "connect", "register", "radio-register", "approve", "disconnect", "peers", "devices", "capabilities", "status", "ping", "communicate", "send", "drain", "outbox", "task-status"})
 
 
 class RemoteRejection(Exception):
@@ -265,29 +266,225 @@ def cmd_id(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_register(args: argparse.Namespace) -> int:
-    base = _base_url(args.url, args.insecure_http)
+
+def _peer_state(h: FaspHarness, peer_id: str) -> str:
+    """A display-only state; never treat discovery as authorization."""
+    if h.revocations.is_revoked(peer_id):
+        return "revoked"
+    peer = h.peers.get(peer_id)
+    if peer is None:
+        return "discovered"
+    if peer["state"] == "paired":
+        try:
+            h._peer(peer_id)
+        except FaspError:
+            return "expired"
+    return str(peer["state"])
+
+
+def _resolve_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> tuple[str, str | None, dict[str, Any] | None]:
+    """Resolve an explicit URL or an exact ID from local scanned/pinned records."""
+    if not isinstance(reference, str) or not reference:
+        raise FaspError("schema.invalid", "Device reference must be an HTTPS URL or full FASP system ID.")
+    if not reference.startswith("fasp:system:"):
+        return _base_url(reference, args.insecure_http), None, None
+
+    known = h.state.get("agent-peers.json", {})
+    scanned = h.state.get("discovered.json", {})
+    candidate = scanned.get(reference)
+    if reference in known:
+        url = known[reference]
+    elif isinstance(candidate, dict):
+        address, port = candidate.get("address"), candidate.get("port")
+        card = candidate.get("card", {})
+        profile = card.get("endpoints", {}).get("profile", "") if isinstance(card, dict) else ""
+        scheme = candidate.get("scheme") or parse.urlsplit(profile).scheme
+        if not isinstance(address, str) or not isinstance(port, int) or scheme not in {"https", "http"}:
+            raise FaspError("schema.invalid", "Scanned device record is malformed; rescan with an explicit CIDR.")
+        host = f"[{address}]" if ":" in address else address
+        url = f"{scheme}://{host}:{port}"
+    else:
+        raise FaspError("config.peer_url_missing", "Unknown device ID; run 'fasp scan --cidr NETWORK' or provide an HTTPS URL.")
+    if not isinstance(url, str):
+        raise FaspError("schema.invalid", "Stored peer URL is invalid.")
+    return _base_url(url, args.insecure_http), reference, candidate if isinstance(candidate, dict) else None
+
+
+def inspect_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> dict[str, Any]:
+    """Verify a live card, including existing key pinning and scan-to-connect identity continuity."""
+    base, expected, scanned = _resolve_device(h, reference, args)
+    card = request_json(base + "/profile", None, args)
+    h.verify_id_card(card)
+    peer_id = card["system_id"]
+    if expected is not None and peer_id != expected:
+        raise FaspError("auth.peer_identity_changed", "Endpoint no longer exposes the requested FASP system ID.")
+    if scanned is not None and isinstance(scanned.get("card"), dict):
+        earlier = scanned["card"]
+        if earlier.get("system_id") != peer_id or earlier.get("public_key") != card["public_key"]:
+            raise FaspError("auth.peer_identity_changed", "Live identity differs from the signed discovery result.")
+    pinned = h.peers.get(peer_id)
+    if pinned is not None and pinned["card"]["public_key"] != card["public_key"]:
+        raise FaspError("auth.peer_identity_changed", "Live identity differs from the pinned local peer key.")
+    if peer_id == h.identity.system_id:
+        raise FaspError("auth.self_pairing", "The endpoint is this node; connect another device.")
+    state = _peer_state(h, peer_id)
+    return {
+        "peer_id": peer_id,
+        "name": card.get("display_name"),
+        "url": base,
+        "state": state,
+        "trusted": state == "paired",
+        "capabilities": card.get("capabilities", []),
+        "id_card": card,
+    }
+
+
+def connect_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> dict[str, Any]:
+    """Create *pending* bilateral pairing, never authorize without out-of-band approval."""
+    info = inspect_device(h, reference, args)
+    card = info["id_card"]
+    base = info["url"]
+    response = request_json(base + "/pair/hello", {"id_card": h.id_card()}, args)
+    if response.get("type") != "hello.ready" or response.get("system_id") != card["system_id"]:
+        raise FaspError("auth.invalid_hello", "Peer hello did not match the discovered identity.")
+    verify(response, card["public_key"])
+    response_card = response.get("id_card", {})
+    h.verify_id_card(response_card)
+    if response_card["system_id"] != card["system_id"] or response_card["public_key"] != card["public_key"]:
+        raise FaspError("auth.invalid_hello", "Peer changed identity between discovery and hello.")
+    pending = h.hello(response_card)
+    if response.get("pair_code") != pending.get("pair_code"):
+        raise FaspError("auth.invalid_hello", "Pairing fingerprint differs between peers.")
+    urls = h.state.get("agent-peers.json", {})
+    urls[card["system_id"]] = base
+    h.state.put("agent-peers.json", urls)
+    state = _peer_state(h, card["system_id"])
+    return {
+        "ok": True,
+        "peer_id": card["system_id"],
+        "name": card.get("display_name"),
+        "state": state,
+        "pair_code": pending["pair_code"],
+        "approval_required": state != "paired",
+        "instructions": "Verify this fingerprint out of band, confirm the peer identity, and approve on BOTH nodes. Connecting does not grant authority.",
+    }
+
+
+def scan_devices(
+    h: FaspHarness, cidr: str, port: int, scheme: str, timeout: float,
+    workers: int, args: argparse.Namespace, *, allow_large: bool = False,
+) -> dict[str, Any]:
+    """Opt-in discovery of FASP-speaking devices on one specified private CIDR."""
+    from .discovery import discover
+
+    try:
+        network = ipaddress.ip_network(cidr, strict=False)
+    except ValueError as exc:
+        raise FaspError("schema.invalid", "Provide a valid explicit CIDR (for example 192.168.1.0/24).") from exc
+    if not (network.is_private or network.is_loopback):
+        raise FaspError("policy.discovery_scope", "CIDR discovery is restricted to private/local networks; use 'fasp inspect URL' for a public endpoint.")
+    if scheme not in {"https", "http"}:
+        raise FaspError("schema.invalid", "Discovery scheme must be https or http.")
+    if scheme == "http" and not (args.insecure_http or network.is_loopback):
+        raise FaspError("transport.tls_required", "Scanning non-loopback HTTP requires explicit --insecure-http for isolated development.")
+    if isinstance(timeout, bool) or not isinstance(timeout, (float, int)) or not math.isfinite(timeout) or not 0 < timeout <= 30:
+        raise FaspError("schema.invalid", "Scan timeout must be between 0 and 30 seconds.")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise FaspError("schema.invalid", "Scan port must be 1..65535.")
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= 32:
+        raise FaspError("schema.invalid", "Scan workers must be 1..32.")
+    results = discover(
+        cidr, port, timeout, workers, h.state.directory, allow_large=allow_large,
+        scheme=scheme, ca_cert=args.ca_cert,
+        client_cert=args.client_cert, client_key=args.client_key,
+    )
+    devices = []
+    for entry in results:
+        card = entry["card"]
+        peer_id = card["system_id"]
+        host = f"[{entry['address']}]" if ":" in entry["address"] else entry["address"]
+        devices.append({
+            "peer_id": peer_id, "name": card.get("display_name"), "state": _peer_state(h, peer_id),
+            "trusted": _peer_state(h, peer_id) == "paired", "url": f"{scheme}://{host}:{port}",
+            "capabilities": card.get("capabilities", []),
+        })
+    return {"cidr": str(network), "count": len(devices), "devices": devices, "note": "Only verified self-signed FASP nodes are listed. Scanning does not pair or authorize."}
+
+
+def ping_device(h: FaspHarness, peer_id: str, args: argparse.Namespace) -> dict[str, Any]:
+    h._peer(peer_id)
+    response = _send_to_peer(h, peer_id, h.make_envelope("heartbeat", peer_id, {}), args)
+    if response.get("type") != "heartbeat":
+        raise TransportFailure("Peer did not return the expected FASP heartbeat response.")
+    return {"ok": True, "peer_id": peer_id, "authenticated": True, "response": response}
+
+
+def disconnect_device(h: FaspHarness, peer_id: str, reason: str) -> dict[str, Any]:
+    if not h.peers.get(peer_id):
+        raise FaspError("auth.pairing_not_found", "Unknown peer; there is no pairing to revoke.")
+    if not isinstance(reason, str) or not 1 <= len(reason) <= 200:
+        raise FaspError("schema.invalid", "Revocation reason must be 1..200 characters.")
+    result = h.revoke_peer(peer_id, reason)
+    return {**result, "local_only": True, "note": "This node rejects further requests from the peer. Reconnect requires explicit pairing and approval; remote peer state is unchanged."}
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
     with _agent(args) as h:
-        card = request_json(base + "/profile", None, args)
-        h.verify_id_card(card)
-        old = h.peers.get(card["system_id"])
-        if old is not None and old["card"]["public_key"] != card["public_key"]:
-            raise FaspError("auth.peer_identity_changed", "Existing paired identity key cannot be replaced during registration.")
-        response = request_json(base + "/pair/hello", {"id_card": h.id_card()}, args)
-        if response.get("type") != "hello.ready" or response.get("system_id") != card["system_id"]:
-            raise FaspError("auth.invalid_hello", "Peer hello did not match the discovered identity.")
-        verify(response, card["public_key"])
-        response_card = response.get("id_card", {})
-        h.verify_id_card(response_card)
-        if response_card["system_id"] != card["system_id"] or response_card["public_key"] != card["public_key"]:
-            raise FaspError("auth.invalid_hello", "Peer changed identity between discovery and hello.")
-        pending = h.hello(response_card)
-        if response.get("pair_code") != pending.get("pair_code"):
-            raise FaspError("auth.invalid_hello", "Pairing fingerprint differs between peers.")
-        urls = h.state.get("agent-peers.json", {})
-        urls[card["system_id"]] = base
-        h.state.put("agent-peers.json", urls)
-        _emit({"ok": True, "peer_id": card["system_id"], "name": card.get("display_name"), "state": h.peers.get(card["system_id"])["state"], "pair_code": pending["pair_code"], "approval_required": True, "instructions": "Verify the fingerprint out of band, then approve on BOTH nodes."})
+        _emit(scan_devices(h, args.cidr, args.port, args.scheme, args.timeout, args.workers, args, allow_large=args.allow_large))
+    return 0
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        _emit(inspect_device(h, args.reference, args))
+    return 0
+
+
+def cmd_connect(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        _emit(connect_device(h, args.reference, args))
+    return 0
+
+
+def cmd_disconnect(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        _emit(disconnect_device(h, args.peer, args.reason))
+    return 0
+
+
+def cmd_capabilities(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        if args.reference is None:
+            card = h.id_card()
+            _emit({"peer_id": card["system_id"], "name": card["display_name"], "trusted": True, "capabilities": card["capabilities"]})
+        else:
+            info = inspect_device(h, args.reference, args)
+            _emit({key: info[key] for key in ("peer_id", "name", "trusted", "state", "capabilities")})
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        peers = h.peers.all()
+        _emit({
+            "system_id": h.identity.system_id, "name": h.display_name,
+            "capabilities": h.adapter.capabilities(),
+            "peers": {state: sum(_peer_state(h, peer_id) == state for peer_id in peers) for state in ("paired", "pending", "expired", "revoked")},
+            "outbox": Outbox(h.db).depth(),
+        })
+    return 0
+
+
+def cmd_ping(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        _emit(ping_device(h, args.peer, args))
+    return 0
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    """Compatibility alias for 'connect' with an explicit HTTPS URL."""
+    with _agent(args) as h:
+        _emit(connect_device(h, args.url, args))
     return 0
 
 
@@ -439,7 +636,24 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("--timeout", type=float, default=5.0)
         cmd.add_argument("--insecure-http", action="store_true", help="Allow unencrypted non-loopback HTTP for isolated development only.")
 
-    reg = add("register", "Exchange verified ID cards and request pending pairing.", cmd_register)
+    scan = add("scan", "Find signed FASP devices on an explicitly authorized private CIDR.", cmd_scan)
+    scan.add_argument("--cidr", required=True, help="Explicit private/local CIDR (e.g. 192.168.1.0/24).")
+    scan.add_argument("--port", type=int, default=8766)
+    scan.add_argument("--scheme", choices=("https", "http"), default="https")
+    scan.add_argument("--workers", type=int, default=16)
+    scan.add_argument("--allow-large", action="store_true", help="Explicitly permit 1025..65536 addresses.")
+    network_flags(scan)
+    scan.set_defaults(timeout=0.35)
+
+    inspect = add("inspect", "Verify and inspect a device's signed live identity card.", cmd_inspect)
+    inspect.add_argument("reference", help="HTTPS URL or exact discovered/registered FASP system ID.")
+    network_flags(inspect)
+
+    connect = add("connect", "Exchange signed identity cards and create PENDING pairing; never auto-approve.", cmd_connect)
+    connect.add_argument("reference", help="HTTPS URL or exact discovered/registered FASP system ID.")
+    network_flags(connect)
+
+    reg = add("register", "Compatibility alias of connect for an explicit HTTPS URL.", cmd_register)
     reg.add_argument("url", help="Peer node base HTTPS URL.")
     network_flags(reg)
 
@@ -456,7 +670,22 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--code", required=True, help="Pairing fingerprint verified with peer operator.")
     approve.add_argument("--scope", action="append", help="Explicit granted capability prefix; repeat.")
 
+    disconnect = add("disconnect", "Revoke a known peer locally; cannot undo remote state.", cmd_disconnect)
+    disconnect.add_argument("peer", help="Exact peer FASP system ID.")
+    disconnect.add_argument("--reason", default="operator disconnected peer")
+
     add("peers", "List pinned peers, pairing state and URLs.", cmd_peers)
+    add("devices", "Alias of peers: list paired, pending and revoked device identities.", cmd_peers)
+
+    capabilities = add("capabilities", "List local or verified remote advertised capabilities.", cmd_capabilities)
+    capabilities.add_argument("reference", nargs="?", help="Optional HTTPS URL or registered/discovered device ID.")
+    network_flags(capabilities)
+
+    add("status", "Show local identity, capability summary, peer states, and outbox.", cmd_status)
+
+    ping = add("ping", "Send an authenticated signed heartbeat to a paired device.", cmd_ping)
+    ping.add_argument("peer", help="Exact paired FASP system ID.")
+    deliver_flags(ping)
 
     def deliver_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--limit", type=int, default=32, help="Max due messages per drain cycle.")
