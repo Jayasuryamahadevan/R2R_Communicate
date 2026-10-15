@@ -20,7 +20,10 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from collections.abc import Callable
 from typing import Any, Protocol
+
+from .protocol.errors import FaspError
 
 
 class _Sendable(Protocol):
@@ -28,9 +31,10 @@ class _Sendable(Protocol):
 
 
 class ConnectionRegistry:
-    def __init__(self, *, max_connections: int = 128, max_per_peer: int = 4, max_pending: int = 16, max_pending_bytes: int = 8 * 1024 * 1024, send_timeout_s: float = 1.0) -> None:
+    def __init__(self, *, max_connections: int = 128, max_per_peer: int = 4, max_pending: int = 16, max_pending_bytes: int = 8 * 1024 * 1024, send_timeout_s: float = 1.0, authorize_peer: Callable[[str], Any] | None = None) -> None:
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (max_connections, max_per_peer, max_pending, max_pending_bytes)) or not 0 < send_timeout_s <= 60:
             raise ValueError("Channel bounds must be positive and send timeout must be at most 60 seconds.")
+        self.authorize_peer = authorize_peer
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connections: dict[str, set[_Sendable]] = {}
@@ -79,6 +83,28 @@ class ConnectionRegistry:
         with self._lock:
             return bool(self._connections.get(peer_id))
 
+    def disconnect(self, peer_id: str) -> None:
+        with self._lock:
+            targets = list(self._connections.get(peer_id, ()))
+            loop = self._loop
+        for connection in targets:
+            self.unregister(peer_id, connection)
+            if loop is not None and not loop.is_closed():
+                coroutine = self._close(connection)
+                try:
+                    asyncio.run_coroutine_threadsafe(coroutine, loop)
+                except RuntimeError:
+                    coroutine.close()
+
+    async def _close(self, connection: _Sendable) -> None:
+        close = getattr(connection, "close", None)
+        if close is not None:
+            try:
+                async with asyncio.timeout(self.send_timeout_s):
+                    await close(code=1013)
+            except (Exception, asyncio.CancelledError):
+                pass
+
     def push(self, peer_id: str, message: dict[str, Any]) -> bool:
         """Best-effort, fire-and-forget push from any thread.
 
@@ -87,6 +113,14 @@ class ConnectionRegistry:
         connection can still drop before it runs). Callers must treat this
         purely as an optimization, never as proof the peer received it.
         """
+        if not self.is_connected(peer_id):
+            return False
+        if self.authorize_peer is not None:
+            try:
+                self.authorize_peer(peer_id)
+            except FaspError:
+                self.disconnect(peer_id)
+                return False
         try:
             wire = json.dumps(message, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             size = len(wire.encode("utf-8"))
@@ -136,5 +170,6 @@ class ConnectionRegistry:
             # Failed/slow subscribers must not create an unbounded number of
             # waiting tasks. Durable consumers can poll; volatile data is lost.
             self.unregister(peer_id, connection)
+            await self._close(connection)
         finally:
             self._release(peer_id, connection, size)

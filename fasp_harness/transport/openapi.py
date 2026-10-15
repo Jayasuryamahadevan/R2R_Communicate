@@ -18,7 +18,7 @@ def schema() -> dict[str, Any]:
         operation: dict[str, Any] = {
             "summary": summary,
             "requestBody": {"required": True, "content": {"application/json": {"schema": request_schema}}},
-            "responses": {"200": ok, "400": error, "401": error, "404": error, "413": error, "429": error, "503": error},
+            "responses": {"200": ok, "400": error, "401": error, "404": error, "408": error, "413": error, "429": error, "503": error},
         }
         if admin:
             operation["security"] = [{"AdminToken": []}]

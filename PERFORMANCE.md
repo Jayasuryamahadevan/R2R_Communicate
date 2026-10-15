@@ -156,6 +156,10 @@ the WebSocket path applies them to connection establishment and checks the
 signed per-peer budget on every frame. Larger payloads and long expiry
 windows consume more CPU/capacity; avoid setting every limit to its maximum.
 
+For the later concurrency/access fixes and measurements against `500d206`,
+see [transport reliability](TRANSPORT_RELIABILITY.md). The measurements below
+capture the preceding lightweight-profile change.
+
 ## Measurements and reproduction
 
 The committed [raw results](benchmarks/results/2026-10-15-linux-x86_64.json)

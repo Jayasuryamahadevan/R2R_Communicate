@@ -279,7 +279,7 @@ class FaspHarness:
         # Live push channels (websockets); see channels.py -- an
         # optimization layered on the durable queue above, never a
         # replacement for it.
-        self.channels = ConnectionRegistry()
+        self.channels = ConnectionRegistry(authorize_peer=self._peer)
         admin_path = state_dir / "admin_token"
         try:
             descriptor = os.open(admin_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -373,6 +373,7 @@ class FaspHarness:
         Re-pairing (`confirm_peer`) is what clears this.
         """
         self.revocations.revoke(peer_id, stamp(), reason, revocation_ref)
+        self.channels.disconnect(peer_id)
         return {"ok": True, "peer_id": peer_id, "revoked": True}
 
     def _peer(self, peer_id: str) -> dict[str, Any]:
