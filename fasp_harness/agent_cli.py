@@ -683,14 +683,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     add("status", "Show local identity, capability summary, peer states, and outbox.", cmd_status)
 
-    ping = add("ping", "Send an authenticated signed heartbeat to a paired device.", cmd_ping)
-    ping.add_argument("peer", help="Exact paired FASP system ID.")
-    deliver_flags(ping)
-
     def deliver_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--limit", type=int, default=32, help="Max due messages per drain cycle.")
         cmd.add_argument("--transport", choices=("auto", "http", "radio"), default="auto", help="Bearer for signed delivery; auto prefers a registered HTTPS endpoint.")
         network_flags(cmd)
+
+    ping = add("ping", "Send an authenticated signed heartbeat to a paired device.", cmd_ping)
+    ping.add_argument("peer", help="Exact paired FASP system ID.")
+    deliver_flags(ping)
 
     def message_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("peer", help="Destination's exact paired FASP system ID.")
