@@ -45,7 +45,8 @@ def run(iterations: int, payload_bytes: int) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         alice = FaspHarness(root / "alice", "alice", "http://local-alice")
-        bob = FaspHarness(root / "bob", "bob", "http://local-bob", rate_limit_burst=iterations * 6 + 100)
+        bob = FaspHarness(root / "bob", "bob", "http://local-bob", rate_limit_burst=iterations * 6 + 100,
+                          volatile_rate_limit_per_second=100000, volatile_rate_limit_burst=iterations * 6 + 100)
         try:
             hello = bob.hello(alice.id_card())
             bob.confirm_peer(alice.identity.system_id, hello["pair_code"])
@@ -75,6 +76,28 @@ def run(iterations: int, payload_bytes: int) -> dict[str, Any]:
                 raise AssertionError("Tampered record accepted")
 
             timings["reject_tampered_signature"] = measure(reject, iterations)
+            # Bound the benchmark by the default replay capacity. Build fresh
+            # one-second messages immediately before each timed accept; signing
+            # is deliberately reported separately from receiver processing.
+            count = min(iterations, 3000)
+            from fasp_harness.protocol.volatile import VolatileInbox
+
+            bob.volatile_inbox = VolatileInbox(4096)
+            samples = []
+            changes = bob.db.connection.total_changes
+            for _ in range(count):
+                envelope = alice.make_envelope("heartbeat", bob.identity.system_id, payload, delivery="volatile", receiver_instance=bob.instance_id)
+                start = time.perf_counter_ns()
+                bob.accept(envelope)
+                samples.append((time.perf_counter_ns() - start) / 1_000_000)
+            samples.sort()
+            timings["accept_volatile_heartbeat_no_writes"] = {
+                "samples": count, "unit": "ms", "mean": statistics.mean(samples),
+                **{key: samples[math.ceil(count * percentile) - 1] for key, percentile in (("p50", .5), ("p95", .95), ("p99", .99))},
+            }
+            volatile_writes = bob.db.connection.total_changes - changes
+            if volatile_writes:
+                raise AssertionError("Volatile benchmark wrote SQLite")
             sources = sorted((Path(__file__).parents[1] / "fasp_harness").rglob("*.py"))
             digest = hashlib.sha256()
             for source in sources:
@@ -86,6 +109,7 @@ def run(iterations: int, payload_bytes: int) -> dict[str, Any]:
                                 "cryptography": version("cryptography"), "rfc8785": version("rfc8785"), "sqlite": bob.db.read_one("SELECT sqlite_version() AS v")["v"]},
                 "source_sha256": digest.hexdigest(), "iterations": iterations, "payload_padding_bytes": payload_bytes,
                 "encoded_envelope_bytes": len(wire), "sqlite_synchronous": "NORMAL", "timings": timings,
+                "volatile_sqlite_row_changes": volatile_writes,
             }
         finally:
             alice.close()

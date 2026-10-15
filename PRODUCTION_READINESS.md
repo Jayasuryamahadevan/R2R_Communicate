@@ -10,6 +10,10 @@ validation evidence and remaining release gates. In particular, durable
 history retention/pagination, general signed responses, independent device
 testing and review of optional clients remain unfinished.
 
+[Explicit memory-only observations](PERFORMANCE.md) avoid per-packet journal
+writes for approved live streams. They intentionally have no durable replay;
+they are not substitutes for tasks, safety controls or retained delivery.
+
 ## System architecture and trust boundaries
 
     Enterprise or peer service (allowlisted, authenticated)

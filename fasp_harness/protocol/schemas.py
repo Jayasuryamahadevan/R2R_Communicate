@@ -32,6 +32,7 @@ def definitions() -> dict[str, Any]:
                 "causation_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 128},
                 "from": identity, "to": identity, "issued_at": timestamp, "expires_at": timestamp,
                 "nonce": name, "payload": {"type": "object"}, "signature": signature, "required_features": features,
+                "delivery": {"enum": ["durable", "volatile"]}, "receiver_instance": name,
             },
             "additionalProperties": True,
             "description": "Signature covers every field except signature. Unknown required_features MUST fail closed. Domain payload validation and authorization follow authentication.",
@@ -41,6 +42,7 @@ def definitions() -> dict[str, Any]:
             "properties": {
                 "fasp": {"const": PROTOCOL}, "type": {"const": "id_card"}, "system_id": identity,
                 "key_id": name, "public_key": {"type": "string", "pattern": r"^[A-Za-z0-9_-]{43}$"},
+                "instance_id": name,
                 "display_name": {"type": "string", "minLength": 1, "maxLength": 256},
                 "endpoints": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},
                 "issued_at": timestamp, "expires_at": timestamp, "signature": signature, "required_features": features,

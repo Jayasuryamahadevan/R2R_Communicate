@@ -8,7 +8,20 @@ and `FASP_INDUSTRIAL_ARCHITECTURE.md` states exactly what is and is not
 claimed as a result.
 """
 
-from .core import FaspHarness, SafeAdapter
-from .layers import Interaction, Layer, LayerGuard, LayerViolation
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .core import FaspHarness, SafeAdapter
+    from .layers import Interaction, Layer, LayerGuard, LayerViolation
 
 __all__ = ["FaspHarness", "Interaction", "Layer", "LayerGuard", "LayerViolation", "SafeAdapter"]
+
+
+def __getattr__(name: str) -> Any:
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = ".core" if name in {"FaspHarness", "SafeAdapter"} else ".layers"
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value

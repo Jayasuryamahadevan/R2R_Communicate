@@ -137,6 +137,8 @@ class StreamRegistry:
         self.repo = repo
         self._lock = threading.RLock()
         self._subscribers: dict[str, dict[str, dict[str, str]]] = {}
+        self.max_memory_streams = 128
+        self._memory_streams: dict[str, dict[str, Any]] = {}
 
     def subscribe(self, peer_id: str, stream_id: str, grant_ref: dict[str, str]) -> dict[str, Any]:
         stream = self.repo.get(stream_id)
@@ -168,6 +170,10 @@ class StreamRegistry:
             return {peer_id: dict(grant_ref) for peer_id, grant_ref in self._subscribers.get(stream_id, {}).items()}
 
     def open(self, owner: str, config: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            return self._open(owner, config)
+
+    def _open(self, owner: str, config: dict[str, Any]) -> dict[str, Any]:
         stream_id = config.get("stream_id") or str(uuid.uuid4())
         if not 1 <= config["max_payload_bytes"] <= MAX_PACKET_BYTES or not 1 <= config["window"] <= MAX_WINDOW or not 0 <= config["retention_packets"] <= MAX_RETENTION_PACKETS:
             raise FaspError("resource.exhausted", "Stream packet, window, or retention limit is invalid.")
@@ -177,16 +183,37 @@ class StreamRegistry:
         if existing is not None:
             if existing["owner"] == owner and existing["state"] == "open" and existing["contract"] == contract:
                 self._require_active(existing)
+                if contract.get("storage") == "memory" and stream_id not in self._memory_streams:
+                    raise FaspError("stream.session_expired", "Memory stream belongs to a previous process; open a fresh stream ID.")
                 return existing
             raise FaspError("stream.id_conflict", "Stream ID is already in use and cannot be reopened with a different contract.")
-        return self.repo.open(stream_id, owner, contract)
+        if contract.get("storage") == "memory":
+            current = now()
+            expired = [key for key, state in self._memory_streams.items() if parse_stamp(state["expires_at"]) <= current]
+            for key in expired:
+                self._memory_streams.pop(key, None)
+                self._subscribers.pop(key, None)
+            if len(self._memory_streams) >= self.max_memory_streams:
+                raise FaspError("resource.exhausted", "Memory stream capacity reached.")
+        opened = self.repo.open(stream_id, owner, contract)
+        if contract.get("storage") == "memory":
+            self._memory_streams[stream_id] = {"next_expected": 0, "last_sequence": -1, "last_packet_at": None, "expires_at": contract["expires_at"]}
+        return opened
 
-    def packet(self, owner: str, packet: dict[str, Any]) -> dict[str, Any]:
+    def packet(self, owner: str, packet: dict[str, Any], *, volatile: bool = False) -> dict[str, Any]:
         with self._lock:
             stream = self.repo.get(packet.get("stream_id"))
             self._require_active(stream)
             if stream["owner"] != owner:
                 raise FaspError("stream.not_open", "Stream is not open for this sender.")
+            memory = stream["contract"].get("storage") == "memory"
+            if memory != volatile:
+                raise FaspError("protocol.unsupported_delivery", "Packet delivery must match the stream's accepted storage mode.")
+            if memory:
+                state = self._memory_streams.get(stream["stream_id"])
+                if state is None:
+                    raise FaspError("stream.session_expired", "Memory stream belongs to a previous process; open a fresh stream ID.")
+                stream.update(state)
             sequence = packet.get("sequence")
             epoch = packet.get("epoch")
             if (
@@ -222,14 +249,14 @@ class StreamRegistry:
                 next_expected = sequence + 1
                 last_sequence = max(stream["last_sequence"], sequence)
                 received_text = received_at.isoformat(timespec="microseconds").replace("+00:00", "Z")
-                self.repo.advance(
-                    stream["stream_id"],
-                    next_expected,
-                    last_sequence,
-                    packet if stream["retention_packets"] else None,
-                    stream["retention_packets"],
-                    received_text,
-                )
+                if memory:
+                    self._memory_streams[stream["stream_id"]].update(next_expected=next_expected, last_sequence=last_sequence, last_packet_at=received_text)
+                else:
+                    self.repo.advance(
+                        stream["stream_id"], next_expected, last_sequence,
+                        packet if stream["retention_packets"] else None,
+                        stream["retention_packets"], received_text,
+                    )
                 stream["next_expected"], stream["last_sequence"] = next_expected, last_sequence
                 stream["last_packet_at"] = received_text
             return {"type": "stream.ack", "stream_id": stream["stream_id"], "epoch": 0, "ack_sequence": stream["next_expected"] - 1, "credit": stream["window"], "duplicate": duplicate}
@@ -268,6 +295,8 @@ class StreamRegistry:
     def pull(self, requester: str, stream_id: str, after_sequence: int) -> dict[str, Any]:
         stream = self.repo.get(stream_id)
         self._require_active(stream)
+        if stream["contract"].get("storage") == "memory":
+            raise FaspError("stream.replay_unavailable", "Memory stream packets are live-only and are not retained.")
         if requester == stream["owner"]:
             raise FaspError("auth.not_authorized", "A stream owner cannot subscribe to its own remote feed.")
         if requester not in stream["contract"].get("forward_to", []):
@@ -283,12 +312,14 @@ class StreamRegistry:
         self.repo.close(stream_id, reason)
         with self._lock:
             self._subscribers.pop(stream_id, None)
+            self._memory_streams.pop(stream_id, None)
         return {"type": "stream.closed", "stream_id": stream_id, "reason": reason}
 
     def expire(self, stream_id: str) -> None:
         self.repo.close(stream_id, "lease expired")
         with self._lock:
             self._subscribers.pop(stream_id, None)
+            self._memory_streams.pop(stream_id, None)
 
     def _require_active(self, stream: dict[str, Any] | None) -> None:
         if stream is None or stream["state"] != "open":

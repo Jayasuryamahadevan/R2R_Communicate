@@ -1,0 +1,1266 @@
+{
+  "scope": "alternating local CPU/SQLite benchmarks and fresh-process Linux peak RSS; no broker or network; separate persistent loopback TLS/mTLS RTT runs included",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+  "python": "3.12.14",
+  "runs": {
+    "baseline": [
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a71db5d63b3c6b179ac2da4755571fa476178448365a0133294a73ac5bf523c0",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.01412353,
+            "p50": 0.012228,
+            "p95": 0.015573,
+            "p99": 0.068081
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.019562574333333332,
+            "p50": 0.016465,
+            "p95": 0.028262,
+            "p99": 0.089963
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.057684891333333335,
+            "p50": 0.051086,
+            "p95": 0.084445,
+            "p99": 0.163151
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.143152857,
+            "p50": 0.127849,
+            "p95": 0.206605,
+            "p99": 0.325631
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.27891178433333336,
+            "p50": 0.259533,
+            "p95": 0.39222,
+            "p99": 0.553878
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.248198042,
+            "p50": 0.234165,
+            "p95": 0.316158,
+            "p99": 0.437877
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.19589694533333332,
+            "p50": 0.183411,
+            "p95": 0.245673,
+            "p99": 0.333373
+          }
+        }
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a71db5d63b3c6b179ac2da4755571fa476178448365a0133294a73ac5bf523c0",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.013397172666666667,
+            "p50": 0.011978,
+            "p95": 0.014332,
+            "p99": 0.056564
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.017902102666666666,
+            "p50": 0.015894,
+            "p95": 0.018257,
+            "p99": 0.068881
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.05961639466666667,
+            "p50": 0.050595,
+            "p95": 0.102751,
+            "p99": 0.198063
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.140194288,
+            "p50": 0.126707,
+            "p95": 0.198904,
+            "p99": 0.316919
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.296031949,
+            "p50": 0.270169,
+            "p95": 0.433741,
+            "p99": 0.620126
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.26220152566666666,
+            "p50": 0.239624,
+            "p95": 0.373663,
+            "p99": 0.525507
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.19795887933333334,
+            "p50": 0.184452,
+            "p95": 0.262598,
+            "p99": 0.420161
+          }
+        }
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a71db5d63b3c6b179ac2da4755571fa476178448365a0133294a73ac5bf523c0",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.014566955666666668,
+            "p50": 0.012499,
+            "p95": 0.017116,
+            "p99": 0.070724
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.019269693333333334,
+            "p50": 0.016334,
+            "p95": 0.024636,
+            "p99": 0.084295
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.057700811,
+            "p50": 0.051025,
+            "p95": 0.095852,
+            "p99": 0.164683
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.14536629433333334,
+            "p50": 0.127108,
+            "p95": 0.197531,
+            "p99": 0.339551
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.28515259633333334,
+            "p50": 0.264341,
+            "p95": 0.393661,
+            "p99": 0.569662
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.244717756,
+            "p50": 0.231833,
+            "p95": 0.306252,
+            "p99": 0.403716
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.196396928,
+            "p50": 0.184352,
+            "p95": 0.257901,
+            "p99": 0.37227
+          }
+        }
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a71db5d63b3c6b179ac2da4755571fa476178448365a0133294a73ac5bf523c0",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.012941628666666666,
+            "p50": 0.012038,
+            "p95": 0.013329,
+            "p99": 0.03371
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.018100614,
+            "p50": 0.015974,
+            "p95": 0.02046,
+            "p99": 0.075802
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.05664772666666667,
+            "p50": 0.050595,
+            "p95": 0.08743,
+            "p99": 0.159676
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.142582136,
+            "p50": 0.125655,
+            "p95": 0.211322,
+            "p99": 0.340623
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.28734855466666664,
+            "p50": 0.265562,
+            "p95": 0.395945,
+            "p99": 0.58942
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.263847457,
+            "p50": 0.241306,
+            "p95": 0.374834,
+            "p99": 0.535772
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.229301047,
+            "p50": 0.199524,
+            "p95": 0.368334,
+            "p99": 0.580538
+          }
+        }
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a71db5d63b3c6b179ac2da4755571fa476178448365a0133294a73ac5bf523c0",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.013361439333333334,
+            "p50": 0.012178,
+            "p95": 0.014862,
+            "p99": 0.046339
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.018244098333333333,
+            "p50": 0.016204,
+            "p95": 0.018458,
+            "p99": 0.064525
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.05741392733333334,
+            "p50": 0.050765,
+            "p95": 0.084985,
+            "p99": 0.157482
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.14547559633333335,
+            "p50": 0.127528,
+            "p95": 0.207166,
+            "p99": 0.335476
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.29727195133333334,
+            "p50": 0.271291,
+            "p95": 0.421002,
+            "p99": 0.594539
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.269120731,
+            "p50": 0.248137,
+            "p95": 0.384078,
+            "p99": 0.506258
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.20239130466666666,
+            "p50": 0.186115,
+            "p95": 0.278652,
+            "p99": 0.389416
+          }
+        }
+      }
+    ],
+    "candidate": [
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a3ccc8625abbbdbb26852bcc3f19384ae6cbc578fa3085fc24e659adfa926fba",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.012743500333333333,
+            "p50": 0.012228,
+            "p95": 0.012959,
+            "p99": 0.02721
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.016854582333333333,
+            "p50": 0.016384,
+            "p95": 0.016935,
+            "p99": 0.031216
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.054271032,
+            "p50": 0.050545,
+            "p95": 0.06791,
+            "p99": 0.119847
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.12965163533333332,
+            "p50": 0.123412,
+            "p95": 0.156621,
+            "p99": 0.213255
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.222128502,
+            "p50": 0.208037,
+            "p95": 0.294765,
+            "p99": 0.444297
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.21781252566666667,
+            "p50": 0.204052,
+            "p95": 0.288086,
+            "p99": 0.379811
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.164964861,
+            "p50": 0.153677,
+            "p95": 0.215008,
+            "p99": 0.295497
+          },
+          "accept_volatile_heartbeat_no_writes": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.21103181,
+            "p50": 0.190671,
+            "p95": 0.287114,
+            "p99": 0.438998
+          }
+        },
+        "volatile_sqlite_row_changes": 0
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a3ccc8625abbbdbb26852bcc3f19384ae6cbc578fa3085fc24e659adfa926fba",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.013428425333333334,
+            "p50": 0.012428,
+            "p95": 0.01387,
+            "p99": 0.036474
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.017911788666666668,
+            "p50": 0.016184,
+            "p95": 0.018397,
+            "p99": 0.073208
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.057505349666666664,
+            "p50": 0.051385,
+            "p95": 0.082152,
+            "p99": 0.156041
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.13430559566666667,
+            "p50": 0.122572,
+            "p95": 0.183391,
+            "p99": 0.274065
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.23359756633333334,
+            "p50": 0.210021,
+            "p95": 0.336837,
+            "p99": 0.515221
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.24061827233333333,
+            "p50": 0.207456,
+            "p95": 0.35145,
+            "p99": 0.994339
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.185641653,
+            "p50": 0.15572,
+            "p95": 0.27088,
+            "p99": 1.160274
+          },
+          "accept_volatile_heartbeat_no_writes": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.2586798396666667,
+            "p50": 0.204512,
+            "p95": 0.404688,
+            "p99": 1.048129
+          }
+        },
+        "volatile_sqlite_row_changes": 0
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a3ccc8625abbbdbb26852bcc3f19384ae6cbc578fa3085fc24e659adfa926fba",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.012680078333333334,
+            "p50": 0.012289,
+            "p95": 0.01291,
+            "p99": 0.025688
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.017038103333333332,
+            "p50": 0.016404,
+            "p95": 0.017186,
+            "p99": 0.031777
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.05254884766666667,
+            "p50": 0.050575,
+            "p95": 0.065186,
+            "p99": 0.078957
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.127896668,
+            "p50": 0.122221,
+            "p95": 0.142541,
+            "p99": 0.213836
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.229929881,
+            "p50": 0.212094,
+            "p95": 0.316959,
+            "p99": 0.461032
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.21714598566666668,
+            "p50": 0.201118,
+            "p95": 0.307514,
+            "p99": 0.429125
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.166332837,
+            "p50": 0.154729,
+            "p95": 0.219314,
+            "p99": 0.295306
+          },
+          "accept_volatile_heartbeat_no_writes": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.198172615,
+            "p50": 0.186786,
+            "p95": 0.251051,
+            "p99": 0.340733
+          }
+        },
+        "volatile_sqlite_row_changes": 0
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a3ccc8625abbbdbb26852bcc3f19384ae6cbc578fa3085fc24e659adfa926fba",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.013058609333333334,
+            "p50": 0.012108,
+            "p95": 0.014581,
+            "p99": 0.036845
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.016804746,
+            "p50": 0.016224,
+            "p95": 0.016975,
+            "p99": 0.031207
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.052684177666666665,
+            "p50": 0.050444,
+            "p95": 0.064846,
+            "p99": 0.085276
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.12777617466666666,
+            "p50": 0.123503,
+            "p95": 0.141198,
+            "p99": 0.18272
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.231073618,
+            "p50": 0.210732,
+            "p95": 0.320934,
+            "p99": 0.523253
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.22275485666666667,
+            "p50": 0.204232,
+            "p95": 0.312482,
+            "p99": 0.451427
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.16527366466666665,
+            "p50": 0.152916,
+            "p95": 0.220736,
+            "p99": 0.302848
+          },
+          "accept_volatile_heartbeat_no_writes": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.205117562,
+            "p50": 0.190131,
+            "p95": 0.279433,
+            "p99": 0.419169
+          }
+        },
+        "volatile_sqlite_row_changes": 0
+      },
+      {
+        "scope": "single-process local CPU/SQLite microbenchmark; no network, TLS, robot, or external adapter",
+        "environment": {
+          "python": "3.12.14",
+          "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+          "machine": "x86_64",
+          "cryptography": "50.0.1",
+          "rfc8785": "0.1.4",
+          "sqlite": "3.53.1"
+        },
+        "source_sha256": "a3ccc8625abbbdbb26852bcc3f19384ae6cbc578fa3085fc24e659adfa926fba",
+        "iterations": 3000,
+        "payload_padding_bytes": 256,
+        "encoded_envelope_bytes": 855,
+        "sqlite_synchronous": "NORMAL",
+        "timings": {
+          "decode": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.015217687,
+            "p50": 0.012298,
+            "p95": 0.017326,
+            "p99": 0.080989
+          },
+          "canonicalize_unsigned": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.018924928666666667,
+            "p50": 0.016364,
+            "p95": 0.021581,
+            "p99": 0.076714
+          },
+          "sign": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.059706949333333335,
+            "p50": 0.051065,
+            "p95": 0.109111,
+            "p99": 0.200015
+          },
+          "verify": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.152915436,
+            "p50": 0.129762,
+            "p95": 0.242468,
+            "p99": 0.404838
+          },
+          "accept_fresh_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.29403352033333335,
+            "p50": 0.248838,
+            "p95": 0.485568,
+            "p99": 0.91997
+          },
+          "accept_duplicate_heartbeat_with_sqlite": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.26893748933333333,
+            "p50": 0.230901,
+            "p95": 0.440391,
+            "p99": 0.688467
+          },
+          "reject_tampered_signature": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.17324557266666665,
+            "p50": 0.159836,
+            "p95": 0.239694,
+            "p99": 0.319402
+          },
+          "accept_volatile_heartbeat_no_writes": {
+            "samples": 3000,
+            "unit": "ms",
+            "mean": 0.22051150833333333,
+            "p50": 0.195149,
+            "p95": 0.292182,
+            "p99": 0.43995
+          }
+        },
+        "volatile_sqlite_row_changes": 0
+      }
+    ]
+  },
+  "footprint": {
+    "baseline": {
+      "package": [
+        {
+          "startup_ms": 70.09870299998511,
+          "peak_rss_kib": 28024,
+          "loaded_modules": 281
+        },
+        {
+          "startup_ms": 62.952402999599144,
+          "peak_rss_kib": 27564,
+          "loaded_modules": 281
+        },
+        {
+          "startup_ms": 60.5592639999486,
+          "peak_rss_kib": 28556,
+          "loaded_modules": 281
+        },
+        {
+          "startup_ms": 66.04382299974532,
+          "peak_rss_kib": 27760,
+          "loaded_modules": 281
+        },
+        {
+          "startup_ms": 65.47757499993168,
+          "peak_rss_kib": 27424,
+          "loaded_modules": 281
+        }
+      ],
+      "help": [
+        {
+          "startup_ms": 134.98874000015348,
+          "peak_rss_kib": 37648,
+          "loaded_modules": 451
+        },
+        {
+          "startup_ms": 140.015424000012,
+          "peak_rss_kib": 37608,
+          "loaded_modules": 451
+        },
+        {
+          "startup_ms": 138.93374799999947,
+          "peak_rss_kib": 37524,
+          "loaded_modules": 451
+        },
+        {
+          "startup_ms": 159.93029000037495,
+          "peak_rss_kib": 37808,
+          "loaded_modules": 451
+        },
+        {
+          "startup_ms": 165.74086699984036,
+          "peak_rss_kib": 38120,
+          "loaded_modules": 451
+        }
+      ],
+      "node": [
+        {
+          "startup_ms": 67.89450699989175,
+          "peak_rss_kib": 30824,
+          "loaded_modules": 282
+        },
+        {
+          "startup_ms": 71.83614699988539,
+          "peak_rss_kib": 31648,
+          "loaded_modules": 282
+        },
+        {
+          "startup_ms": 71.44612000001871,
+          "peak_rss_kib": 30828,
+          "loaded_modules": 282
+        },
+        {
+          "startup_ms": 81.99683599968921,
+          "peak_rss_kib": 30828,
+          "loaded_modules": 282
+        },
+        {
+          "startup_ms": 75.49994300006801,
+          "peak_rss_kib": 31496,
+          "loaded_modules": 282
+        }
+      ]
+    },
+    "candidate": {
+      "package": [
+        {
+          "startup_ms": 1.843403999828297,
+          "peak_rss_kib": 12416,
+          "loaded_modules": 97
+        },
+        {
+          "startup_ms": 2.358414000354969,
+          "peak_rss_kib": 12416,
+          "loaded_modules": 97
+        },
+        {
+          "startup_ms": 2.0041519996993884,
+          "peak_rss_kib": 12416,
+          "loaded_modules": 97
+        },
+        {
+          "startup_ms": 2.4114620000545983,
+          "peak_rss_kib": 12416,
+          "loaded_modules": 97
+        },
+        {
+          "startup_ms": 1.9468669997877441,
+          "peak_rss_kib": 12544,
+          "loaded_modules": 97
+        }
+      ],
+      "help": [
+        {
+          "startup_ms": 49.56471900004544,
+          "peak_rss_kib": 26008,
+          "loaded_modules": 210
+        },
+        {
+          "startup_ms": 46.649448000152915,
+          "peak_rss_kib": 25560,
+          "loaded_modules": 210
+        },
+        {
+          "startup_ms": 50.639223999951355,
+          "peak_rss_kib": 25876,
+          "loaded_modules": 210
+        },
+        {
+          "startup_ms": 53.026029000193375,
+          "peak_rss_kib": 25976,
+          "loaded_modules": 210
+        },
+        {
+          "startup_ms": 51.58413700019082,
+          "peak_rss_kib": 25640,
+          "loaded_modules": 210
+        }
+      ],
+      "node": [
+        {
+          "startup_ms": 60.30209299979106,
+          "peak_rss_kib": 29356,
+          "loaded_modules": 262
+        },
+        {
+          "startup_ms": 53.21258399999351,
+          "peak_rss_kib": 29964,
+          "loaded_modules": 262
+        },
+        {
+          "startup_ms": 53.923718000078225,
+          "peak_rss_kib": 30320,
+          "loaded_modules": 262
+        },
+        {
+          "startup_ms": 54.0605470000628,
+          "peak_rss_kib": 30328,
+          "loaded_modules": 262
+        },
+        {
+          "startup_ms": 58.4931659996073,
+          "peak_rss_kib": 29964,
+          "loaded_modules": 262
+        }
+      ]
+    }
+  },
+  "channel": {
+    "baseline": [
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.777402699,
+            "p50": 0.73064,
+            "p95": 1.056311,
+            "p99": 1.508068,
+            "sqlite_row_changes_including_warmup": 2040
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.725862762,
+            "p50": 0.701977,
+            "p95": 0.943334,
+            "p99": 1.101848,
+            "sqlite_row_changes_including_warmup": 2040
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.726874438,
+            "p50": 0.707877,
+            "p95": 0.9133,
+            "p99": 1.100157,
+            "sqlite_row_changes_including_warmup": 2040
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.860234107,
+            "p50": 0.775686,
+            "p95": 1.242416,
+            "p99": 2.413477,
+            "sqlite_row_changes_including_warmup": 2040
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.765290687,
+            "p50": 0.737034,
+            "p95": 0.954741,
+            "p99": 1.179653,
+            "sqlite_row_changes_including_warmup": 2040
+          }
+        }
+      }
+    ],
+    "candidate": [
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.748943047,
+            "p50": 0.686424,
+            "p95": 1.00187,
+            "p99": 2.199089,
+            "sqlite_row_changes_including_warmup": 1020
+          },
+          "volatile": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.717086854,
+            "p50": 0.655198,
+            "p95": 0.964425,
+            "p99": 2.140413,
+            "sqlite_row_changes_including_warmup": 0
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.704556659,
+            "p50": 0.669619,
+            "p95": 0.930284,
+            "p99": 1.222566,
+            "sqlite_row_changes_including_warmup": 1020
+          },
+          "volatile": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.660446334,
+            "p50": 0.638774,
+            "p95": 0.831859,
+            "p99": 1.120485,
+            "sqlite_row_changes_including_warmup": 0
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.674016375,
+            "p50": 0.62946,
+            "p95": 0.837778,
+            "p99": 1.018114,
+            "sqlite_row_changes_including_warmup": 1020
+          },
+          "volatile": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.671674966,
+            "p50": 0.642249,
+            "p95": 0.90032,
+            "p99": 1.08327,
+            "sqlite_row_changes_including_warmup": 0
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.695939164,
+            "p50": 0.666235,
+            "p95": 0.890225,
+            "p99": 1.291179,
+            "sqlite_row_changes_including_warmup": 1020
+          },
+          "volatile": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.689587617,
+            "p50": 0.648648,
+            "p95": 0.897847,
+            "p99": 1.608836,
+            "sqlite_row_changes_including_warmup": 0
+          }
+        }
+      },
+      {
+        "scope": "Persistent TLS 1.3/mTLS WebSocket heartbeat RTT on loopback.\n\nBoth peers share this process/host. Excludes pairing, handshake and signing\nfrom timed RTT; includes framed send, server validation/storage and response.\nRun: python -m benchmarks.channel --iterations 1000\n",
+        "platform": "Linux-6.18.44-x86_64-with-glibc2.39",
+        "python": "3.12.14",
+        "transport": "persistent loopback WebSocket, TLS 1.3, mutual certificates, compression disabled",
+        "timings": {
+          "durable": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.692348742,
+            "p50": 0.665553,
+            "p95": 0.853311,
+            "p99": 1.051153,
+            "sqlite_row_changes_including_warmup": 1020
+          },
+          "volatile": {
+            "samples": 1000,
+            "unit": "ms",
+            "mean": 0.659410867,
+            "p50": 0.632344,
+            "p95": 0.810378,
+            "p99": 1.242326,
+            "sqlite_row_changes_including_warmup": 0
+          }
+        }
+      }
+    ]
+  },
+  "median": {
+    "baseline": {
+      "decode": {
+        "p50": 0.012178,
+        "p95": 0.014862,
+        "p99": 0.056564
+      },
+      "canonicalize_unsigned": {
+        "p50": 0.016204,
+        "p95": 0.02046,
+        "p99": 0.075802
+      },
+      "sign": {
+        "p50": 0.050765,
+        "p95": 0.08743,
+        "p99": 0.163151
+      },
+      "verify": {
+        "p50": 0.127108,
+        "p95": 0.206605,
+        "p99": 0.335476
+      },
+      "accept_fresh_heartbeat_with_sqlite": {
+        "p50": 0.265562,
+        "p95": 0.395945,
+        "p99": 0.58942
+      },
+      "accept_duplicate_heartbeat_with_sqlite": {
+        "p50": 0.239624,
+        "p95": 0.373663,
+        "p99": 0.506258
+      },
+      "reject_tampered_signature": {
+        "p50": 0.184452,
+        "p95": 0.262598,
+        "p99": 0.389416
+      }
+    },
+    "candidate": {
+      "decode": {
+        "p50": 0.012289,
+        "p95": 0.01387,
+        "p99": 0.036474
+      },
+      "canonicalize_unsigned": {
+        "p50": 0.016364,
+        "p95": 0.017186,
+        "p99": 0.031777
+      },
+      "sign": {
+        "p50": 0.050575,
+        "p95": 0.06791,
+        "p99": 0.119847
+      },
+      "verify": {
+        "p50": 0.123412,
+        "p95": 0.156621,
+        "p99": 0.213836
+      },
+      "accept_fresh_heartbeat_with_sqlite": {
+        "p50": 0.210732,
+        "p95": 0.320934,
+        "p99": 0.515221
+      },
+      "accept_duplicate_heartbeat_with_sqlite": {
+        "p50": 0.204232,
+        "p95": 0.312482,
+        "p99": 0.451427
+      },
+      "reject_tampered_signature": {
+        "p50": 0.154729,
+        "p95": 0.220736,
+        "p99": 0.302848
+      },
+      "accept_volatile_heartbeat_no_writes": {
+        "p50": 0.190671,
+        "p95": 0.287114,
+        "p99": 0.438998
+      }
+    }
+  }
+}

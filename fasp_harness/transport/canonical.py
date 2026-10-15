@@ -10,13 +10,15 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ..core import MAX_INLINE_BYTES, PROTOCOL, FaspHarness
-from ..protocol.contracts import validate_json
+from ..protocol.contracts import MAX_RECORD_BYTES, PROTOCOL, validate_json
 from ..protocol.errors import FaspError
 
-MAX_ENVELOPE_BYTES = MAX_INLINE_BYTES
+if TYPE_CHECKING:
+    from ..core import FaspHarness
+
+MAX_ENVELOPE_BYTES = MAX_RECORD_BYTES
 RECEIPT_WRAPPED_KINDS = frozenset({"intent.propose", "task.cancel", "artifact.fetch"})
 
 

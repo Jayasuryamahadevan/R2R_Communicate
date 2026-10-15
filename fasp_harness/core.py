@@ -17,17 +17,15 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, NoReturn, Protocol
+from typing import TYPE_CHECKING, Any, NoReturn, Protocol
 
 from .artifacts.store import ArtifactStore
 from .audit.chain import AuditChain
 from .channels import ConnectionRegistry
-from .crypto.envelope import FaspError, b64, sign, unb64, unsigned, verify
+from .crypto.envelope import FaspError, _verify_canonical, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
-from .fleet.model import Mission
-from .fleet.service import MissionService
 from .layers import CapabilityDeclaration, LayerGuard, describe_layers
 from .observability.metrics import MetricsRegistry
 from .platforms import runtime_profile
@@ -48,8 +46,8 @@ from .protocol.contracts import (
     wire_support,
 )
 from .protocol.errors import AdmissionRejected
+from .protocol.volatile import MAX_VOLATILE_LIFETIME_S, VOLATILE_FEATURE, VolatileInbox
 from .robotics import LocalSafetyGate, ReservationBook
-from .safety.interlock import SafetySupervisor
 from .storage.db import Database
 from .storage.grants_repo import GrantsRepo
 from .storage.inbox_repo import InboxRepo
@@ -61,6 +59,10 @@ from .storage.tasks_repo import TERMINAL_STATES, TasksRepo
 from .storage.work_items_repo import WorkItemsRepo
 from .streaming import StreamRegistry
 from .timestamps import now, parse_stamp, stamp
+
+if TYPE_CHECKING:
+    from .fleet.service import MissionService
+    from .safety.interlock import SafetySupervisor
 
 PEER_PAIRING_VALIDITY = timedelta(days=90)
 DEFAULT_TASK_LEASE = timedelta(seconds=30)
@@ -223,12 +225,16 @@ class FaspHarness:
         missions: MissionService | None = None,
         layer_guard: LayerGuard | None = None,
         stream_sharing: StreamSharingPolicy | None = None,
+        volatile_rate_limit_per_second: float = 1000.0,
+        volatile_rate_limit_burst: int = 256,
     ) -> None:
         # JsonState still backs receipts.json and the admin_token file --
         # everything else (peers, work items, grants, streams, reservations,
         # artifacts) is on SQLite as of Phase 7.
         self.state = JsonState(state_dir)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
+        self.instance_id = str(uuid.uuid4())
+        self.volatile_inbox = VolatileInbox()
         self.db = Database(state_dir / "fasp.db")
         self.audit = AuditChain(self.db, self.identity.system_id)
         self.peers = PeersRepo(self.db, self.audit)
@@ -239,6 +245,7 @@ class FaspHarness:
         self.revocations = RevocationsRepo(self.db, self.audit)
         self.artifacts = ArtifactStore(self.db, state_dir)
         self.rate_limiter = TokenBucketLimiter(rate_limit_per_second, rate_limit_burst)
+        self.volatile_rate_limiter = TokenBucketLimiter(volatile_rate_limit_per_second, volatile_rate_limit_burst)
         self.metrics = MetricsRegistry()
         self.display_name = display_name
         self.base_url = base_url.rstrip("/")
@@ -297,6 +304,7 @@ class FaspHarness:
         exists to recover from; this path exists so a clean shutdown
         doesn't need that recovery in the first place)."""
         self._executor.shutdown(wait=True, cancel_futures=False)
+        self.volatile_inbox.clear()
         self.db.close()
 
     def id_card(self) -> dict[str, Any]:
@@ -304,6 +312,7 @@ class FaspHarness:
             "fasp": PROTOCOL,
             "type": "id_card",
             "system_id": self.identity.system_id,
+            "instance_id": self.instance_id,
             "display_name": self.display_name,
             "runtime": runtime_profile(),
             "public_key": self.identity.public_b64,
@@ -327,11 +336,11 @@ class FaspHarness:
 
     @staticmethod
     def verify_id_card(card: dict[str, Any]) -> None:
-        issued, expires = id_card_shape(card)
+        issued, expires, content = id_card_shape(card)
         current = now()
         if expires <= current or (issued is not None and issued > current + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS)):
             raise FaspError("auth.card_expired", "ID card has expired.")
-        verify(card, card["public_key"])
+        _verify_canonical(card, card["public_key"], content)
         raw = unb64(card["public_key"])
         expected = "fasp:system:" + b64(hashlib.sha256(raw).digest())
         if card["system_id"] != expected:
@@ -367,9 +376,9 @@ class FaspHarness:
         return {"ok": True, "peer_id": peer_id, "revoked": True}
 
     def _peer(self, peer_id: str) -> dict[str, Any]:
-        if self.revocations.is_revoked(peer_id):
+        peer = self.peers.authentication(peer_id)
+        if peer["revoked"]:
             raise FaspError("auth.peer_revoked", "Peer's identity has been revoked; re-pairing is required.")
-        peer = self.peers.get(peer_id)
         if not peer or peer.get("state") != "paired":
             raise FaspError("auth.not_paired", "Peer is not paired and authorized.")
         if peer.get("expires_at") and parse_stamp(peer["expires_at"]) <= now():
@@ -410,7 +419,7 @@ class FaspHarness:
             raise FaspError("schema.invalid", "Grant does not exist or is already revoked.")
         return {"ok": True, "grant_id": grant_id, "revoked": True}
 
-    def make_envelope(self, kind: str, to: str, payload: dict[str, Any], conversation_id: str | None = None, causation_id: str | None = None) -> dict[str, Any]:
+    def make_envelope(self, kind: str, to: str, payload: dict[str, Any], conversation_id: str | None = None, causation_id: str | None = None, *, delivery: str = "durable", receiver_instance: str | None = None) -> dict[str, Any]:
         issued = now()
         envelope = {
             "fasp": PROTOCOL,
@@ -425,27 +434,43 @@ class FaspHarness:
             "nonce": b64(secrets.token_bytes(12)),
             "payload": payload,
         }
+        if kind == "stream.open" and payload.get("storage") == "memory":
+            envelope["required_features"] = [VOLATILE_FEATURE]
+        if delivery == "volatile":
+            envelope.update({
+                "delivery": "volatile", "receiver_instance": receiver_instance,
+                "required_features": [VOLATILE_FEATURE],
+                "expires_at": stamp(issued + timedelta(seconds=1)),
+            })
+        elif delivery != "durable":
+            raise FaspError("schema.invalid", "Envelope delivery must be durable or volatile.")
         return sign(envelope, self.identity.private, self.identity.kid)
 
-    def _verify_envelope(self, envelope: dict[str, Any]) -> dict[str, Any]:
+    def _verify_envelope(self, envelope: dict[str, Any]) -> tuple[dict[str, Any], bytes, datetime]:
         """Schema, audience, timing, signature, and per-peer rate limit only
         -- kind support/dispatch is `accept()`'s job, not this method's, so
         there is exactly one place that decides what a `kind` means."""
-        issued, expires = envelope_shape(envelope)
+        issued, expires, content = envelope_shape(envelope)
         if envelope["to"] != self.identity.system_id:
             raise FaspError("auth.wrong_audience", "Envelope is addressed to another system.")
         current = now()
         if expires <= current or issued > current + timedelta(seconds=MAX_CLOCK_SKEW_SECONDS):
             raise FaspError("auth.envelope_expired", "Envelope is expired or issued too far in the future.")
+        if envelope.get("delivery") == "volatile":
+            if envelope["receiver_instance"] != self.instance_id:
+                raise FaspError("auth.wrong_instance", "Volatile message targets a different receiver process; refresh its profile.")
+            if expires > current + timedelta(seconds=MAX_VOLATILE_LIFETIME_S):
+                raise FaspError("auth.envelope_expired", "Volatile expiry exceeds the receiver's five-second window.")
         peer = self._peer(envelope["from"])
-        verify(envelope, peer["card"]["public_key"], expected_kid=peer["card"]["signature"]["kid"])
+        _verify_canonical(envelope, peer["card"]["public_key"], content, expected_kid=peer["card"]["signature"]["kid"])
         # Rate-limited by authenticated peer_id, after signature verification
         # -- an unauthenticated flood is the transport layer's job (ss10);
         # this is the per-relationship budget once we know who is asking.
-        if not self.rate_limiter.allow(envelope["from"]):
+        limiter = self.volatile_rate_limiter if envelope.get("delivery") == "volatile" else self.rate_limiter
+        if not limiter.allow(envelope["from"]):
             self.metrics.increment("fasp_rate_limited_total")
             raise FaspError("resource.exhausted", "Peer exceeded its request rate limit.")
-        return peer
+        return peer, content, expires
 
     # kind -> bound handler method name, `(envelope, peer) -> dict`. This is
     # the ONE dispatch table for the whole protocol -- every transport
@@ -494,7 +519,7 @@ class FaspHarness:
         original recorded response instead of re-applying its effect a
         second time.
         """
-        peer = self._verify_envelope(envelope)
+        peer, content, expires = self._verify_envelope(envelope)
         kind = envelope["kind"]
         if expected_kind is not None and kind != expected_kind:
             raise FaspError("protocol.unsupported_kind", f"Endpoint requires {expected_kind}.")
@@ -502,7 +527,21 @@ class FaspHarness:
         if handler_name is None:
             raise FaspError("protocol.unsupported_kind", f"Unsupported envelope kind: {kind!r}.")
         payload_shape(kind, envelope["payload"])
+        if kind == "stream.open" and envelope["payload"].get("storage") == "memory" and VOLATILE_FEATURE not in envelope.get("required_features", []):
+            raise FaspError("protocol.unsupported_delivery", "Memory streams require the volatile protocol feature.")
         self.metrics.increment("fasp_envelopes_total", kind=kind)
+        if envelope.get("delivery") == "volatile":
+            return self.volatile_inbox.accept(
+                envelope["message_id"], hashlib.sha256(content).digest(), expires.timestamp(),
+                lambda: getattr(self, handler_name)(envelope, peer),
+            )
+        if kind == "heartbeat":
+            # No domain effects: persist the request and its result together.
+            # Durable replay semantics stay identical, with one transaction.
+            response = self._handle_heartbeat(envelope, peer)
+            if not self.inbox.insert_if_new(envelope, stamp(), response=response):
+                return True, self.inbox.get_response(envelope["message_id"])
+            return False, response
         if not self.inbox.insert_if_new(envelope, stamp()):
             return True, self.inbox.get_response(envelope["message_id"])
         try:
@@ -797,6 +836,10 @@ class FaspHarness:
             allowed_modes = constraints["delivery_modes"]
             if not isinstance(allowed_modes, list) or any(not isinstance(item, str) for item in allowed_modes) or contract["delivery"] not in allowed_modes:
                 raise FaspError("auth.not_authorized", "Stream delivery mode exceeds the grant constraints.")
+        if "storage_modes" in constraints:
+            allowed_storage = constraints["storage_modes"]
+            if not isinstance(allowed_storage, list) or any(not isinstance(item, str) for item in allowed_storage) or contract.get("storage", "disk") not in allowed_storage:
+                raise FaspError("auth.not_authorized", "Stream storage mode exceeds the grant constraints.")
         for limit_name, field in (
             ("max_rate_hz", "max_rate_hz"),
             ("max_duration_s", "duration_s"),
@@ -831,7 +874,7 @@ class FaspHarness:
         if capability != contract["capability"] or not capability_allowed(capability, peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Peer is not authorized for this stream capability.")
         rule, current_contract = self.stream_sharing.authorize_open(stream["owner"], self.identity.system_id, contract)
-        for key in ("capability", "purpose", "fields", "content_type", "delivery", "max_rate_hz", "duration_s", "expires_at", "max_payload_bytes", "window", "retention_packets", "forward_to", "recipient"):
+        for key in ("capability", "purpose", "fields", "content_type", "delivery", "storage", "max_rate_hz", "duration_s", "expires_at", "max_payload_bytes", "window", "retention_packets", "forward_to", "recipient"):
             if current_contract.get(key) != contract.get(key):
                 raise FaspError("auth.not_authorized", "Stream contract no longer matches local sharing policy.")
 
@@ -893,7 +936,7 @@ class FaspHarness:
         self._authorize_stream(envelope, peer)
         payload = envelope["payload"]
         self._authorize_existing_stream(envelope, peer, payload.get("stream_id"))
-        ack = self.streams.packet(envelope["from"], payload)
+        ack = self.streams.packet(envelope["from"], payload, volatile=envelope.get("delivery") == "volatile")
         # Live push (ss13 streaming profile): a genuinely new (non-
         # duplicate, non-retransmit) packet is fanned out immediately to
         # every subscriber with an open channel -- `stream.pull` remains
@@ -916,6 +959,9 @@ class FaspHarness:
                         "forwarder_peer": self.identity.system_id,
                         "recipient_peer": subscriber,
                         "packet": payload,
+                        "storage": stream["contract"].get("storage", "disk"),
+                        "forwarder_instance": self.instance_id,
+                        "expires_at": envelope["expires_at"],
                     },
                     self.identity.private,
                     self.identity.kid,
@@ -1079,6 +1125,8 @@ class FaspHarness:
         self._require_prefix(peer, "fleet.mission.v1")
         if self.missions is None:
             raise FaspError("capability.unavailable", "This system does not coordinate missions.")
+        from .fleet.model import Mission
+
         return self.missions.submit(Mission.from_dict(envelope["payload"], requested_by=envelope["from"]))
 
     def mission_cancel(self, envelope: dict[str, Any]) -> dict[str, Any]:

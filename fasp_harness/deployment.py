@@ -295,6 +295,8 @@ def build_node(
     rate_limit_burst: int = 20,
     max_inflight_tasks: int = 256,
     adapter_concurrency: int = 8,
+    volatile_rate_limit_per_second: float = 1000.0,
+    volatile_rate_limit_burst: int = 256,
 ) -> Node:
     """Wire a complete node. Refuses to build an unacceptable deployment."""
     supervisor = _build_supervisor(config)
@@ -334,6 +336,8 @@ def build_node(
         adapter_concurrency=adapter_concurrency,
         max_inflight_tasks=max_inflight_tasks,
         supervisor=supervisor,
+        volatile_rate_limit_per_second=volatile_rate_limit_per_second,
+        volatile_rate_limit_burst=volatile_rate_limit_burst,
         layer_guard=LayerGuard(),
         stream_sharing=StreamSharingPolicy.from_config(config.stream_sharing),
     )

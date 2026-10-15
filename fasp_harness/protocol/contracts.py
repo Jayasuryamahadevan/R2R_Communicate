@@ -14,6 +14,7 @@ from typing import Any
 from ..crypto.canonical import canonicalize
 from ..timestamps import parse_stamp
 from .errors import FaspError
+from .volatile import MAX_VOLATILE_LIFETIME_S, VOLATILE_FEATURE, VOLATILE_KINDS
 
 PROTOCOL = "fasp/1.0"
 WIRE_PROFILE = "fasp-json-ed25519-v1"
@@ -21,7 +22,7 @@ MAX_RECORD_BYTES = 64 * 1024
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 8192
 MAX_CLOCK_SKEW_SECONDS = 60
-SUPPORTED_FEATURES = frozenset({"fasp.required-features.v1"})
+SUPPORTED_FEATURES = frozenset({"fasp.required-features.v1", VOLATILE_FEATURE})
 SYSTEM_ID_PATTERN = r"^fasp:system:[A-Za-z0-9_-]{43}$"
 
 
@@ -70,17 +71,22 @@ def validate_json(value: Any) -> None:
             invalid("Only JSON values are accepted.")
 
 
-def record(value: Any, required: set[str]) -> dict[str, Any]:
+def record(value: Any, required: set[str]) -> bytes:
     if not isinstance(value, dict) or not required.issubset(value):
         invalid("Record misses required FASP fields.")
     validate_json(value)
-    if len(canonicalize(value)) > MAX_RECORD_BYTES:
+    # Serialize the signed content once. Its canonical bytes are also the
+    # verifier's input; computing the full record and then unsigned content
+    # duplicated the most expensive pure-Python work on every request.
+    content = canonicalize({key: item for key, item in value.items() if key != "signature"})
+    signature_bytes = canonicalize(value["signature"])
+    if len(content) + len(b',"signature":') + len(signature_bytes) > MAX_RECORD_BYTES:
         raise FaspError("resource.too_large", "Record exceeds 64 KiB.")
     if not isinstance(value["fasp"], str):
         invalid("fasp must be a protocol version string.")
     if value["fasp"] != PROTOCOL:
         raise FaspError("protocol.unsupported_version", "Protocol version is not supported.")
-    return value
+    return content
 
 
 def timestamp(value: Any, name: str) -> datetime:
@@ -119,8 +125,22 @@ def required_features(value: dict[str, Any]) -> None:
         raise FaspError("protocol.unsupported_feature", "A required protocol feature is not implemented.")
 
 
-def envelope_shape(value: Any) -> tuple[datetime, datetime]:
-    record(value, {"fasp", "kind", "message_id", "from", "to", "issued_at", "expires_at", "nonce", "payload", "signature"})
+def check_peer_features(card: dict[str, Any], features: Any) -> None:
+    """Sender-side guard: legacy peers cannot be trusted to reject extensions."""
+    required_features({"required_features": features})
+    if not features:
+        return
+    support = card.get("protocol_support", {})
+    advertised = support.get("features", []) if isinstance(support, dict) else []
+    if (
+        not isinstance(advertised, list) or any(not isinstance(item, str) for item in advertised)
+        or "fasp.required-features.v1" not in advertised or not set(features) <= set(advertised)
+    ):
+        raise FaspError("protocol.unsupported_feature", "Verified peer does not advertise the required extension semantics.")
+
+
+def envelope_shape(value: Any) -> tuple[datetime, datetime, bytes]:
+    content = record(value, {"fasp", "kind", "message_id", "from", "to", "issued_at", "expires_at", "nonce", "payload", "signature"})
     for name in ("kind", "message_id", "nonce"):
         text(value[name], name, 128)
     for name in ("from", "to"):
@@ -131,11 +151,21 @@ def envelope_shape(value: Any) -> tuple[datetime, datetime]:
     if not isinstance(value["payload"], dict):
         invalid("Envelope payload must be an object.")
     required_features(value)
-    return lifetime(value)
+    issued, expires = lifetime(value)
+    delivery = value.get("delivery", "durable")
+    if not isinstance(delivery, str) or delivery not in {"durable", "volatile"}:
+        invalid("Envelope delivery must be durable or volatile.")
+    if delivery == "volatile":
+        if value["kind"] not in VOLATILE_KINDS or VOLATILE_FEATURE not in value.get("required_features", []):
+            raise FaspError("protocol.unsupported_delivery", "Volatile delivery requires its feature and an observation-only request kind.")
+        text(value.get("receiver_instance"), "receiver_instance", 128)
+        if (expires - issued).total_seconds() > MAX_VOLATILE_LIFETIME_S:
+            invalid("Volatile message lifetime cannot exceed five seconds.")
+    return issued, expires, content
 
 
-def id_card_shape(value: Any) -> tuple[datetime | None, datetime]:
-    record(value, {"fasp", "type", "system_id", "public_key", "endpoints", "expires_at", "signature"})
+def id_card_shape(value: Any) -> tuple[datetime | None, datetime, bytes]:
+    content = record(value, {"fasp", "type", "system_id", "public_key", "endpoints", "expires_at", "signature"})
     if value["type"] != "id_card":
         invalid("Record must be an id_card.")
     system_id(value["system_id"], "system_id")
@@ -146,12 +176,15 @@ def id_card_shape(value: Any) -> tuple[datetime | None, datetime]:
         invalid("ID card endpoints must map names to URLs or null.")
     if "display_name" in value:
         text(value["display_name"], "display_name")
+    if "instance_id" in value:
+        text(value["instance_id"], "instance_id", 128)
     if "key_id" in value:
         text(value["key_id"], "key_id", 128)
         if not isinstance(value["signature"], dict) or value["signature"].get("kid") != value["key_id"]:
             raise FaspError("auth.invalid_signature", "Signature key identifier does not match the signed ID card.")
     required_features(value)
-    return lifetime(value, issued_required=False)
+    issued, expires = lifetime(value, issued_required=False)
+    return issued, expires, content
 
 
 def scopes(value: Any) -> None:
@@ -238,6 +271,9 @@ def wire_support(kinds: list[str]) -> dict[str, Any]:
         "canonicalization": "RFC8785",
         "signature": "Ed25519",
         "features": sorted(SUPPORTED_FEATURES),
+        "delivery_modes": ["durable", "volatile"],
+        "volatile_kinds": sorted(VOLATILE_KINDS),
+        "max_volatile_lifetime_s": MAX_VOLATILE_LIFETIME_S,
         "accepted_kinds": sorted(kinds),
         "limits": {"max_record_bytes": MAX_RECORD_BYTES, "max_json_depth": MAX_JSON_DEPTH, "max_json_nodes": MAX_JSON_NODES},
     }

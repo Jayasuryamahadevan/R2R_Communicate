@@ -18,14 +18,18 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib import error, parse, request
 
-from .core import MAX_INLINE_BYTES, FaspHarness
 from .crypto.envelope import verify
 from .edge.outbox import Outbox
+from .protocol.contracts import MAX_RECORD_BYTES as MAX_INLINE_BYTES
+from .protocol.contracts import check_peer_features
 from .protocol.errors import FaspError
 from .transport.canonical import decode_object
+
+if TYPE_CHECKING:
+    from .core import FaspHarness
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 AGENT_COMMANDS = frozenset({"init", "id", "scan", "inspect", "connect", "register", "radio-register", "approve", "disconnect", "peers", "devices", "capabilities", "status", "ping", "communicate", "send", "drain", "outbox", "task-status"})
@@ -109,6 +113,8 @@ def request_json(url: str, payload: dict[str, Any] | None, args: argparse.Namesp
 
 
 def _open_agent(args: argparse.Namespace) -> FaspHarness:
+    from .core import FaspHarness
+
     state = _state_dir(args)
     if not (state / "identity.json").is_file():
         raise FaspError("config.not_initialized", "First run: fasp init --name NAME --state-dir PATH")
@@ -158,7 +164,7 @@ def _delivery_lock(state: Path) -> Any:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _peer_endpoint(harness: FaspHarness, peer_id: str, args: argparse.Namespace) -> str:
+def _peer_endpoint(harness: FaspHarness, peer_id: str, args: argparse.Namespace, features: list[str] | None = None) -> str:
     pinned = harness._peer(peer_id)
     endpoints = harness.state.get("agent-peers.json", {})
     base = endpoints.get(peer_id)
@@ -169,6 +175,7 @@ def _peer_endpoint(harness: FaspHarness, peer_id: str, args: argparse.Namespace)
     harness.verify_id_card(card)
     if card["system_id"] != peer_id or card["public_key"] != pinned["card"]["public_key"]:
         raise FaspError("auth.peer_identity_changed", "Live service identity differs from the pinned pairing identity.")
+    check_peer_features(card, features or [])
     return base + "/fasp/v1/envelopes"
 
 
@@ -187,7 +194,7 @@ def _send_to_peer(harness: FaspHarness, peer_id: str, envelope: dict[str, Any], 
     if transport == "auto":
         transport = "http" if peer_id in harness.state.get("agent-peers.json", {}) else "radio"
     if transport == "http":
-        return request_json(_peer_endpoint(harness, peer_id, args), envelope, args)
+        return request_json(_peer_endpoint(harness, peer_id, args, envelope.get("required_features", [])), envelope, args)
 
     from .transport.radio import request_radio
 
@@ -197,6 +204,7 @@ def _send_to_peer(harness: FaspHarness, peer_id: str, envelope: dict[str, Any], 
     pinned = harness._peer(peer_id)
     if card["system_id"] != peer_id or card["public_key"] != pinned["card"]["public_key"]:
         raise FaspError("auth.peer_identity_changed", "Live Bluetooth peer differs from the pinned pairing identity.")
+    check_peer_features(card, envelope.get("required_features", []))
     return request_radio(endpoint, {"type": "envelope", "envelope": envelope}, timeout=args.timeout)
 
 
@@ -242,6 +250,8 @@ def _deliver(harness: FaspHarness, args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    from .core import FaspHarness
+
     state = _state_dir(args)
     state.mkdir(mode=0o700, parents=True, exist_ok=True)
     config_file = state / "agent.json"
@@ -573,6 +583,8 @@ def cmd_communicate(args: argparse.Namespace) -> int:
 
 
 def cmd_send(args: argparse.Namespace) -> int:
+    from .core import FaspHarness
+
     if not args.payload_file:
         raise FaspError("schema.invalid", "Raw signed messages require --payload-file JSON or --payload-file -.")
     if args.kind not in FaspHarness.DISPATCH:
