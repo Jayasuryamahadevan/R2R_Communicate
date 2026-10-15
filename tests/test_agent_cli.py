@@ -225,7 +225,14 @@ class AgentCliTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertEqual(error["error"]["code"], "transport.tls_required")
         self._run("connect", self.bob_url, "--state-dir", self.alice_path)
-        with patch.object(agent_cli, "request_json", return_value=self.alice.id_card()):
+        original_network = self._network
+
+        def swapped_profile(url, payload, args):
+            if url.endswith("/profile"):
+                return self.alice.id_card()
+            return original_network(url, payload, args)
+
+        with patch.object(self, "_network", side_effect=swapped_profile):
             rc, error = self._run("inspect", self.bob.identity.system_id, "--state-dir", self.alice_path)
         self.assertEqual(rc, 2)
         self.assertEqual(error["error"]["code"], "auth.peer_identity_changed")
