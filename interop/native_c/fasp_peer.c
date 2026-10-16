@@ -1,181 +1,123 @@
-/* Minimal FASP 1.0 native C sender: Ed25519 identity, signed card, heartbeat.
- * Requires C11/POSIX and OpenSSL libcrypto, not Python/Node/WASM/JSON libraries.
- * JSON is deliberately limited to fixed, ASCII-only message templates.
- * Do not extend to arbitrary payloads without a complete RFC 8785 encoder.
+/* Minimal POSIX command-line wrapper around the C-only FASP signing API.
+ * Build: cc -std=c11 -Wall -Wextra -Werror -pedantic -O2 -o fasp-c \
+ *        fasp_peer.c fasp_wire.c -lcrypto
+ * Usage: fasp-c init identity.seed | id identity.seed | card identity.seed |
+ *        fasp-c heartbeat identity.seed fasp:system:<recipient-id>
+ * No runtime requirement on Python, Node or WASM. OpenSSL 1.1.1+ required.
  */
 #define _POSIX_C_SOURCE 200809L
-#include <fcntl.h>
-#include <stdarg.h>
-#include <openssl/crypto.h>
-#include <openssl/evp.h>
+#include "fasp_wire.h"
 #include <openssl/rand.h>
-#include <openssl/sha.h>
+#include <openssl/crypto.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
-#define BUF 8192
-#define ID_SIZE 64
-
-static void die(const char *message) {
-    fprintf(stderr, "fasp-c: %s\n", message);
-    exit(1);
-}
-
-static void formatted(char *dest, size_t length, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int count = vsnprintf(dest, length, fmt, args);
-    va_end(args);
-    if (count < 0 || (size_t)count >= length) die("Message too long");
-}
-
-static void base64url(const unsigned char *raw, size_t length, char *dest, size_t size) {
-    if (length > 1024 || size < 4 * ((length + 2) / 3) + 1) die("Invalid encoding bounds");
-    int count = EVP_EncodeBlock((unsigned char *)dest, raw, (int)length);
-    if (count <= 0) die("Base64 encoding failed");
-    for (int k = 0; k < count; ++k) {
-        if (dest[k] == '+') dest[k] = '-';
-        if (dest[k] == '/') dest[k] = '_';
-    }
-    while (count && dest[count - 1] == '=') --count;
-    dest[count] = '\0';
-}
-
-static int decode_hex(unsigned char *output, const char *hex, size_t length) {
-    for (size_t i = 0; i < length; ++i) {
-        unsigned int value = 0;
-        char pair[3] = { hex[2 * i], hex[2 * i + 1], '\0' };
-        if (sscanf(pair, "%2x", &value) != 1) return 0;
-        for (int k = 0; k < 2; ++k)
-            if (!((pair[k] >= '0' && pair[k] <= '9') ||
-                  (pair[k] >= 'a' && pair[k] <= 'f'))) return 0;
-        output[i] = (unsigned char)value;
-    }
-    return 1;
-}
-
-static void write_identity(const char *path) {
-    unsigned char secret[32];
-    char hex[66];
-    if (RAND_bytes(secret, sizeof(secret)) != 1) die("Secure random generation failed");
-    for (size_t i = 0; i < 32; ++i) snprintf(hex + i * 2, 3, "%02x", secret[i]);
-    hex[64] = '\n'; hex[65] = '\0';
-    umask(077);
-    int fd = open(path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
-    if (fd < 0) die("Cannot create identity file (will not overwrite)");
-    ssize_t n = write(fd, hex, 65);
-    int persisted = n == 65 && fsync(fd) == 0;
-    if (close(fd) != 0) persisted = 0;
-    OPENSSL_cleanse(secret, sizeof(secret));
-    OPENSSL_cleanse(hex, sizeof(hex));
-    if (!persisted) {
-        /* Do not strand a partial private-key file that blocks re-init. */
-        unlink(path);
-        die("Cannot persist identity");
-    }
-    puts("Identity created. Protect this file: it contains the signing secret.");
-}
-
-static EVP_PKEY *load_identity(const char *path, unsigned char public_key[32]) {
-    unsigned char secret[32];
-    char hex[68];
+static int read_seed(const char *path, unsigned char seed[32]) {
+    char file[66];
     struct stat info;
     int fd = open(path, O_RDONLY | O_NOFOLLOW);
-    if (fd < 0 || fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) ||
-        (info.st_mode & 077) != 0 || info.st_uid != geteuid())
-        die("Identity file must be a private regular file owned by this user");
-    ssize_t n = read(fd, hex, sizeof(hex));
-    if (close(fd) != 0 || n != 65 || hex[64] != '\n' || !decode_hex(secret, hex, 32))
-        die("Identity file is invalid");
-    EVP_PKEY *key = EVP_PKEY_new_raw_private_key(EVP_PKEY_ED25519, NULL, secret, 32);
-    OPENSSL_cleanse(secret, sizeof(secret));
-    if (!key) die("Failed to load Ed25519 identity");
-    size_t len = 32;
-    if (EVP_PKEY_get_raw_public_key(key, public_key, &len) != 1 || len != 32)
-        die("Failed to derive Ed25519 public key");
-    return key;
+    if (fd < 0) return 0;
+    int valid = fstat(fd, &info) == 0 && S_ISREG(info.st_mode) &&
+        (info.st_mode & 0077) == 0 && info.st_uid == geteuid();
+    ssize_t len = valid ? read(fd, file, sizeof(file)) : -1;
+    if (close(fd) != 0 || len != 65 || file[64] != '\n') return 0;
+    for (size_t i = 0; i < 32; ++i) {
+        unsigned char a = (unsigned char)file[i * 2];
+        unsigned char b = (unsigned char)file[i * 2 + 1];
+        if (!((a >= '0' && a <= '9') || (a >= 'a' && a <= 'f')) ||
+            !((b >= '0' && b <= '9') || (b >= 'a' && b <= 'f'))) {
+            OPENSSL_cleanse(seed, 32);
+            return 0;
+        }
+        unsigned int high = a >= 'a' ? a - 'a' + 10 : a - '0';
+        unsigned int low = b >= 'a' ? b - 'a' + 10 : b - '0';
+        seed[i] = (unsigned char)(high * 16 + low);
+    }
+    OPENSSL_cleanse(file, sizeof(file));
+    return 1;
 }
 
-static void timestamp(time_t when, char result[21]) {
-    struct tm t;
-    if (!gmtime_r(&when, &t) || strftime(result, 21, "%Y-%m-%dT%H:%M:%SZ", &t) != 20)
-        die("Could not format UTC timestamp");
+static int save_seed(const char *path, const unsigned char seed[32]) {
+    const char digits[] = "0123456789abcdef";
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
+    if (fd < 0) return 0;
+    char content[65];
+    for (size_t i = 0; i < 32; ++i) {
+        content[2 * i] = digits[seed[i] >> 4];
+        content[2 * i + 1] = digits[seed[i] & 15];
+    }
+    content[64] = '\n';
+    int ok = write(fd, content, sizeof(content)) == (ssize_t)sizeof(content) && fsync(fd) == 0;
+    if (close(fd) != 0) ok = 0;
+    OPENSSL_cleanse(content, sizeof(content));
+    if (!ok) unlink(path);
+    return ok;
 }
 
-static void signature(EVP_PKEY *key, const char *message, char out[89]) {
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    unsigned char raw[64];
-    size_t raw_size = sizeof(raw);
-    if (!ctx || EVP_DigestSignInit(ctx, NULL, NULL, NULL, key) != 1 ||
-        EVP_DigestSign(ctx, raw, &raw_size, (const unsigned char *)message, strlen(message)) != 1 ||
-        raw_size != 64) die("Ed25519 signing failed");
-    EVP_MD_CTX_free(ctx);
-    base64url(raw, raw_size, out, 89);
+static int utc(char out[21], time_t delta) {
+    time_t instant = time(NULL);
+    struct tm moment;
+    if (instant == (time_t)-1 || !gmtime_r(&(time_t){instant + delta}, &moment)) return 0;
+    return strftime(out, 21, "%Y-%m-%dT%H:%M:%SZ", &moment) == 20;
 }
 
-static void random_id(char output[37]) {
+static int random_hex_uuid(char out[37]) {
     unsigned char raw[16];
-    if (RAND_bytes(raw, sizeof(raw)) != 1) die("Secure random generation failed");
+    int n;
+    if (RAND_bytes(raw, 16) != 1) return 0;
     raw[6] = (raw[6] & 0x0f) | 0x40;
     raw[8] = (raw[8] & 0x3f) | 0x80;
-    snprintf(output, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-             raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
-             raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
-}
-
-static int valid_recipient(const char *id) {
-    if (strncmp(id, "fasp:system:", 12) != 0 || strlen(id) != 55) return 0;
-    for (const char *p = id + 12; *p; ++p)
-        if (!( (*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-               (*p >= '0' && *p <= '9') || *p == '_' || *p == '-')) return 0;
-    return 1;
+    n = snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+        raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
+    OPENSSL_cleanse(raw, sizeof(raw));
+    return n == 36;
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) die("Usage: fasp-c-peer init|id|card|heartbeat KEYFILE [RECIPIENT_SYSTEM_ID]");
-    if (strcmp(argv[1], "init") == 0 && argc == 3) { write_identity(argv[2]); return 0; }
-    if (argc != 3 && argc != 4) die("Invalid arguments");
-    unsigned char pub[32], hash[SHA256_DIGEST_LENGTH], nonce[12];
-    EVP_PKEY *key = load_identity(argv[2], pub);
-    SHA256(pub, 32, hash);
-    char pub64[45], hash64[45], system_id[ID_SIZE], kid[18], now[21], expires[21];
-    base64url(pub, 32, pub64, sizeof(pub64));
-    base64url(hash, sizeof(hash), hash64, sizeof(hash64));
-    snprintf(system_id, sizeof(system_id), "fasp:system:%s", hash64);
-    snprintf(kid, sizeof(kid), "ed25519-%.8s", pub64);
-    time_t current = time(NULL);
-    timestamp(current, now);
-    if (strcmp(argv[1], "id") == 0 && argc == 3) { puts(system_id); EVP_PKEY_free(key); return 0; }
-    char unsigned_record[BUF], sig[89], output[BUF];
-    if (strcmp(argv[1], "card") == 0 && argc == 3) {
-        timestamp(current + 30 * 86400, expires);
-        formatted(unsigned_record, sizeof(unsigned_record),
-          "{\"capabilities\":[],\"display_name\":\"native-c-peer\",\"endpoints\":{\"envelopes\":null,\"profile\":null},\"expires_at\":\"%s\",\"fasp\":\"fasp/1.0\",\"issued_at\":\"%s\",\"key_id\":\"%s\",\"public_key\":\"%s\",\"system_id\":\"%s\",\"type\":\"id_card\"}",
-          expires, now, kid, pub64, system_id);
-        signature(key, unsigned_record, sig);
-        formatted(output, sizeof(output),
-          "{\"capabilities\":[],\"display_name\":\"native-c-peer\",\"endpoints\":{\"envelopes\":null,\"profile\":null},\"expires_at\":\"%s\",\"fasp\":\"fasp/1.0\",\"issued_at\":\"%s\",\"key_id\":\"%s\",\"public_key\":\"%s\",\"signature\":{\"alg\":\"Ed25519\",\"kid\":\"%s\",\"value\":\"%s\"},\"system_id\":\"%s\",\"type\":\"id_card\"}",
-          expires, now, kid, pub64, kid, sig, system_id);
-    } else if (strcmp(argv[1], "heartbeat") == 0 && argc == 4) {
-        if (!valid_recipient(argv[3])) die("Invalid FASP recipient system ID");
-        timestamp(current + 120, expires);
-        char uuid[37], nonce64[32];
-        random_id(uuid);
-        if (RAND_bytes(nonce, sizeof(nonce)) != 1) die("Secure random generation failed");
-        base64url(nonce, sizeof(nonce), nonce64, sizeof(nonce64));
-        formatted(unsigned_record, sizeof(unsigned_record),
-          "{\"expires_at\":\"%s\",\"fasp\":\"fasp/1.0\",\"from\":\"%s\",\"issued_at\":\"%s\",\"kind\":\"heartbeat\",\"message_id\":\"%s\",\"nonce\":\"%s\",\"payload\":{},\"to\":\"%s\"}",
-          expires, system_id, now, uuid, nonce64, argv[3]);
-        signature(key, unsigned_record, sig);
-        formatted(output, sizeof(output),
-          "{\"expires_at\":\"%s\",\"fasp\":\"fasp/1.0\",\"from\":\"%s\",\"issued_at\":\"%s\",\"kind\":\"heartbeat\",\"message_id\":\"%s\",\"nonce\":\"%s\",\"payload\":{},\"signature\":{\"alg\":\"Ed25519\",\"kid\":\"%s\",\"value\":\"%s\"},\"to\":\"%s\"}",
-          expires, system_id, now, uuid, nonce64, kid, sig, argv[3]);
-    } else die("Unknown command");
-    puts(output);
-    EVP_PKEY_free(key);
+    unsigned char seed[32] = {0};
+    fasp_identity identity;
+    char output[FASP_SIGNED_MAX], issued[21], expires[21], message_id[37], nonce[25];
+    int ok = 0;
+    memset(&identity, 0, sizeof(identity));
+    if (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[1], "heartbeat") != 0)) goto finish;
+    if (!strcmp(argv[1], "init")) {
+        if (argc != 3 || RAND_bytes(seed, sizeof(seed)) != 1 ||
+            !fasp_identity_from_seed(&identity, seed) || !save_seed(argv[2], seed)) goto finish;
+        puts("Identity created. Protect this file: it contains the signing secret.");
+        ok = 1;
+        goto finish;
+    }
+    if (!read_seed(argv[2], seed) || !fasp_identity_from_seed(&identity, seed) || !utc(issued, 0)) goto finish;
+    if (!strcmp(argv[1], "id") && argc == 3) {
+        puts(identity.system_id);
+        ok = 1;
+    } else if (!strcmp(argv[1], "card") && argc == 3) {
+        ok = utc(expires, 30 * 86400) && fasp_signed_card(&identity, issued, expires, output, sizeof(output));
+    } else if (!strcmp(argv[1], "heartbeat") && argc == 4) {
+        unsigned char nonce_raw[12];
+        if (!utc(expires, 120) || !random_hex_uuid(message_id) || RAND_bytes(nonce_raw, 12) != 1) goto finish;
+        /* A nonce is a 12-byte cryptographically random value encoded as 16
+         * unpadded Base64URL chars. Use hex here instead to avoid additional
+         * decoding requirements: wire nonce is an opaque bounded string. */
+        if (snprintf(nonce, sizeof(nonce), "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
+             nonce_raw[0], nonce_raw[1], nonce_raw[2], nonce_raw[3], nonce_raw[4], nonce_raw[5],
+             nonce_raw[6], nonce_raw[7], nonce_raw[8], nonce_raw[9], nonce_raw[10], nonce_raw[11]) != 24) goto finish;
+        OPENSSL_cleanse(nonce_raw, sizeof(nonce_raw));
+        ok = fasp_signed_heartbeat(&identity, argv[3], issued, expires, message_id, nonce, output, sizeof(output));
+    }
+    if (ok && strcmp(argv[1], "id") != 0) puts(output);
+finish:
+    fasp_identity_clear(&identity);
+    OPENSSL_cleanse(seed, sizeof(seed));
+    if (!ok) {
+        fputs("Usage: fasp-c init|id|card <identity-file> OR fasp-c heartbeat <identity-file> <recipient-system-id>\n", stderr);
+        return 1;
+    }
     return 0;
 }

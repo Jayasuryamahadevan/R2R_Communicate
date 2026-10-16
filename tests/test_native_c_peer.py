@@ -28,8 +28,8 @@ class NativeCPeerTests(unittest.TestCase):
         cls.build_dir = tempfile.TemporaryDirectory()
         cls.executable = Path(cls.build_dir.name) / "fasp-c-peer"
         subprocess.run(
-            ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2", str(SOURCE),
-             "-o", str(cls.executable), "-lcrypto"],
+            ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic", "-O2", str(SOURCE),
+             str(SOURCE.with_name("fasp_wire.c")), "-o", str(cls.executable), "-lcrypto"],
             check=True, capture_output=True, text=True, timeout=30,
         )
 
@@ -113,6 +113,24 @@ class NativeCPeerTests(unittest.TestCase):
         self.assertEqual(first, self.identity.read_bytes())
         send = subprocess.run([str(self.executable), "heartbeat", str(self.identity), "not-a-peer"], capture_output=True, text=True)
         self.assertNotEqual(send.returncode, 0)
+
+
+    @unittest.skipUnless(shutil.which("c++"), "C++ compiler is needed to check native ABI")
+    def test_cpp_can_link_the_c_signing_library(self) -> None:
+        object_path = self.directory / "fasp_wire.o"
+        program = self.directory / "api-smoke"
+        subprocess.run(
+            ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-pedantic", "-O2",
+             "-c", str(SOURCE.with_name("fasp_wire.c")), "-o", str(object_path)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        subprocess.run(
+            ["c++", "-std=c++17", "-Wall", "-Wextra", "-Werror", "-pedantic", "-O2",
+             str(SOURCE.with_name("api_smoke.cpp")), str(object_path), "-lcrypto", "-o", str(program)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        result = subprocess.run([str(program)], check=True, capture_output=True, text=True, timeout=10)
+        self.assertIn("C++ ABI smoke: OK", result.stdout)
 
 
 if __name__ == "__main__":

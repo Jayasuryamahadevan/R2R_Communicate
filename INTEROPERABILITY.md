@@ -56,9 +56,9 @@ node interop/fasp-peer.mjs envelope --state ./peer-identity.json --to 'fasp:syst
 
 ## Independent C reference sender
 
-[`interop/native_c/`](interop/native_c/README.md) contains a deliberately small native C11/OpenSSL client that derives a FASP identity, emits a signed ID card, and signs an empty-payload heartbeat. It requires **no Python, Node.js, WASM or JSON library** at runtime. The Python test suite compiles it and verifies its signatures, pairing, and duplicate handling against the real FASP receiver; Node independently verifies its identity card.
+[`interop/native_c/`](interop/native_c/README.md) contains a deliberately small reusable C11/OpenSSL signing library, a compatible CLI and a standalone C++ consumer that derives a FASP identity, emits a signed ID card, and signs an empty-payload heartbeat. It requires **no Python, Node.js, WASM or JSON library** at runtime. The Python test suite compiles it and verifies its signatures, pairing, and duplicate handling against the real FASP receiver; Node independently verifies its identity card.
 
-This is **not** a general-purpose C SDK or proof of support for bare-metal targets. The fixed ASCII-only templates are canonical RFC 8785 by construction. Arbitrary JSON cannot safely be supported by string concatenation: a complete implementation needs a verified JCS encoder and the full wire, authority, and domain contracts. The C command emits messages but does not perform network delivery, approve pairing, or actuate devices.
+This is **not** a general-purpose C SDK or proof of support for bare-metal targets. The fixed ASCII-only templates are canonical RFC 8785 by construction. Arbitrary JSON cannot safely be supported by string concatenation: a complete implementation needs a verified JCS encoder and the full wire, authority, and domain contracts. The C library and CLI emit messages but do not perform network delivery, approve pairing, or actuate devices.
 
 ## Legacy devices and gateways
 

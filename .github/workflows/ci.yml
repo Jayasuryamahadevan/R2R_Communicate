@@ -61,6 +61,11 @@ jobs:
         run: |
           cmp bridge_core/fasp_canonical.mjs interop/fasp-canonical.mjs
           node --test interop/fasp-peer.test.mjs
+      - name: Build native C/C++ library example
+        run: |
+          cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -c interop/native_c/fasp_wire.c -o /tmp/fasp_wire_ci.o
+          c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic interop/native_c/api_smoke.cpp /tmp/fasp_wire_ci.o -lcrypto -o /tmp/fasp_native_ci
+          /tmp/fasp_native_ci
       - name: Run test suite
         run: uv run --locked --extra test --extra dev python -m unittest discover -s tests -v
       - name: Persistent TLS and volatile-delivery smoke benchmark
