@@ -40,7 +40,14 @@
 > for security gates, operations, and unimplemented production dependencies.
 
 The implemented wire contract, schema, version rules and resource bounds are
-in [WIRE_PROFILE.md](WIRE_PROFILE.md). The candid feasibility assessment,
+in [WIRE_PROFILE.md](WIRE_PROFILE.md).
+
+**Language independence:** FASP is a protocol, not a Python requirement. A
+small [Node.js client and cross-runtime interoperability tests](INTEROPERABILITY.md)
+use the same FASP 1.0 signed wire profile with no Python runtime on the client.
+Closed or constrained devices can participate through authorized gateways;
+no WASM engine or new messaging language is required.
+ The candid feasibility assessment,
 remaining release blockers and reproducible evaluation plan are in
 [RESEARCH_ASSESSMENT.md](RESEARCH_ASSESSMENT.md).
 

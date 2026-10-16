@@ -57,6 +57,8 @@ jobs:
           git diff --exit-code -- requirements-prod.txt
       - name: Lint
         run: uv run --locked --extra test --extra dev ruff check fasp_harness tests benchmarks
+      - name: Independent JavaScript peer conformance
+        run: node --test interop/fasp-peer.test.mjs
       - name: Run test suite
         run: uv run --locked --extra test --extra dev python -m unittest discover -s tests -v
       - name: Persistent TLS and volatile-delivery smoke benchmark

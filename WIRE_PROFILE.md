@@ -1,7 +1,9 @@
 # FASP JSON/Ed25519 wire profile v1
 
 Status: implemented reference profile, `fasp-json-ed25519-v1`. This document
-defines the interoperable baseline of this repository. The broader protocol
+defines the interoperable baseline of this repository.
+The [portable client and gateway guide](INTEROPERABILITY.md) documents the
+Python-independent Node implementation and cross-runtime acceptance tests. The broader protocol
 proposal does not imply implementation of every proposed feature or bearer.
 
 ## Scope and structure
