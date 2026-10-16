@@ -66,6 +66,10 @@ An unsigned legacy device cannot be made cryptographically self-authenticating b
 
 Existing ROS 1/2 observers only expose read-only graph counts. The VDA 5050 and REST fleet adapters are reference integrations, not universal implementations for every manufacturer or software version.
 
+## Public cross-language identity vector
+
+[`interop/vectors/identity-v1.json`](interop/vectors/identity-v1.json) provides a **public test-only** Ed25519 seed, the expected unpadded Base64URL public key, key-derived `fasp:system:` identifier and key ID. The Python, JavaScript, and native C implementations verify the same identity bytes. This is a reproducible starting point for a future language SDK and must **never** be used for a real identity.
+
 ## Reproduce conformance evidence
 
 ```sh

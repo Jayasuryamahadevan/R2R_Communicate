@@ -5,6 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createIdentity, initialize, loadIdentity, makeCard, makeEnvelope, verifyCard, verifyRecord, main } from './fasp-peer.mjs';
 
+// Public test-only seed: never provision a real FASP node with these bytes.
+const VECTOR = JSON.parse(readFileSync(new URL('./vectors/identity-v1.json', import.meta.url), 'utf8'));
+
+
 test('independent Node peer persists a private key and emits a valid signed card', () => {
   const directory = mkdtempSync(join(tmpdir(), 'fasp-node-'));
   try {
@@ -55,4 +59,11 @@ test('CLI creates signed messages without Python, WASM or third-party packages',
     const message = await main(['envelope', '--state', state, '--to', initialized.system_id]);
     assert.equal(message.to, initialized.system_id);
   } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('published identity vector agrees with the independent native C and Python implementations', () => {
+  const identity = createIdentity(Buffer.from(VECTOR.seed_hex, 'hex'));
+  assert.equal(identity.publicKey, VECTOR.public_key);
+  assert.equal(identity.systemId, VECTOR.system_id);
+  assert.equal(identity.kid, VECTOR.kid);
 });

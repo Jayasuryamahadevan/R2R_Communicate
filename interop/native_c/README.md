@@ -17,3 +17,5 @@ For auditability this example signs *only* two fixed ASCII-only message template
 The 32-byte Ed25519 seed is persisted as lowercase hex in an exclusive, owner-only file. **Never commit, log, or share that file.** The program refuses to overwrite it and refuses to read group/world-readable key files. It does not provide private-key hardware protection. For production use, an appropriate key-management implementation is required.
 
 Conformance: `python -m unittest tests.test_native_c_peer -v` compiles this C program and verifies its signed card and heartbeat against the **real Python receiver**; it also asks the independent Node verifier to validate the C-signed card. These tests prove a concrete native wire interoperability boundary—not universal hardware support or production device safety.
+
+A public, deterministic [identity test vector](../vectors/identity-v1.json) is verified by the C and Node suites against the shared SHA-256/Ed25519 identity contract. Never use the published seed in production.

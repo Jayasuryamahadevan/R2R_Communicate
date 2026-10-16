@@ -68,8 +68,15 @@ static void write_identity(const char *path) {
     int fd = open(path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0600);
     if (fd < 0) die("Cannot create identity file (will not overwrite)");
     ssize_t n = write(fd, hex, 65);
-    if (n != 65 || fsync(fd) != 0 || close(fd) != 0) die("Cannot persist identity");
+    int persisted = n == 65 && fsync(fd) == 0;
+    if (close(fd) != 0) persisted = 0;
     OPENSSL_cleanse(secret, sizeof(secret));
+    OPENSSL_cleanse(hex, sizeof(hex));
+    if (!persisted) {
+        /* Do not strand a partial private-key file that blocks re-init. */
+        unlink(path);
+        die("Cannot persist identity");
+    }
     puts("Identity created. Protect this file: it contains the signing secret.");
 }
 

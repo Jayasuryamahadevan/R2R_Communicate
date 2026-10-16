@@ -16,6 +16,7 @@ from pathlib import Path
 from fasp_harness.core import FaspError, FaspHarness
 
 ROOT = Path(__file__).resolve().parents[1]
+VECTOR_PATH = ROOT / 'interop' / 'vectors' / 'identity-v1.json'
 SOURCE = ROOT / "interop" / "native_c" / "fasp_peer.c"
 NODE = ROOT / "interop" / "fasp-peer.mjs"
 
@@ -84,6 +85,26 @@ class NativeCPeerTests(unittest.TestCase):
             capture_output=True, text=True, check=True, timeout=15,
         )
         self.assertEqual(json.loads(result.stdout)["system_id"], card["system_id"])
+
+    def test_public_identity_vector_is_reproducible_in_native_c(self) -> None:
+        # The fixed seed is public test data. Never use it to identify a real node.
+        vector = json.loads(VECTOR_PATH.read_text(encoding="utf-8"))
+        self.identity.write_text(vector["seed_hex"] + "\n", encoding="ascii")
+        self.identity.chmod(0o600)
+        self.assertEqual(self.native("id", str(self.identity)), vector["system_id"])
+        card = json.loads(self.native("card", str(self.identity)))
+        self.assertEqual(card["public_key"], vector["public_key"])
+        self.assertEqual(card["key_id"], vector["kid"])
+        self.receiver.verify_id_card(card)
+
+    def test_non_private_or_malformed_native_key_files_are_rejected(self) -> None:
+        self.identity.chmod(0o644)
+        rejected = subprocess.run([str(self.executable), "card", str(self.identity)], capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.identity.chmod(0o600)
+        self.identity.write_text("not-a-valid-key\\n", encoding="ascii")
+        rejected = subprocess.run([str(self.executable), "id", str(self.identity)], capture_output=True, text=True)
+        self.assertNotEqual(rejected.returncode, 0)
 
     def test_private_seed_is_not_replaced_and_bad_recipients_are_rejected(self) -> None:
         first = self.identity.read_bytes()
