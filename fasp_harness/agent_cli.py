@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import ipaddress
 import json
 import math
@@ -32,7 +33,9 @@ if TYPE_CHECKING:
     from .core import FaspHarness
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-AGENT_COMMANDS = frozenset({"init", "id", "scan", "inspect", "connect", "register", "radio-register", "approve", "disconnect", "peers", "devices", "capabilities", "status", "ping", "communicate", "send", "drain", "outbox", "task-status"})
+AGENT_COMMANDS = frozenset({"init", "id", "scan", "inspect", "connect", "register", "radio-register", "approve", "disconnect", "peers", "devices", "capabilities", "status", "ping", "communicate", "send", "drain", "outbox", "task-status", "route", "say", "speak", "tasks", "task-cancel"})
+ROUTE_PATTERN = re.compile(r"agent(?:\.[a-z][a-z0-9_-]{0,62})+\Z")
+_HUMAN_OUTPUT: contextvars.ContextVar[bool] = contextvars.ContextVar("fasp_human_output", default=False)
 
 
 class RemoteRejection(Exception):
@@ -48,8 +51,53 @@ class TransportFailure(Exception):
 
 
 def _emit(data: Any) -> None:
-    # Single JSON object per invocation; stable for agent/tool consumers.
-    print(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+    if _HUMAN_OUTPUT.get():
+        print(_render_human(data))
+    else:
+        print(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+
+
+def _render_human(data: Any) -> str:
+    if not isinstance(data, dict):
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    if "error" in data and not data.get("ok", True):
+        error = data["error"]
+        return f"Error [{error.get('code', 'cli.error')}]: {error.get('detail', 'Unknown error')}"
+    if "pair_code" in data:
+        lines = [f"Found {data.get('name') or data['peer_id']}", f"System ID: {data['peer_id']}", f"Pairing code: {data['pair_code']}"]
+        if data.get("route"):
+            lines.append(f"Local name: {data['route']}")
+        lines.append("Compare this code independently, then approve on both systems.")
+        return "\n".join(lines)
+    if "outbox" in data and isinstance(data.get("peers"), dict):
+        peers = data["peers"]
+        return f"{data.get('name', 'This system')}  {data['system_id']}\nPeers: {peers.get('paired', 0)} paired, {peers.get('pending', 0)} pending\nOutbox: {data['outbox'].get('pending', 0)} pending, {data['outbox'].get('dead', 0)} dead"
+    if "routes" in data:
+        return "No local names." if not data["routes"] else "\n".join(f"{route['name']} -> {route['peer_id']}" for route in data["routes"])
+    if "name" in data and "peer_id" in data and "removed" in data:
+        return f"Removed {data['name']} (was {data['peer_id']})."
+    if "name" in data and "peer_id" in data and data.get("ok"):
+        return f"{data['name']} -> {data['peer_id']}"
+    if "tasks" in data:
+        return "No outgoing tasks." if not data["tasks"] else "\n".join(f"{task.get('task_path') or task['idempotency_key']}  {task['state']}  {task['idempotency_key']}" for task in data["tasks"])
+    if "peers" in data and isinstance(data["peers"], list):
+        return "No known peers." if not data["peers"] else "\n".join(f"{peer.get('name') or peer['peer_id']}  {peer['state']}  {peer['peer_id']}" for peer in data["peers"])
+    if "message_id" in data and "state" in data:
+        lines = [f"Delivery: {data['state']}", f"Message ID: {data['message_id']}"]
+        if data.get("idempotency_key"):
+            lines.append(f"Task key: {data['idempotency_key']}")
+        response = data.get("response") or {}
+        outcome = response.get("response", response) if isinstance(response, dict) else {}
+        if isinstance(outcome, dict):
+            summary = outcome.get("output", {}).get("summary") if isinstance(outcome.get("output"), dict) else None
+            if summary is not None:
+                lines.append(f"Reply: {summary}")
+        if data["state"] == "pending":
+            lines.append("Queued locally. Run 'fasp drain --watch' to retry.")
+        return "\n".join(lines)
+    if "system_id" in data:
+        return f"{data.get('name') or data.get('display_name') or 'This system'}\nSystem ID: {data['system_id']}"
+    return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def _state_dir(args: argparse.Namespace) -> Path:
@@ -194,7 +242,11 @@ def _send_to_peer(harness: FaspHarness, peer_id: str, envelope: dict[str, Any], 
     if transport == "auto":
         transport = "http" if peer_id in harness.state.get("agent-peers.json", {}) else "radio"
     if transport == "http":
-        return request_json(_peer_endpoint(harness, peer_id, args, envelope.get("required_features", [])), envelope, args)
+        try:
+            return request_json(_peer_endpoint(harness, peer_id, args, envelope.get("required_features", [])), envelope, args)
+        except TransportFailure:
+            if args.transport != "auto" or peer_id not in harness.state.get("agent-radios.json", {}):
+                raise
 
     from .transport.radio import request_radio
 
@@ -292,10 +344,62 @@ def _peer_state(h: FaspHarness, peer_id: str) -> str:
     return str(peer["state"])
 
 
+def _route_name(name: str) -> str:
+    if not isinstance(name, str) or len(name) > 255 or not ROUTE_PATTERN.fullmatch(name):
+        raise FaspError("schema.invalid", "Local names must look like agent.researcher (lowercase dot-separated segments).")
+    return name
+
+
+def _routes(h: FaspHarness) -> dict[str, str]:
+    routes = h.state.get("agent-routes.json", {})
+    if not isinstance(routes, dict):
+        raise FaspError("config.invalid", "Agent routes must be a JSON object.")
+    return routes
+
+
+def _resolve_peer(h: FaspHarness, reference: str) -> str:
+    if reference.startswith("fasp:system:"):
+        return reference
+    name = _route_name(reference)
+    peer = _routes(h).get(name)
+    if not isinstance(peer, str):
+        raise FaspError("config.route_missing", f"No local name {name}; use 'fasp route add'.")
+    return peer
+
+
+def _check_route_target(h: FaspHarness, name: str, peer_id: str) -> str:
+    name = _route_name(name)
+    existing = _routes(h).get(name)
+    if existing is not None and existing != peer_id:
+        raise FaspError("config.route_exists", "Name already targets another peer; remove it explicitly first.")
+    return name
+
+
+def _bind_route(h: FaspHarness, name: str, peer_id: str, *, allow_pending: bool = False) -> str:
+    if not allow_pending:
+        h._peer(peer_id)
+    name = _check_route_target(h, name, peer_id)
+    routes = _routes(h)
+    routes[name] = peer_id
+    h.state.put("agent-routes.json", routes)
+    return name
+
+
+def _resolve_task_path(h: FaspHarness, path: str) -> tuple[str, str]:
+    path = _route_name(path)
+    parents = [name for name in _routes(h) if path.startswith(name + ".")]
+    if not parents:
+        raise FaspError("config.route_missing", "No parent name for this task path; use 'fasp route add agent.ROLE PEER_ID'.")
+    parent = max(parents, key=len)
+    return _routes(h)[parent], path[len(parent) + 1 :]
+
+
 def _resolve_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> tuple[str, str | None, dict[str, Any] | None]:
     """Resolve an explicit URL or an exact ID from local scanned/pinned records."""
     if not isinstance(reference, str) or not reference:
         raise FaspError("schema.invalid", "Device reference must be an HTTPS URL or full FASP system ID.")
+    if reference.startswith("agent."):
+        reference = _resolve_peer(h, reference)
     if not reference.startswith("fasp:system:"):
         return _base_url(reference, args.insecure_http), None, None
 
@@ -354,6 +458,9 @@ def connect_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> 
     info = inspect_device(h, reference, args)
     card = info["id_card"]
     base = info["url"]
+    as_name = getattr(args, "as_name", None)
+    if as_name:
+        _check_route_target(h, as_name, card["system_id"])
     response = request_json(base + "/pair/hello", {"id_card": h.id_card()}, args)
     if response.get("type") != "hello.ready" or response.get("system_id") != card["system_id"]:
         raise FaspError("auth.invalid_hello", "Peer hello did not match the discovered identity.")
@@ -368,6 +475,7 @@ def connect_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> 
     urls = h.state.get("agent-peers.json", {})
     urls[card["system_id"]] = base
     h.state.put("agent-peers.json", urls)
+    route = _bind_route(h, as_name, card["system_id"], allow_pending=True) if as_name else None
     state = _peer_state(h, card["system_id"])
     return {
         "ok": True,
@@ -375,6 +483,7 @@ def connect_device(h: FaspHarness, reference: str, args: argparse.Namespace) -> 
         "name": card.get("display_name"),
         "state": state,
         "pair_code": pending["pair_code"],
+        "route": route,
         "approval_required": state != "paired",
         "instructions": "Verify this fingerprint out of band, confirm the peer identity, and approve on BOTH nodes. Connecting does not grant authority.",
     }
@@ -422,6 +531,7 @@ def scan_devices(
 
 
 def ping_device(h: FaspHarness, peer_id: str, args: argparse.Namespace) -> dict[str, Any]:
+    peer_id = _resolve_peer(h, peer_id)
     h._peer(peer_id)
     response = _send_to_peer(h, peer_id, h.make_envelope("heartbeat", peer_id, {}), args)
     if response.get("type") != "heartbeat":
@@ -430,6 +540,7 @@ def ping_device(h: FaspHarness, peer_id: str, args: argparse.Namespace) -> dict[
 
 
 def disconnect_device(h: FaspHarness, peer_id: str, reason: str) -> dict[str, Any]:
+    peer_id = _resolve_peer(h, peer_id)
     if not h.peers.get(peer_id):
         raise FaspError("auth.pairing_not_found", "Unknown peer; there is no pairing to revoke.")
     if not isinstance(reason, str) or not 1 <= len(reason) <= 200:
@@ -509,6 +620,8 @@ def cmd_radio_register(args: argparse.Namespace) -> int:
         old = h.peers.get(card["system_id"])
         if old is not None and old["card"]["public_key"] != card["public_key"]:
             raise FaspError("auth.peer_identity_changed", "Existing paired identity key cannot be replaced during registration.")
+        if getattr(args, "as_name", None):
+            _check_route_target(h, args.as_name, card["system_id"])
         response = request_radio(endpoint, {"type": "pair.hello", "id_card": h.id_card()}, timeout=args.timeout)
         if response.get("type") != "hello.ready" or response.get("system_id") != card["system_id"]:
             raise FaspError("auth.invalid_hello", "Bluetooth peer hello did not match the discovered identity.")
@@ -523,13 +636,14 @@ def cmd_radio_register(args: argparse.Namespace) -> int:
         radios = h.state.get("agent-radios.json", {})
         radios[card["system_id"]] = endpoint.as_dict()
         h.state.put("agent-radios.json", radios)
-        _emit({"ok": True, "peer_id": card["system_id"], "name": card.get("display_name"), "state": h.peers.get(card["system_id"])["state"], "pair_code": pending["pair_code"], "approval_required": True, "instructions": "Verify the fingerprint out of band, then approve on BOTH nodes."})
+        route = _bind_route(h, args.as_name, card["system_id"], allow_pending=True) if getattr(args, "as_name", None) else None
+        _emit({"ok": True, "peer_id": card["system_id"], "name": card.get("display_name"), "state": h.peers.get(card["system_id"])["state"], "pair_code": pending["pair_code"], "route": route, "approval_required": True, "instructions": "Verify the fingerprint out of band, then approve on BOTH nodes."})
     return 0
 
 
 def cmd_approve(args: argparse.Namespace) -> int:
     with _agent(args) as h:
-        result = h.confirm_peer(args.peer, args.code, args.scope if args.scope else None)
+        result = h.confirm_peer(_resolve_peer(h, args.peer), args.code, args.scope if args.scope else None)
         _emit(result)
     return 0
 
@@ -540,6 +654,24 @@ def cmd_peers(args: argparse.Namespace) -> int:
         radios = h.state.get("agent-radios.json", {})
         peers = [{"peer_id": pid, "name": entry["card"].get("display_name"), "state": entry["state"], "expires_at": entry["expires_at"], "scopes": entry["allowed_capability_prefixes"], "url": urls.get(pid), "radio": radios.get(pid)} for pid, entry in sorted(h.peers.all().items())]
         _emit({"peers": peers})
+    return 0
+
+
+def cmd_route(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        if args.route_action == "list":
+            _emit({"routes": [{"name": name, "peer_id": peer} for name, peer in sorted(_routes(h).items())]})
+        elif args.route_action == "add":
+            name = _bind_route(h, args.name, _resolve_peer(h, args.peer) if args.peer.startswith("agent.") else args.peer)
+            _emit({"ok": True, "name": name, "peer_id": _routes(h)[name]})
+        else:
+            name = _route_name(args.name)
+            routes = _routes(h)
+            if name not in routes:
+                raise FaspError("config.route_missing", "Unknown local name.")
+            peer = routes.pop(name)
+            h.state.put("agent-routes.json", routes)
+            _emit({"ok": True, "name": name, "peer_id": peer, "removed": True})
     return 0
 
 
@@ -559,16 +691,20 @@ def _load_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 def _queue_and_send(args: argparse.Namespace, kind: str, payload: dict[str, Any]) -> int:
     with _agent(args) as h:
-        h._peer(args.peer)
-        envelope = h.make_envelope(kind, args.peer, payload)
+        peer_id = _resolve_peer(h, args.peer)
+        h._peer(peer_id)
+        envelope = h.make_envelope(kind, peer_id, payload)
         outbox = Outbox(h.db)
-        queued = outbox.enqueue(args.peer, envelope)
+        queued = outbox.enqueue(peer_id, envelope)
+        metadata = {"peer_id": peer_id, "idempotency_key": payload.get("idempotency_key")}
+        if "task_path" in payload:
+            metadata["task_path"] = payload["task_path"]
         if args.queue_only:
-            _emit({"state": "queued", "message_id": queued.message_id, "expires_at": envelope["expires_at"]})
+            _emit({**metadata, "state": "queued", "message_id": queued.message_id, "expires_at": envelope["expires_at"]})
             return 0
         report = _deliver(h, args)
         record = outbox.get(queued.message_id)
-        _emit({"message_id": queued.message_id, "state": record["state"], "response": record["response"], "delivery": report})
+        _emit({**metadata, "message_id": queued.message_id, "state": record["state"], "response": record["response"], "delivery": report})
         return 0 if record["state"] == "sent" else 3 if record["state"] == "pending" else 4
 
 
@@ -579,6 +715,30 @@ def cmd_communicate(args: argparse.Namespace) -> int:
         payload["objective"] = args.message
     if args.grant:
         payload["grant"] = {"id": args.grant}
+    return _queue_and_send(args, "intent.propose", payload)
+
+
+def cmd_say(args: argparse.Namespace) -> int:
+    args.message = args.text
+    args.payload_file = None
+    args.capability = "coordinate.chat.v1"
+    args.idempotency_key = None
+    args.grant = None
+    return cmd_communicate(args)
+
+
+def cmd_speak(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        peer_id, task_name = _resolve_task_path(h, args.path)
+    payload = _load_payload(args)
+    if args.message is None and "objective" not in payload:
+        raise FaspError("schema.invalid", "speak requires --message or an objective in --payload-file.")
+    payload.update({"idempotency_key": args.idempotency_key or str(uuid.uuid4()), "capability": args.capability, "task_path": args.path, "task_name": task_name})
+    if args.message is not None:
+        payload["objective"] = args.message
+    if args.grant:
+        payload["grant"] = {"id": args.grant}
+    args.peer = peer_id
     return _queue_and_send(args, "intent.propose", payload)
 
 
@@ -624,13 +784,28 @@ def cmd_task_status(args: argparse.Namespace) -> int:
     return _queue_and_send(args, "task.status", payload)
 
 
+def cmd_task_cancel(args: argparse.Namespace) -> int:
+    return _queue_and_send(args, "task.cancel", {"idempotency_key": args.idempotency_key})
+
+
+def cmd_tasks(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        rows = h.db.read("SELECT message_id, destination, state, envelope_json, response_json, created_at FROM outbox WHERE kind = 'intent.propose' ORDER BY row_id DESC LIMIT ?", (args.limit,))
+        tasks = []
+        for row in rows:
+            payload = json.loads(row["envelope_json"])["payload"]
+            tasks.append({"message_id": row["message_id"], "peer_id": row["destination"], "state": row["state"], "idempotency_key": payload.get("idempotency_key"), "task_path": payload.get("task_path"), "created_at": row["created_at"], "response": json.loads(row["response_json"]) if row["response_json"] else None})
+        _emit({"tasks": tasks})
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fasp", description="FASP agent CLI: explicit trust and reliable signed task delivery.")
+    parser = argparse.ArgumentParser(prog="fasp", description="Connect systems with verified pairing and reliable signed messages. Terminal output is readable; pipes receive JSON.")
     subs = parser.add_subparsers(dest="command", required=True)
 
     def add(name: str, description: str, fn: Any) -> argparse.ArgumentParser:
         cmd = subs.add_parser(name, help=description)
-        cmd.add_argument("--state-dir", default="~/.fasp-agent", help="Private local state directory.")
+        cmd.add_argument("--state-dir", default=os.environ.get("FASP_STATE_DIR", "~/.fasp-agent"), help="Private local state directory (or FASP_STATE_DIR).")
         cmd.set_defaults(handler=fn)
         return cmd
 
@@ -663,10 +838,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     connect = add("connect", "Exchange signed identity cards and create PENDING pairing; never auto-approve.", cmd_connect)
     connect.add_argument("reference", help="HTTPS URL or exact discovered/registered FASP system ID.")
+    connect.add_argument("--as", dest="as_name", help="Save a local name such as agent.researcher.")
     network_flags(connect)
 
     reg = add("register", "Compatibility alias of connect for an explicit HTTPS URL.", cmd_register)
     reg.add_argument("url", help="Peer node base HTTPS URL.")
+    reg.add_argument("--as", dest="as_name", help="Save a local agent name for this peer.")
     network_flags(reg)
 
     radio = add("radio-register", "Exchange signed ID cards and request pending pairing over Bluetooth.", cmd_radio_register)
@@ -676,18 +853,30 @@ def build_parser() -> argparse.ArgumentParser:
     radio.add_argument("--psm", type=lambda value: int(value, 0), default=0x0080, help="BLE LE_PSM (default 0x0080).")
     radio.add_argument("--address-type", choices=("public", "random"), default="public")
     radio.add_argument("--timeout", type=float, default=10.0)
+    radio.add_argument("--as", dest="as_name", help="Save a local agent name for this peer.")
 
     approve = add("approve", "Approve a pending peer locally after out-of-band code verification.", cmd_approve)
-    approve.add_argument("peer", help="Full FASP system ID.")
+    approve.add_argument("peer", help="Full FASP system ID or local agent name.")
     approve.add_argument("--code", required=True, help="Pairing fingerprint verified with peer operator.")
     approve.add_argument("--scope", action="append", help="Explicit granted capability prefix; repeat.")
 
     disconnect = add("disconnect", "Revoke a known peer locally; cannot undo remote state.", cmd_disconnect)
-    disconnect.add_argument("peer", help="Exact peer FASP system ID.")
+    disconnect.add_argument("peer", help="Exact peer FASP system ID or local agent name.")
     disconnect.add_argument("--reason", default="operator disconnected peer")
 
     add("peers", "List pinned peers, pairing state and URLs.", cmd_peers)
     add("devices", "Alias of peers: list paired, pending and revoked device identities.", cmd_peers)
+
+    route = add("route", "Manage local hierarchical names for paired peers.", cmd_route)
+    route_subs = route.add_subparsers(dest="route_action", required=True)
+    route_add = route_subs.add_parser("add", help="Bind agent.ROLE to a paired peer ID.")
+    route_add.add_argument("name")
+    route_add.add_argument("peer")
+    route_remove = route_subs.add_parser("remove", help="Remove a local name.")
+    route_remove.add_argument("name")
+    route_subs.add_parser("list", help="List local names.")
+    for action in (route_add, route_remove, route_subs.choices["list"]):
+        action.add_argument("--state-dir", default=argparse.SUPPRESS)
 
     capabilities = add("capabilities", "List local or verified remote advertised capabilities.", cmd_capabilities)
     capabilities.add_argument("reference", nargs="?", help="Optional HTTPS URL or registered/discovered device ID.")
@@ -701,11 +890,11 @@ def build_parser() -> argparse.ArgumentParser:
         network_flags(cmd)
 
     ping = add("ping", "Send an authenticated signed heartbeat to a paired device.", cmd_ping)
-    ping.add_argument("peer", help="Exact paired FASP system ID.")
+    ping.add_argument("peer", help="Exact paired FASP system ID or local agent name.")
     deliver_flags(ping)
 
     def message_flags(cmd: argparse.ArgumentParser) -> None:
-        cmd.add_argument("peer", help="Destination's exact paired FASP system ID.")
+        cmd.add_argument("peer", help="Destination's paired FASP system ID or local agent name.")
         cmd.add_argument("--payload-file", help="Read JSON payload from a file or '-' for stdin.")
         cmd.add_argument("--queue-only", action="store_true", help="Persist signed envelope without contacting the peer.")
         deliver_flags(cmd)
@@ -716,6 +905,22 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--message", help="Objective/message for the receiving adapter.")
     chat.add_argument("--idempotency-key", help="Stable task identity for application-side deduplication.")
     chat.add_argument("--grant", help="Approved grant ID if the capability requires one.")
+
+    say = add("say", "Send text to a paired system or local agent name.", cmd_say)
+    say.add_argument("peer")
+    say.add_argument("text")
+    say.add_argument("--queue-only", action="store_true")
+    deliver_flags(say)
+
+    speak = add("speak", "Send a named text task such as agent.researcher.summarize.", cmd_speak)
+    speak.add_argument("path")
+    speak.add_argument("--payload-file")
+    speak.add_argument("--message")
+    speak.add_argument("--capability", default="coordinate.chat.v1")
+    speak.add_argument("--idempotency-key")
+    speak.add_argument("--grant")
+    speak.add_argument("--queue-only", action="store_true")
+    deliver_flags(speak)
 
     send = add("send", "Send a raw supported FASP kind with a JSON payload.", cmd_send)
     message_flags(send)
@@ -730,11 +935,19 @@ def build_parser() -> argparse.ArgumentParser:
     out.add_argument("message_id", nargs="?")
     out.add_argument("--limit", type=int, default=25)
 
+    tasks = add("tasks", "List recent outgoing tasks and delivery states.", cmd_tasks)
+    tasks.add_argument("--limit", type=int, default=25)
+
     status = add("task-status", "Query a peer's durable task state by key.", cmd_task_status)
     status.add_argument("peer")
     status.add_argument("idempotency_key")
     status.add_argument("--queue-only", action="store_true")
     deliver_flags(status)
+    cancel = add("task-cancel", "Request cancellation by stable task key.", cmd_task_cancel)
+    cancel.add_argument("peer")
+    cancel.add_argument("idempotency_key")
+    cancel.add_argument("--queue-only", action="store_true")
+    deliver_flags(cancel)
     return parser
 
 
@@ -753,7 +966,14 @@ def _normalize_pair_code_arg(argv: list[str]) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(_normalize_pair_code_arg(list(sys.argv[1:] if argv is None else argv)))
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "--human" in raw and "--json" in raw:
+        print(json.dumps({"ok": False, "error": {"code": "schema.invalid", "detail": "Choose either --human or --json."}}), file=sys.stderr)
+        return 2
+    human = "--human" in raw or ("--json" not in raw and sys.stdout.isatty())
+    raw = [item for item in raw if item not in {"--human", "--json"}]
+    args = build_parser().parse_args(_normalize_pair_code_arg(raw))
+    token = _HUMAN_OUTPUT.set(human)
     try:
         timeout = getattr(args, "timeout", 5)
         limit = getattr(args, "limit", 32)
@@ -766,8 +986,11 @@ def main(argv: list[str] | None = None) -> int:
     except (FaspError, RemoteRejection, TransportFailure, OSError, ValueError) as exc:
         code = exc.code if isinstance(exc, (FaspError, RemoteRejection)) else "cli.error"
         detail = exc.detail if isinstance(exc, FaspError) else str(exc)
-        print(json.dumps({"ok": False, "error": {"code": code, "detail": detail}}, sort_keys=True), file=sys.stderr)
+        problem = {"ok": False, "error": {"code": code, "detail": detail}}
+        print(_render_human(problem) if human else json.dumps(problem, sort_keys=True), file=sys.stderr)
         return 2
+    finally:
+        _HUMAN_OUTPUT.reset(token)
 
 
 def main_entry() -> int:
@@ -787,6 +1010,7 @@ def main_entry() -> int:
         return 0
     if len(sys.argv) > 1 and sys.argv[1] in {"-h", "--help"}:
         build_parser().print_help()
+        print("\nOutput: readable on a terminal, JSON when piped. Use --human or --json anywhere to override.")
         print("\nAlso available: serve, discover, mcp (optional extra).")
         return 0
     if len(sys.argv) > 1 and sys.argv[1] == "mcp":

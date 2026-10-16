@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import ssl
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -88,7 +89,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--name", default="fasp-system")
-    parser.add_argument("--state-dir", type=Path, default=Path(".fasp"))
+    parser.add_argument("--state-dir", type=Path, default=Path(os.environ.get("FASP_STATE_DIR", ".fasp")).expanduser(), help="Private local state directory (or FASP_STATE_DIR).")
     parser.add_argument("--public-url", help="Advertised HTTPS/HTTP base URL; required for a reachable LAN peer.")
     parser.add_argument("--adapter", help="Optional local model adapter: module:object or module:factory")
     parser.add_argument("--process-adapter", action="store_true", help="Run a stateless model adapter in supervised subprocesses instead of in-process threads.")

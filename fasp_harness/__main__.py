@@ -27,7 +27,7 @@ def main() -> int:
         return cli.main(sys.argv[1:])
     from . import agent_cli
 
-    if command in agent_cli.AGENT_COMMANDS:
+    if command in agent_cli.AGENT_COMMANDS or command in {"--human", "--json"}:
         return agent_cli.main(sys.argv[1:])
     if command == "mcp":
         from .mcp_server import main as mcp_main
@@ -37,7 +37,7 @@ def main() -> int:
         from . import cli
 
         cli.build_parser().print_help()
-        print("\nAgent commands: init, register, approve, peers, communicate, send, drain, outbox, task-status.")
+        print("\nAgent commands: " + ", ".join(sorted(agent_cli.AGENT_COMMANDS)) + ".")
         print("Also available: serve (the default), discover, mcp. Run `python -m fasp_harness serve --help` for server options.")
         return 0
     if command == "serve":

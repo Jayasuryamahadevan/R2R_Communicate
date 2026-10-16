@@ -9,12 +9,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Any
 
-from .agent_cli import _agent, _deliver, connect_device, disconnect_device, inspect_device, ping_device, scan_devices
+from .agent_cli import (
+    _agent,
+    _deliver,
+    _resolve_peer,
+    _resolve_task_path,
+    _routes,
+    connect_device,
+    disconnect_device,
+    inspect_device,
+    ping_device,
+    scan_devices,
+)
 from .core import MAX_INLINE_BYTES
 from .edge.outbox import Outbox
 from .protocol.errors import FaspError
@@ -29,16 +41,22 @@ def build_server(args: argparse.Namespace) -> Any:
 
     server = MCPServer("FASP")
 
-    def enqueue_intent(h: Any, peer_id: str, message: str, capability: str, idempotency_key: str | None, grant_id: str | None) -> dict[str, Any]:
+    def enqueue_intent(h: Any, peer_id: str, message: str, capability: str, idempotency_key: str | None, grant_id: str | None, task_path: str | None = None, task_name: str | None = None) -> dict[str, Any]:
+        peer_id = _resolve_peer(h, peer_id)
         h._peer(peer_id)
         payload: dict[str, Any] = {"objective": message, "capability": capability, "idempotency_key": idempotency_key or str(uuid.uuid4())}
+        if task_path is not None:
+            payload.update({"task_path": task_path, "task_name": task_name})
         if grant_id:
             payload["grant"] = {"id": grant_id}
         envelope = h.make_envelope("intent.propose", peer_id, payload)
         if len(json.dumps(envelope, ensure_ascii=False).encode("utf-8")) > MAX_INLINE_BYTES:
             raise FaspError("resource.too_large", "Signed intent exceeds 64 KiB.")
         queued = Outbox(h.db).enqueue(peer_id, envelope)
-        return {"state": "queued", "message_id": queued.message_id, "idempotency_key": payload["idempotency_key"], "expires_at": envelope["expires_at"]}
+        result = {"state": "queued", "message_id": queued.message_id, "idempotency_key": payload["idempotency_key"], "expires_at": envelope["expires_at"]}
+        if task_path is not None:
+            result["task_path"] = task_path
+        return result
 
     @server.tool()
     async def identity() -> dict[str, Any]:
@@ -66,6 +84,11 @@ def build_server(args: argparse.Namespace) -> Any:
             ]
             return {"peers": entries}
 
+    @server.tool()
+    async def routes() -> dict[str, Any]:
+        """List local agent names and their pinned peer IDs; names do not grant trust."""
+        with _agent(args) as h:
+            return {"routes": [{"name": name, "peer_id": peer} for name, peer in sorted(_routes(h).items())]}
 
     @server.tool()
     async def scan(cidr: str, port: int = 8766, scheme: str = "https", timeout: float = 0.35, workers: int = 16) -> dict[str, Any]:
@@ -90,11 +113,12 @@ def build_server(args: argparse.Namespace) -> Any:
             raise ToolError(f"{exc.code}: {exc.detail}" if isinstance(exc, FaspError) else str(exc)) from exc
 
     @server.tool()
-    async def connect(reference: str) -> dict[str, Any]:
+    async def connect(reference: str, name: str | None = None) -> dict[str, Any]:
         """Start pending FASP pairing. Requires explicit out-of-band fingerprint verification and approval ON BOTH devices."""
         def action() -> dict[str, Any]:
             with _agent(args) as h:
-                return connect_device(h, reference, args)
+                options = argparse.Namespace(**{**vars(args), "as_name": name})
+                return connect_device(h, reference, options)
         try:
             return await asyncio.to_thread(action)
         except (FaspError, ValueError, OSError) as exc:
@@ -107,7 +131,7 @@ def build_server(args: argparse.Namespace) -> Any:
             if not isinstance(scopes, list) or any(not isinstance(item, str) or not item or "*" in item for item in scopes):
                 raise FaspError("schema.invalid", "Explicit scopes must be a list of nonempty capability names without wildcard.")
             with _agent(args) as h:
-                return h.confirm_peer(peer_id, pair_code, scopes)
+                return h.confirm_peer(_resolve_peer(h, peer_id), pair_code, scopes)
         try:
             return await asyncio.to_thread(action)
         except FaspError as exc:
@@ -193,6 +217,25 @@ def build_server(args: argparse.Namespace) -> Any:
             raise ToolError(f"{exc.code}: {exc.detail}") from exc
 
     @server.tool()
+    async def speak(path: str, message: str, capability: str = "coordinate.chat.v1", idempotency_key: str | None = None, grant_id: str | None = None, queue_only: bool = False) -> dict[str, Any]:
+        """Send a signed text task to agent.ROLE.TASK through a paired local name."""
+        def send_once() -> dict[str, Any]:
+            with _agent(args) as h:
+                peer_id, task_name = _resolve_task_path(h, path)
+                queued = enqueue_intent(h, peer_id, message, capability, idempotency_key, grant_id, path, task_name)
+                if queue_only:
+                    return queued
+                _deliver(h, args)
+                record = Outbox(h.db).get(queued["message_id"])
+                if record is None:
+                    raise ToolError("Queued intent disappeared from the outbox.")
+                return {**queued, "state": record["state"], "response": record["response"], "last_error": record["last_error"]}
+        try:
+            return await asyncio.to_thread(send_once)
+        except FaspError as exc:
+            raise ToolError(f"{exc.code}: {exc.detail}") from exc
+
+    @server.tool()
     async def drain() -> dict[str, Any]:
         """Attempt one bounded delivery batch using the registered HTTPS or Bluetooth endpoint."""
         def drain_once() -> dict[str, Any]:
@@ -209,7 +252,7 @@ def build_server(args: argparse.Namespace) -> Any:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fasp mcp", description="Local FASP MCP server over stdio.")
-    parser.add_argument("--state-dir", default="~/.fasp-agent", help="Existing initialized FASP state directory.")
+    parser.add_argument("--state-dir", default=os.environ.get("FASP_STATE_DIR", "~/.fasp-agent"), help="Existing initialized FASP state directory (or FASP_STATE_DIR).")
     parser.add_argument("--ca-cert", help="Custom TLS CA certificate bundle.")
     parser.add_argument("--client-cert", help="mTLS client certificate.")
     parser.add_argument("--client-key", help="mTLS client key.")

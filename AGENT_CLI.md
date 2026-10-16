@@ -1,6 +1,6 @@
 # FASP CLI for AI agents and reliable coordination
 
-The installed `fasp` command is a JSON-first interface for two *separately
+The installed `fasp` command is a CLI and JSON interface for two *separately
 owned* agents or nodes. It uses the existing Ed25519-signed FASP v1 wire
 protocol; it is NOT a model-hosting service, unauthenticated peer-to-peer
 chat system, or universal NAT traversal layer.
@@ -55,6 +55,11 @@ use this node's identity, so give that host the same local trust level as
 the `fasp` CLI. Keep each node's state on persistent storage and use a
 different state directory for each identity.
 
+The MCP tools also expose `routes` and `speak` for named task routing. `connect`
+accepts an optional `name`, such as `agent.researcher`; `communicate` and
+`queue_intent` accept either that local name or a system ID. Names are local
+address-book entries and confer no trust or capability.
+
 The MCP extra is installed only when requested. For a minimal runtime,
 `./install.sh` installs only the five FASP dependencies. The optional Node
 bridges are installed with `./install.sh --with-bridges` and require Node 20+.
@@ -102,6 +107,42 @@ For isolated loopback testing, use `fasp scan --cidr 127.0.0.0/30 --scheme http`
 TLS client certificates are supported during scanning as well as direct connection using `--client-cert` and `--client-key`. The optional local stdio MCP server inherits its configured TLS credentials. **MCP tools execute with the authority of the host process that can access the local identity and state.** Restrict that filesystem access, require human approval for the `approve` and `disconnect` actions, and never expose stdio MCP as an unauthenticated network server. A `connect` operation by itself does not grant a capability; an approved scope does not bypass local adapter risk classifications or hardware safety.
 
 ## Two-node setup
+
+### Local names and text tasks
+
+After connecting and approving a peer on both nodes, you can address it with
+a memorable local name. You can also supply `--as agent.researcher` to
+`connect`, `register`, or `radio-register` to save the name during pairing;
+the peer still stays pending until both operators approve it.
+
+```bash
+fasp route add agent.researcher 'fasp:system:PEER_ID'
+fasp route list
+fasp say agent.researcher 'Hello'
+fasp speak agent.researcher.summarize --message 'Summarize this report' \
+  --idempotency-key report-001
+fasp tasks
+fasp task-status agent.researcher report-001
+fasp task-cancel agent.researcher report-001
+fasp route remove agent.researcher
+```
+
+`speak` selects the longest registered name at the start of the task path,
+then includes the complete `task_path` and remaining `task_name` in the signed
+intent payload. For example, `agent.researcher.summarize` routes through
+`agent.researcher` and carries `summarize` as the task name. The receiving
+adapter sees these fields and decides how to handle the task. The default
+adapter only echoes the text. Names cannot be rebound to a different peer
+without explicitly removing the old binding. The durable outbox records each
+task before sending and `tasks` lists recent outgoing intents.
+
+Terminal output is readable by default; pipes and command substitution get
+one JSON object per command. Use `--human` or `--json` anywhere in the command
+to force a format. Set `FASP_STATE_DIR` to use the same private state directory
+for `fasp`, `fasp serve`, and `fasp mcp` without repeating `--state-dir`.
+
+Network commands still need the appropriate `--ca-cert` and optional mTLS
+flags. A pending or revoked name cannot send tasks.
 
 Run on **machine A**:
 
@@ -233,8 +274,9 @@ This is bounded *at-least-once transport delivery with receiver deduplication*,
 not a guarantee of exactly-once physical effects. An accepted task may
 still fail or be cancelled after network delivery.
 
-A `fasp` command emits one JSON document to stdout; errors are JSON on
-stderr. Exit codes: `0` delivered/accepted or deliberately queued;
+When stdout is piped, a `fasp` command emits one JSON document to stdout;
+errors are JSON on stderr. Terminal output is readable unless `--json` is
+supplied. Exit codes: `0` delivered/accepted or deliberately queued;
 `2` invalid CLI/policy/configuration; `3` queued after transport
 failure; `4` permanently rejected/dead-lettered.
 
