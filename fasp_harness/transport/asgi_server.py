@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import math
 import os
 import ssl
+import threading
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -22,6 +24,7 @@ import uvicorn
 from ..core import FaspHarness
 from ..protocol.errors import FaspError
 from ..security.posture import DeploymentConfig, SecurityProfile, evaluate_posture
+from ..timestamps import stamp
 from .http_app import MAX_BODY_BYTES, create_app, default_health
 from .middleware import IPRateLimitMiddleware
 from .runtime import TransportLimits
@@ -92,6 +95,9 @@ def main() -> None:
     parser.add_argument("--state-dir", type=Path, default=Path(os.environ.get("FASP_STATE_DIR", ".fasp")).expanduser(), help="Private local state directory (or FASP_STATE_DIR).")
     parser.add_argument("--public-url", help="Advertised HTTPS/HTTP base URL; required for a reachable LAN peer.")
     parser.add_argument("--adapter", help="Optional local model adapter: module:object or module:factory")
+    parser.add_argument("--relay-worker", action="store_true", help="Poll the configured outbound relay in this process, using this node's adapter and policy.")
+    parser.add_argument("--relay-ca-cert", help="CA bundle for outbound relay HTTPS.")
+    parser.add_argument("--relay-poll-interval", type=float, default=0.5)
     parser.add_argument("--process-adapter", action="store_true", help="Run a stateless model adapter in supervised subprocesses instead of in-process threads.")
     parser.add_argument("--tls-cert", type=Path, help="PEM certificate for production HTTPS.")
     parser.add_argument("--tls-key", type=Path, help="PEM private key for production HTTPS.")
@@ -146,6 +152,8 @@ def main() -> None:
         raise SystemExit("Adapter concurrency must be 1..64; max-inflight-tasks must be positive.")
     if args.process_adapter and not args.adapter:
         raise SystemExit("--process-adapter requires --adapter module:factory.")
+    if not math.isfinite(args.relay_poll_interval) or args.relay_poll_interval <= 0 or args.relay_poll_interval > 60:
+        raise SystemExit("--relay-poll-interval must be greater than zero and at most 60 seconds.")
     if args.process_adapter:
         from ..adapter_worker import ProcessAdapter
 
@@ -226,6 +234,36 @@ def main() -> None:
     from .radio import RadioEndpoint, RadioListener
 
     radio_listeners: list[RadioListener] = []
+    relay_stop = threading.Event()
+    relay_thread: threading.Thread | None = None
+    reconcile_stop = threading.Event()
+
+    def reconcile_loop() -> None:
+        while not reconcile_stop.is_set():
+            harness.tasks.expire_stale_leases(stamp())
+            if callable(getattr(harness.adapter, "reconcile", None)):
+                harness.reconcile_unknown_tasks()
+            reconcile_stop.wait(10.0)
+
+    reconcile_thread = threading.Thread(target=reconcile_loop, name="fasp-task-reconciler", daemon=True)
+    reconcile_thread.start()
+    health.register("task-reconciler", lambda: (reconcile_thread.is_alive(), "Task lease sweep and optional external reconciliation running"))
+    if args.relay_worker:
+        from .relay_client import RelayClient
+
+        relay_client = RelayClient(harness, ca_cert=args.relay_ca_cert)
+
+        def poll_relay() -> None:
+            while not relay_stop.is_set():
+                try:
+                    relay_client.process_once()
+                except (FaspError, OSError) as error:
+                    print(f"Relay poll failed: {error}")
+                relay_stop.wait(args.relay_poll_interval)
+
+        relay_thread = threading.Thread(target=poll_relay, name="fasp-relay-worker", daemon=True)
+        relay_thread.start()
+        health.register("relay-worker", lambda: (bool(relay_thread and relay_thread.is_alive()), "Outbound relay worker running"))
     try:
         if args.rfcomm_channel is not None:
             radio_listeners.append(RadioListener(harness, RadioEndpoint("classic", args.bluetooth_address, channel=args.rfcomm_channel)))
@@ -246,6 +284,11 @@ def main() -> None:
         raise SystemExit(f"Bluetooth listener failed: {error}") from error
 
     def close_radios() -> None:
+        reconcile_stop.set()
+        reconcile_thread.join(timeout=5)
+        relay_stop.set()
+        if relay_thread is not None:
+            relay_thread.join(timeout=5)
         for listener in radio_listeners:
             listener.close()
 

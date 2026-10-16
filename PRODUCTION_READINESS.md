@@ -53,15 +53,15 @@ independent of FASP. A network fault must not remove the local safety response.
 - Adapters must enforce their own narrow schemas, external idempotency and
   device-specific confirmation for physical effects. FASP's task receipt
   never proves a robot has finished moving.
-- IP networking is direct HTTPS/WebSocket. Opt-in Linux Bluetooth Classic
+- IP networking supports direct HTTPS/WebSocket and opt-in outbound HTTPS
+  relay mailboxes with end-to-end encrypted frames. Opt-in Linux Bluetooth Classic
   and BLE L2CAP listeners require authenticated BlueZ link pairing, the
   matching channel/PSM, and hardware validation. They use the same signed
   envelope authorization boundary. The stock container has no radio device
-  access. Cross-NAT routing, automated
-  organizational enrollment and a multi-hop end-to-end ciphertext relay
-  are not present. The Compose stack supervises the CLI's signed outbox
-  drain; the generic node outbox has no network router. The resilience
-  mesh module is simulation, not a real routing plane.
+  access. Cross-NAT relay routing is static and requires a reachable HTTPS
+  hub, per-node tokens, verified ID cards, and explicit operator approval.
+  Automated organizational enrollment is not present. The resilience mesh
+  simulator remains separate from the live relay path.
 - Durable SQLite WAL is intentionally per node, on local storage. It is not
   a distributed active-active database and must not be put on NFS/SMB.
 
@@ -246,8 +246,8 @@ model text should choose the local adapter import path.
 
 Independent security audit, real-hardware safety assessment, full multi-host
 endurance testing, supervised out-of-process adapters, site-proven drain
-behavior across partitions, and production-grade cross-NAT transport if
-that network topology is required. A central multi-node active-active control
+behavior across partitions, and independent security and load testing of any
+public relay deployment. A central multi-node active-active control
 plane would require a separately designed state/consensus architecture;
 do NOT deploy multiple writer replicas over a shared SQLite volume.
 

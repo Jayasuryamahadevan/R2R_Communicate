@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import secrets
 import ssl
 import sys
 import time
@@ -27,13 +28,14 @@ from .edge.outbox import Outbox
 from .protocol.contracts import MAX_RECORD_BYTES as MAX_INLINE_BYTES
 from .protocol.contracts import check_peer_features
 from .protocol.errors import FaspError
+from .timestamps import stamp
 from .transport.canonical import decode_object
 
 if TYPE_CHECKING:
     from .core import FaspHarness
 
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
-AGENT_COMMANDS = frozenset({"init", "id", "scan", "inspect", "connect", "register", "radio-register", "approve", "disconnect", "peers", "devices", "capabilities", "status", "ping", "communicate", "send", "drain", "outbox", "task-status", "route", "say", "speak", "tasks", "task-cancel"})
+AGENT_COMMANDS = frozenset({"init", "id", "import-card", "scan", "inspect", "connect", "register", "radio-register", "approve", "disconnect", "peers", "devices", "capabilities", "status", "ping", "communicate", "send", "drain", "outbox", "task-status", "task-reconcile", "route", "say", "speak", "tasks", "task-cancel", "relay-serve", "relay-authorize", "relay-route", "relay-config", "relay-worker"})
 ROUTE_PATTERN = re.compile(r"agent(?:\.[a-z][a-z0-9_-]{0,62})+\Z")
 _HUMAN_OUTPUT: contextvars.ContextVar[bool] = contextvars.ContextVar("fasp_human_output", default=False)
 
@@ -168,7 +170,12 @@ def _open_agent(args: argparse.Namespace) -> FaspHarness:
         raise FaspError("config.not_initialized", "First run: fasp init --name NAME --state-dir PATH")
     config_file = state / "agent.json"
     config = json.loads(config_file.read_text(encoding="utf-8")) if config_file.exists() else {}
-    return FaspHarness(state, config.get("name", "fasp-agent"), config.get("base_url", "http://127.0.0.1:8766"))
+    adapter = None
+    if getattr(args, "adapter", None):
+        from .transport.asgi_server import load_adapter
+
+        adapter = load_adapter(args.adapter)
+    return FaspHarness(state, config.get("name", "fasp-agent"), config.get("base_url", "http://127.0.0.1:8766"), adapter=adapter)
 
 
 @contextlib.contextmanager
@@ -239,14 +246,23 @@ def _radio_endpoint(harness: FaspHarness, peer_id: str):
 
 def _send_to_peer(harness: FaspHarness, peer_id: str, envelope: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     transport = args.transport
+    relay_configured = (harness.state.directory / "relay-client.json").is_file()
     if transport == "auto":
-        transport = "http" if peer_id in harness.state.get("agent-peers.json", {}) else "radio"
+        transport = "http" if peer_id in harness.state.get("agent-peers.json", {}) else "relay" if relay_configured else "radio"
     if transport == "http":
         try:
             return request_json(_peer_endpoint(harness, peer_id, args, envelope.get("required_features", [])), envelope, args)
         except TransportFailure:
-            if args.transport != "auto" or peer_id not in harness.state.get("agent-radios.json", {}):
+            if args.transport != "auto":
                 raise
+            if relay_configured:
+                transport = "relay"
+            elif peer_id not in harness.state.get("agent-radios.json", {}):
+                raise
+    if transport == "relay":
+        from .transport.relay_client import RelayClient
+
+        return RelayClient(harness, ca_cert=args.ca_cert, timeout=args.timeout).send_request(peer_id, envelope)
 
     from .transport.radio import request_radio
 
@@ -328,6 +344,22 @@ def cmd_id(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_card(args: argparse.Namespace) -> int:
+    with Path(args.file).open("rb") as stream:
+        data = stream.read(MAX_INLINE_BYTES + 1)
+    if len(data) > MAX_INLINE_BYTES:
+        raise FaspError("resource.too_large", "ID card file exceeds 64 KiB.")
+    card = decode_object(data, limit=MAX_INLINE_BYTES)
+    with _agent(args) as h:
+        peer_id = card.get("system_id")
+        if args.as_name:
+            _check_route_target(h, args.as_name, peer_id)
+        hello = h.hello(card)
+        route = _bind_route(h, args.as_name, peer_id, allow_pending=True) if args.as_name else None
+        _emit({"ok": True, "peer_id": peer_id, "name": card.get("display_name"), "state": _peer_state(h, peer_id), "pair_code": hello["pair_code"], "route": route, "approval_required": True, "instructions": "Verify both system IDs and the pairing code through an independent trusted channel, then approve on both nodes."})
+    return 0
+
+
 
 def _peer_state(h: FaspHarness, peer_id: str) -> str:
     """A display-only state; never treat discovery as authorization."""
@@ -358,7 +390,7 @@ def _routes(h: FaspHarness) -> dict[str, str]:
 
 
 def _resolve_peer(h: FaspHarness, reference: str) -> str:
-    if reference.startswith("fasp:system:"):
+    if not reference.startswith("agent."):
         return reference
     name = _route_name(reference)
     peer = _routes(h).get(name)
@@ -788,6 +820,108 @@ def cmd_task_cancel(args: argparse.Namespace) -> int:
     return _queue_and_send(args, "task.cancel", {"idempotency_key": args.idempotency_key})
 
 
+def cmd_task_reconcile(args: argparse.Namespace) -> int:
+    with _agent(args) as h:
+        _emit(h.reconcile_task(args.idempotency_key))
+    return 0
+
+
+def cmd_relay_config(args: argparse.Namespace) -> int:
+    from .transport.relay_client import RelayClient
+
+    with _agent(args) as h:
+        _emit(RelayClient.configure(h.state.directory, args.url, Path(args.token_file)))
+    return 0
+
+
+def cmd_relay_worker(args: argparse.Namespace) -> int:
+    from .transport.relay_client import RelayClient
+
+    with _agent(args) as h:
+        client = RelayClient(h, ca_cert=args.ca_cert, timeout=args.timeout)
+        next_reconcile = 0.0
+        while True:
+            if time.monotonic() >= next_reconcile:
+                h.tasks.expire_stale_leases(stamp())
+                if callable(getattr(h.adapter, "reconcile", None)):
+                    h.reconcile_unknown_tasks()
+                next_reconcile = time.monotonic() + 10.0
+            try:
+                result = client.process_once()
+            except FaspError as exc:
+                if not args.watch or exc.code not in {"transport.unreachable", "transport.response_unavailable", "resource.exhausted"}:
+                    raise
+                _emit({"ok": False, "error": {"code": exc.code, "detail": exc.detail}})
+            else:
+                if not args.watch or result["received"]:
+                    _emit(result)
+            if not args.watch:
+                return 0
+            try:
+                time.sleep(args.interval)
+            except KeyboardInterrupt:
+                return 0
+
+
+def cmd_relay_authorize(args: argparse.Namespace) -> int:
+    from .transport.relay_hub import RelayHub
+
+    output = Path(args.output).expanduser()
+    if output.exists():
+        raise FaspError("config.already_exists", "Token output file already exists.")
+    output.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    token = secrets.token_urlsafe(32)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(token + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        hub = RelayHub(_state_dir(args))
+        try:
+            hub.authorize(args.name, role=args.role, token=token)
+        finally:
+            hub.close()
+    except BaseException:
+        output.unlink(missing_ok=True)
+        raise
+    _emit({"ok": True, "name": args.name, "role": args.role, "token_file": str(output)})
+    return 0
+
+
+def cmd_relay_route(args: argparse.Namespace) -> int:
+    from .transport.relay_hub import RelayHub
+
+    hub = RelayHub(_state_dir(args))
+    try:
+        hub.set_route(args.destination, args.url, args.account, Path(args.token_file), args.ca_cert)
+    finally:
+        hub.close()
+    _emit({"ok": True, "destination": args.destination, "next_hop": args.url})
+    return 0
+
+
+def cmd_relay_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    from .transport.asgi_server import _tls13_only_context_factory
+    from .transport.middleware import IPRateLimitMiddleware
+    from .transport.relay_hub import RelayHub, create_relay_app
+
+    if bool(args.tls_cert) != bool(args.tls_key):
+        raise FaspError("config.invalid", "Relay TLS certificate and key must be supplied together.")
+    if not args.tls_cert and args.host not in {"127.0.0.1", "localhost", "::1"}:
+        raise FaspError("transport.tls_required", "Public relay listeners require TLS.")
+    hub = RelayHub(_state_dir(args))
+    try:
+        app = IPRateLimitMiddleware(create_relay_app(hub), rate_per_second=20.0, burst=40)
+        config = uvicorn.Config(app, host=args.host, port=args.port, ssl_certfile=args.tls_cert, ssl_keyfile=args.tls_key, ssl_context_factory=_tls13_only_context_factory if args.tls_cert else None, limit_concurrency=256)
+        uvicorn.Server(config).run()
+    finally:
+        hub.close()
+    return 0
+
+
 def cmd_tasks(args: argparse.Namespace) -> int:
     with _agent(args) as h:
         rows = h.db.read("SELECT message_id, destination, state, envelope_json, response_json, created_at FROM outbox WHERE kind = 'intent.propose' ORDER BY row_id DESC LIMIT ?", (args.limit,))
@@ -815,6 +949,9 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--insecure-http", action="store_true")
 
     add("id", "Print this agent's signed identity card.", cmd_id)
+    import_card = add("import-card", "Import a signed peer ID card for offline or cross-NAT pairing.", cmd_import_card)
+    import_card.add_argument("file")
+    import_card.add_argument("--as", dest="as_name", help="Save a local agent name for this peer.")
 
     def network_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--ca-cert", help="Custom TLS CA certificate bundle.")
@@ -886,7 +1023,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def deliver_flags(cmd: argparse.ArgumentParser) -> None:
         cmd.add_argument("--limit", type=int, default=32, help="Max due messages per drain cycle.")
-        cmd.add_argument("--transport", choices=("auto", "http", "radio"), default="auto", help="Bearer for signed delivery; auto prefers a registered HTTPS endpoint.")
+        cmd.add_argument("--transport", choices=("auto", "http", "radio", "relay"), default="auto", help="Bearer for signed delivery; auto tries direct HTTPS then a configured relay or Bluetooth.")
         network_flags(cmd)
 
     ping = add("ping", "Send an authenticated signed heartbeat to a paired device.", cmd_ping)
@@ -948,6 +1085,38 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("idempotency_key")
     cancel.add_argument("--queue-only", action="store_true")
     deliver_flags(cancel)
+    reconcile = add("task-reconcile", "Locally verify an interrupted task through the adapter's read-only reconcile hook.", cmd_task_reconcile)
+    reconcile.add_argument("idempotency_key")
+    reconcile.add_argument("--adapter", help="Adapter module:object or module:factory with reconcile(key, intent).")
+
+    relay_config = add("relay-config", "Configure this node's outbound HTTPS relay using a private token file.", cmd_relay_config)
+    relay_config.add_argument("url")
+    relay_config.add_argument("--token-file", required=True)
+
+    relay_worker = add("relay-worker", "Poll the relay for inbound encrypted messages and return signed outcomes.", cmd_relay_worker)
+    relay_worker.add_argument("--watch", action="store_true")
+    relay_worker.add_argument("--interval", type=float, default=0.5)
+    relay_worker.add_argument("--timeout", type=float, default=5.0)
+    relay_worker.add_argument("--ca-cert")
+    relay_worker.add_argument("--adapter", help="Local adapter module:object or module:factory; use the same adapter as the node server.")
+
+    relay_authorize = add("relay-authorize", "Issue a private token for one node or another relay.", cmd_relay_authorize)
+    relay_authorize.add_argument("name")
+    relay_authorize.add_argument("--role", choices=("client", "relay"), default="client")
+    relay_authorize.add_argument("--output", required=True, help="New 0600 token file; transfer securely to the client.")
+
+    relay_route = add("relay-route", "Forward one destination's opaque frames to the next HTTPS relay.", cmd_relay_route)
+    relay_route.add_argument("destination")
+    relay_route.add_argument("url")
+    relay_route.add_argument("--account", required=True, help="Relay account issued by the next hop.")
+    relay_route.add_argument("--token-file", required=True)
+    relay_route.add_argument("--ca-cert", help="CA bundle for the next relay's HTTPS certificate.")
+
+    relay_serve = add("relay-serve", "Run a bounded mailbox relay; public listeners require TLS.", cmd_relay_serve)
+    relay_serve.add_argument("--host", default="127.0.0.1")
+    relay_serve.add_argument("--port", type=int, default=8877)
+    relay_serve.add_argument("--tls-cert")
+    relay_serve.add_argument("--tls-key")
     return parser
 
 

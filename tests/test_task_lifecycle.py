@@ -19,6 +19,9 @@ class _CountingAdapter(DefaultSafeAdapter):
         self.calls += 1
         return super().handle(intent)
 
+    def reconcile(self, key: str, intent: dict[str, Any] | None) -> dict[str, Any]:
+        return {"status": "completed", "output": {"summary": f"verified {key}"}}
+
 
 class TaskLifecycleTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -59,7 +62,7 @@ class TaskLifecycleTests(unittest.TestCase):
         self.bob.accept(envelope)
         self.assertEqual(self.bob.tasks.get("state-1")["state"], "COMPLETED")
 
-    def test_stale_running_lease_is_resolved_to_failed_on_restart(self) -> None:
+    def test_stale_running_lease_is_unknown_on_restart(self) -> None:
         """Simulates a process crash mid-adapter-call: a row is left RUNNING
         with an already-expired lease, then the harness is reopened."""
         self.bob.tasks.propose("stuck-1", "stuck-1", "observe.system.status.v1", self.alice.identity.system_id, "2000-01-01T00:00:00.000Z")
@@ -68,8 +71,32 @@ class TaskLifecycleTests(unittest.TestCase):
 
         reopened_bob = FaspHarness(Path(self.bob.state.directory), "bob", "http://bob:8766")
         task = reopened_bob.tasks.get("stuck-1")
-        self.assertEqual(task["state"], "FAILED")
-        self.assertEqual(task["error"]["code"], "lease.expired")
+        self.assertEqual(task["state"], "UNKNOWN")
+        self.assertEqual(task["error"]["code"], "task.outcome_unknown")
+        self.assertEqual(reopened_bob.reconcile_task("stuck-1")["status"], "unknown")
+        duplicate = self.alice.make_envelope("intent.propose", reopened_bob.identity.system_id, {"intent_id": "stuck-1", "idempotency_key": "stuck-1", "capability": "observe.system.status.v1"})
+        _, outcome = reopened_bob.accept(duplicate)
+        self.assertEqual(outcome["status"], "unknown")
+        reopened_bob.close()
+
+    def test_reconciliation_uses_adapter_evidence_without_reexecuting(self) -> None:
+        self.bob.tasks.propose("stuck-2", "stuck-2", "observe.system.status.v1", self.alice.identity.system_id, "2000-01-01T00:00:00.000Z", payload={"objective": "physical effect"})
+        self.bob.tasks.start_running("stuck-2", lease_until="2000-01-01T00:00:01.000Z", at="2000-01-01T00:00:00.000Z")
+        self.bob.tasks.expire_stale_leases("2000-01-01T00:00:02.000Z")
+        response = self.bob.reconcile_task("stuck-2")
+        self.assertEqual(response["status"], "completed")
+        self.assertEqual(response["output"]["summary"], "verified stuck-2")
+        self.assertEqual(self.adapter.calls, 0)
+        self.assertEqual(self.bob.reconcile_task("stuck-2"), response)
+
+    def test_running_task_becomes_unknown_when_lease_expires_after_restart(self) -> None:
+        self.bob.tasks.propose("later-1", "later-1", "observe.system.status.v1", self.alice.identity.system_id, "2000-01-01T00:00:00.000Z")
+        self.bob.tasks.start_running("later-1", lease_until="2099-01-01T00:00:01.000Z", at="2000-01-01T00:00:00.000Z")
+        reopened = FaspHarness(Path(self.bob.state.directory), "bob", "http://bob:8766")
+        self.assertEqual(reopened.tasks.get("later-1")["state"], "RUNNING")
+        self.assertEqual(reopened.tasks.expire_stale_leases("2100-01-01T00:00:00.000Z"), ["later-1"])
+        self.assertEqual(reopened.tasks.get("later-1")["state"], "UNKNOWN")
+        reopened.close()
 
     def test_rejected_intent_is_recorded_and_a_duplicate_returns_the_same_rejection(self) -> None:
         envelope = self.alice.make_envelope("intent.propose", self.bob.identity.system_id, {

@@ -25,10 +25,11 @@ class WorkState(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
 
 
 ACTIVE_STATES = frozenset({WorkState.QUEUED.value, WorkState.RUNNING.value})
-TERMINAL_STATES = frozenset({WorkState.SUCCEEDED.value, WorkState.FAILED.value, WorkState.CANCELLED.value})
+TERMINAL_STATES = frozenset({WorkState.SUCCEEDED.value, WorkState.FAILED.value, WorkState.CANCELLED.value, WorkState.UNKNOWN.value})
 
 _UNSET = object()
 
@@ -264,11 +265,12 @@ class WorkItemsRepo:
                 key,
                 "intent",
                 {"running"},
-                "failed",
+                "unknown",
                 now_stamp,
-                error={"code": "lease.expired", "detail": "Task lease expired (process restart) before completion."},
-                phase="lease_expired",
-                audit_event="task.lease_expired",
+                error={"code": "task.outcome_unknown", "detail": "Execution was interrupted; verify the external operation before retrying."},
+                phase="outcome_unknown",
+                lease_until=None,
+                audit_event="task.outcome_unknown",
             ):
                 expired.append(key.removeprefix("intent:"))
         return expired

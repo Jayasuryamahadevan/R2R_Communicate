@@ -130,6 +130,7 @@ def _live_gauges(harness: FaspHarness) -> dict[str, int]:
         "succeeded": "COMPLETED",
         "failed": "FAILED",
         "cancelled": "CANCELLED",
+        "unknown": "UNKNOWN",
     }
     rows = harness.db.read(
         "SELECT kind, state, phase, COUNT(*) AS n FROM work_items GROUP BY kind, state, phase"

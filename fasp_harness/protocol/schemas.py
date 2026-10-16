@@ -42,6 +42,7 @@ def definitions() -> dict[str, Any]:
             "properties": {
                 "fasp": {"const": PROTOCOL}, "type": {"const": "id_card"}, "system_id": identity,
                 "key_id": name, "public_key": {"type": "string", "pattern": r"^[A-Za-z0-9_-]{43}$"},
+                "relay_public_key": {"type": "string", "pattern": r"^[A-Za-z0-9_-]{43}$"},
                 "instance_id": name,
                 "display_name": {"type": "string", "minLength": 1, "maxLength": 256},
                 "endpoints": {"type": "object", "additionalProperties": {"type": ["string", "null"]}},

@@ -181,6 +181,10 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]{43}$"
         },
+        "relay_public_key": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
         "instance_id": {
           "type": "string",
           "minLength": 1,

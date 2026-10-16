@@ -198,7 +198,7 @@ FASP gateway on its local host. Keep hardware drivers beside the hardware and
 keep safety interlocks local.
 
 The implemented network transports are signed HTTP envelopes, a WebSocket
-channel, Bluetooth Classic RFCOMM, and BLE L2CAP credit based channels carrying
+channel, an outbound HTTPS relay mailbox, Bluetooth Classic RFCOMM, and BLE L2CAP credit based channels carrying
 the same envelope protocol. The Bluetooth bearers are opt-in Linux listeners;
 BLE L2CAP requires Python 3.14 or newer. TLS 1.3 protects routable IP links;
 mTLS is available for an additional transport identity check. Bluetooth
@@ -207,15 +207,17 @@ use the same FASP signature, pairing, and policy checks. See
 [`CONNECTIVITY.md`](CONNECTIVITY.md) for radio and Wi-Fi setup and
 [`COMMUNICATION_CATALOG.md`](COMMUNICATION_CATALOG.md) for the canonical
 packet, stream, and optional artifact path across other communication sources.
-The signed JSON envelope is not end-to-end encrypted by this harness. A
-reverse proxy or relay that terminates TLS can read message contents.
+The direct signed JSON envelope is not end-to-end encrypted; a terminating
+reverse proxy can read it. The relay transport wraps the same signed envelope
+in recipient-key encryption, so relay hubs only see routing metadata.
 
 MQTT, DDS, QUIC, serial/CBOR, remote identity issuance, automatic enrollment,
-and a production router are extension points or protocol profiles, not
-implemented runtime transports. A production relay needs a defined end-to-end
-encryption profile before it can be treated as unable to read payloads. The
-included `resilience/mesh.py` is a network simulator, and the outbox is a
-durable queue without a production network drain worker.
+and dynamic route discovery are extension points or protocol profiles, not
+implemented runtime transports. The opt-in relay uses pinned X25519 keys
+from signed ID cards, ephemeral key agreement, and authenticated encryption.
+Its routing is configured explicitly and capped at four hubs. The included
+`resilience/mesh.py` remains a network simulator; `fasp drain --watch` is
+the live durable sender worker.
 
 ## Configuration and packaging
 
@@ -287,10 +289,9 @@ core small and use adapters for adjacent standards:
   provide end-to-end encryption.
 - [NATS leaf nodes](https://docs.nats.io/learn/topologies/leaf-nodes) show how
   an edge site behind a firewall can establish an outbound-only connection to
-  a hub. That is a useful future relay pattern for device sites; FASP's
-  current runtime connects directly and has no production relay.
+  a hub. FASP's HTTPS relay similarly lets NATed nodes poll outward.
 
-Protocol bridges, remote enrollment, federated discovery, end-to-end encrypted
-relaying, and nested structured-data validation remain separate extensions.
+Protocol bridges, remote enrollment, federated discovery, dynamic relay
+routing, and nested structured-data validation remain separate extensions.
 They should be added only with an interoperability test and a clear owner for
 identity, policy, and failure recovery.

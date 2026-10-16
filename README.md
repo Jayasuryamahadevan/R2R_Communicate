@@ -271,9 +271,10 @@ mission phases, idempotency, and recovery fit together.
 
 The deployment architecture follows a node-first mesh model: each node owns
 its identity, local policy, and durable work. Direct HTTP and WebSocket links
-are implemented; a production relay for unreachable peers is a separate
-extension. See [ARCHITECTURE.md](ARCHITECTURE.md) for the deployment diagram,
-stream-sharing boundaries, and implementation status.
+and an outbound-only encrypted HTTPS mailbox relay are implemented. Static
+routes can join up to four relay hubs for cross-NAT delivery. See
+[the relay setup](AGENT_CLI.md#outbound-relay-across-nat) and
+[ARCHITECTURE.md](ARCHITECTURE.md) for deployment boundaries.
 
 ---
 

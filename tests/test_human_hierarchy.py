@@ -105,6 +105,22 @@ class HumanHierarchyTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(json.loads(result)["error"]["code"], "auth.not_paired")
 
+    def test_signed_card_can_pair_without_direct_network(self) -> None:
+        carol = FaspHarness(Path(self.temp.name) / "carol", "carol", "http://127.0.0.1:8768")
+        self.addCleanup(carol.close)
+        card_file = Path(self.temp.name) / "carol-card.json"
+        card_file.write_text(json.dumps(carol.id_card()), encoding="utf-8")
+        code, result = self.run_cli("import-card", str(card_file), "--as", "agent.writer")
+        self.assertEqual(code, 0, result)
+        self.assertEqual(json.loads(result)["state"], "pending")
+        self.assertEqual(self.alice.peers.get(carol.identity.system_id)["card"]["relay_public_key"], carol.relay_key.public_b64)
+        altered = carol.id_card()
+        altered["display_name"] = "impostor"
+        card_file.write_text(json.dumps(altered), encoding="utf-8")
+        code, result = self.run_cli("import-card", str(card_file), "--as", "agent.impostor")
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(result)["error"]["code"], "auth.invalid_signature")
+
 
 if __name__ == "__main__":
     unittest.main()

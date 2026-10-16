@@ -26,6 +26,7 @@ from .audit.chain import AuditChain
 from .channels import ConnectionRegistry
 from .crypto.envelope import FaspError, _verify_canonical, b64, sign, unb64, unsigned, verify
 from .crypto.identity import Identity
+from .crypto.relay import RelayKey
 from .layers import CapabilityDeclaration, LayerGuard, describe_layers
 from .observability.metrics import MetricsRegistry
 from .platforms import runtime_profile
@@ -109,6 +110,8 @@ def _task_response(task: dict[str, Any]) -> dict[str, Any]:
         return {"type": "task.fail", "intent_id": task["intent_id"], "idempotency_key": task["idempotency_key"], "status": "failed", "error": error, "completed_at": task["updated_at"]}
     if state == "CANCELLED":
         return {"type": "task.cancelled", "idempotency_key": task["idempotency_key"]}
+    if state == "UNKNOWN":
+        return {"type": "task.unknown", "idempotency_key": task["idempotency_key"], "status": "unknown", "detail": "External outcome has not been verified; do not retry this effect automatically."}
     if state == "REJECTED":
         error = task["error"] or {}
         return {"type": "task.fail", "intent_id": task["intent_id"], "idempotency_key": task["idempotency_key"], "status": "failed", "phase": "rejected", "error": error, "completed_at": task["updated_at"]}
@@ -233,6 +236,7 @@ class FaspHarness:
         # artifacts) is on SQLite as of Phase 7.
         self.state = JsonState(state_dir)
         self.identity = Identity.load_or_create(state_dir / "identity.json")
+        self.relay_key = RelayKey.load_or_create(state_dir / "relay-key.json")
         self.instance_id = str(uuid.uuid4())
         self.volatile_inbox = VolatileInbox()
         self.db = Database(state_dir / "fasp.db")
@@ -316,6 +320,7 @@ class FaspHarness:
             "display_name": self.display_name,
             "runtime": runtime_profile(),
             "public_key": self.identity.public_b64,
+            "relay_public_key": self.relay_key.public_b64,
             "key_id": self.identity.kid,
             "protocol_support": wire_support(list(self.DISPATCH)),
             "endpoints": {
@@ -345,6 +350,12 @@ class FaspHarness:
         expected = "fasp:system:" + b64(hashlib.sha256(raw).digest())
         if card["system_id"] != expected:
             raise FaspError("auth.identity_mismatch", "ID card identity does not match its public key.")
+        if "relay_public_key" in card:
+            try:
+                if len(unb64(card["relay_public_key"])) != 32:
+                    raise ValueError("wrong length")
+            except (TypeError, ValueError) as exc:
+                raise FaspError("auth.invalid_relay_key", "Signed relay encryption key is invalid.") from exc
 
     def hello(self, card: dict[str, Any]) -> dict[str, Any]:
         self.verify_id_card(card)
@@ -765,6 +776,46 @@ class FaspHarness:
         if task is None or task["from_peer"] != envelope["from"]:
             raise FaspError("schema.invalid", "Unknown idempotency_key.")
         return _task_response(task)
+
+    def reconcile_task(self, key: str) -> dict[str, Any]:
+        """Ask an adapter to verify an interrupted effect by stable task key.
+
+        The hook must only inspect external state. Unknown/unreachable remains
+        unknown; no task is re-executed here.
+        """
+        task = self.tasks.get(key)
+        if task is None:
+            raise FaspError("schema.invalid", "Unknown idempotency_key.")
+        if task["state"] != "UNKNOWN":
+            return _task_response(task)
+        hook = getattr(self.adapter, "reconcile", None)
+        if not callable(hook):
+            return _task_response(task)
+        try:
+            evidence = hook(key, task["payload"])
+        except Exception:
+            return _task_response(task)
+        if not isinstance(evidence, dict) or evidence.get("status") not in {"completed", "failed"}:
+            return _task_response(task)
+        if evidence["status"] == "completed":
+            result = {"type": "task.result", "intent_id": task["intent_id"], "idempotency_key": key, "status": "completed", "completed_at": stamp()}
+            try:
+                result.update(self._materialize_output(evidence.get("output"), task["from_peer"]))
+            except (FaspError, TypeError, ValueError):
+                return _task_response(task)
+            self.tasks.reconcile(key, completed=True, at=stamp(), result=result)
+        else:
+            error = evidence.get("error")
+            if not isinstance(error, dict) or not isinstance(error.get("code"), str) or not isinstance(error.get("detail"), str):
+                return _task_response(task)
+            self.tasks.reconcile(key, completed=False, at=stamp(), error={"code": error["code"], "detail": error["detail"]})
+        return _task_response(self.tasks.get(key))
+
+    def reconcile_unknown_tasks(self, limit: int = 32) -> dict[str, int]:
+        """Read back a bounded batch of uncertain external outcomes."""
+        keys = self.tasks.unknown(limit)
+        resolved = sum(self.reconcile_task(key).get("status") in {"completed", "failed"} for key in keys)
+        return {"checked": len(keys), "resolved": resolved, "remaining": len(self.tasks.unknown(limit))}
 
     def pull_inbox(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="inbox.pull")

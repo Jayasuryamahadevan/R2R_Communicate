@@ -12,7 +12,7 @@ from ..audit.chain import AuditChain
 from .db import Database
 from .work_items_repo import WorkItemsRepo, WorkState
 
-TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "REJECTED"})
+TERMINAL_STATES = frozenset({"COMPLETED", "FAILED", "CANCELLED", "REJECTED", "UNKNOWN"})
 
 
 class TasksRepo:
@@ -35,6 +35,7 @@ class TasksRepo:
             WorkState.SUCCEEDED.value: "COMPLETED",
             WorkState.FAILED.value: "FAILED",
             WorkState.CANCELLED.value: "CANCELLED",
+            WorkState.UNKNOWN.value: "UNKNOWN",
         }[item["state"]]
         if item["phase"] == "rejected":
             state = "REJECTED"
@@ -175,3 +176,16 @@ class TasksRepo:
 
     def expire_stale_leases(self, now_stamp: str) -> list[str]:
         return self.work_items.expire_stale_intents(now_stamp)
+
+    def unknown(self, limit: int = 32) -> list[str]:
+        rows = self.db.read("SELECT idempotency_key FROM work_items WHERE kind='intent' AND state='unknown' ORDER BY updated_at LIMIT ?", (limit,))
+        return [row["idempotency_key"] for row in rows]
+
+    def reconcile(self, idempotency_key: str, *, completed: bool, at: str, result: dict[str, Any] | None = None, error: dict[str, Any] | None = None) -> bool:
+        """Resolve an uncertain task only from authoritative adapter evidence."""
+        return self.work_items.transition(
+            self._work_id(idempotency_key), "intent", {WorkState.UNKNOWN.value},
+            WorkState.SUCCEEDED.value if completed else WorkState.FAILED.value,
+            at, phase="reconciled", result=result, error=error if not completed else None,
+            audit_event="task.reconciled", audit_detail={"verified_state": "completed" if completed else "failed"},
+        )

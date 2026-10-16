@@ -15,6 +15,7 @@ canonical packet, leased stream, or optional one-time artifact reference.
 | Wi-Fi / Ethernet | Any supported Python | HTTPS URL and TCP port | `--host`, `--port`, `--public-url` |
 | Bluetooth Classic | Linux and BlueZ | Bluetooth address and RFCOMM channel | `--rfcomm-channel` |
 | BLE | Linux, BlueZ, Python 3.14+ | Bluetooth address, LE address type and PSM | `--ble-psm`, `--ble-address-type` |
+| Cross-NAT relay | Any supported Python | Pinned peer ID and outbound HTTPS hub | `--relay-worker` |
 
 The default radio channel is 8 and default LE_PSM is `0x0080`. Those values
 must match at both ends. A radio listener runs inside the same node process
@@ -22,6 +23,11 @@ as the REST API and uses the same node state, adapter, pairing records, grants,
 replay journal, and metrics. When enabled, a failed radio listener fails
 `/livez`. The radio listener is opt-in; the container does not have Bluetooth
 device access by default.
+
+For nodes without an inbound IP path, use the [outbound relay setup](AGENT_CLI.md#outbound-relay-across-nat).
+The relay requires a reachable HTTPS hub and explicit offline pairing; it
+stores signed ciphertext, with bounded retention and optional static
+forwarding across up to four hubs.
 
 ## Wi-Fi or direct Ethernet
 

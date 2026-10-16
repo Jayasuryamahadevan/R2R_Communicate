@@ -8,10 +8,12 @@ rules; they do not define separate persistence or lifecycle systems.
 queued -> running -> succeeded
                   -> failed
                   -> cancelled
+                  -> unknown -> succeeded / failed (after verification)
 ```
 
-`queued`, `running`, `succeeded`, `failed`, and `cancelled` are the only
-lifecycle states. A `phase` describes work within a state, such as `preflight`,
+`queued`, `running`, `succeeded`, `failed`, `cancelled`, and `unknown` are the
+lifecycle states. `unknown` applies to interrupted intent tasks whose external
+effect cannot be inferred from the local process. A `phase` describes work within a state, such as `preflight`,
 `assigned`, or `cancel_requested`. It never creates another lifecycle state.
 Mission definitions and adapter inputs are payloads; vehicle, preflight, and
 fencing details are metadata. Every record also has an owner, a kind, an
@@ -28,7 +30,9 @@ collide.
 The lifecycle is shared, while effects stay in domain services. Intent work
 still passes capability policy and grants before the bounded adapter pool
 runs it. A timeout does not replay an adapter call after restart; an expired
-lease ends as failed. Mission work still checks the safety supervisor,
+lease becomes `unknown` until the adapter reads authoritative external state
+through `reconcile(key, intent)`. No hook or inconclusive evidence leaves it
+unknown. Mission work still checks the safety supervisor,
 coordinator leadership, vehicle eligibility, preflight, and reservations
 before dispatch. Its running record is reconciled against the fleet vendor.
 Queued work can be cancelled before execution starts. Running work becomes

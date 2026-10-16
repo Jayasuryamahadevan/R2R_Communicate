@@ -280,6 +280,86 @@ supplied. Exit codes: `0` delivered/accepted or deliberately queued;
 `2` invalid CLI/policy/configuration; `3` queued after transport
 failure; `4` permanently rejected/dead-lettered.
 
+## Outbound relay across NAT
+
+Both nodes can connect *outbound* to one reachable HTTPS relay. The relay
+stores bounded, short-lived ciphertext; it has no adapter, peer grant, or
+decryption key. Each frame has an Ed25519 signature and uses an ephemeral
+X25519 key plus ChaCha20-Poly1305 for end-to-end encryption. The original
+FASP envelope remains signed and subject to the receiving node's policy.
+At least one relay must have a public address; this does not perform NAT
+hole punching.
+
+On the relay host, provision separate tokens for the two known system IDs
+and run the hub with a valid TLS certificate:
+
+```bash
+fasp relay-authorize 'fasp:system:ALICE_ID' --output /secure/alice.token --state-dir /var/lib/fasp-relay
+fasp relay-authorize 'fasp:system:BOB_ID' --output /secure/bob.token --state-dir /var/lib/fasp-relay
+fasp relay-serve --host 0.0.0.0 --port 8877 --tls-cert /secure/relay.crt \
+  --tls-key /secure/relay.key --state-dir /var/lib/fasp-relay
+```
+
+Transfer each token privately to its matching node. Exchange the nodes'
+signed ID-card files through an independent trusted channel; compare the
+displayed system IDs and pairing code before approving **on both nodes**:
+
+```bash
+fasp id --json --state-dir ~/.fasp-a > alice-card.json
+# Transfer alice-card.json to B and bob-card.json to A.
+fasp import-card bob-card.json --as agent.researcher --state-dir ~/.fasp-a
+fasp approve agent.researcher --code VERIFIED_CODE --scope coordinate. --state-dir ~/.fasp-a
+fasp relay-config https://relay.example.com:8877 --token-file /secure/alice.token --state-dir ~/.fasp-a
+```
+
+Repeat the import, approval, and relay configuration on B. Run `fasp serve
+--relay-worker` on B so inbound relay requests use its configured adapter and
+policy. A standalone node can use `fasp relay-worker --watch --adapter
+your_package:factory`. Then A can send and retry in the ordinary outbox:
+
+```bash
+fasp speak agent.researcher.summarize --message 'Summarize this' --transport relay --state-dir ~/.fasp-a
+fasp drain --watch --transport relay --state-dir ~/.fasp-a
+```
+
+For multiple relay hops, provision a relay-role token on the *next* hub and
+add a static route for the destination ID on each preceding hub:
+
+```bash
+fasp relay-authorize relay-west --role relay --output /secure/west.token --state-dir /var/lib/next-hub
+fasp relay-route 'fasp:system:BOB_ID' https://next-hub.example.com:8877 \
+  --account relay-west --token-file /secure/west.token --state-dir /var/lib/current-hub
+```
+
+Configure reverse routes for responses. A chain is capped at four hubs;
+loops, expired frames, unauthorized accounts, and full mailboxes fail
+closed. Relay storage is capped per destination and globally. The sender's
+outbox retries a temporarily unavailable hop using the original signed
+message. Delivery still expires with the signed envelope, so long outages
+need a new authorized request. Use `--ca-cert` on send/drain, `--relay-ca-cert`
+on `serve`, or `--ca-cert` on `relay-route` for a private relay CA.
+
+## Reconcile an interrupted external task
+
+After a crash or expired execution lease, a task is `unknown`: the node
+cannot infer whether a robot, vendor API, or other external system acted.
+It never reruns that effect automatically. Adapters that perform external
+effects should implement a read-only `reconcile(idempotency_key, intent)`
+hook that queries the external system by the same stable key. It may return
+`{"status":"completed","output":...}`, `{"status":"failed","error":
+{"code":"...","detail":"..."}}`, or any other result to leave the task
+unknown. A vendor's "not found" answer must remain unknown unless that vendor
+can prove the operation never ran. `fasp serve` checks unknown tasks periodically when this hook exists.
+An operator can also request a local check:
+
+```bash
+fasp task-reconcile task-001 --adapter your_package:factory --state-dir ~/.fasp-b
+```
+
+The requesting peer sees `task.unknown` from `task-status` until verified.
+Use a new task key only after the external system has been checked; a repeated
+key returns the saved state without repeating the effect.
+
 ## Lower-level signed messages
 
 For protocol messages other than `intent.propose`, supply a JSON object
@@ -297,9 +377,10 @@ private information; store CLI output with appropriate permissions.
 
 ## Current boundaries
 
-- IP links require pre-existing IP/DNS/TLS reachability; Bluetooth links
+- Direct IP links require pre-existing IP/DNS/TLS reachability; Bluetooth links
   require paired Linux/BlueZ radios and the matching RFCOMM channel or LE_PSM.
-  The CLI does not create libp2p circuits, NAT hole punching or a relay mesh.
+  Relay transport requires at least one reachable HTTPS hub and static routes
+  for multiple hubs. It does not create NAT hole punching or libp2p circuits.
 - Requires two-sided operator approval, rather than hidden auto-enrollment.
 - Certificates and CA roots remain operator responsibilities; TLS server
   verification is on by default, with no insecure-skip-verification switch.

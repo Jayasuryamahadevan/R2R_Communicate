@@ -7,9 +7,9 @@ industrial controllers, gateways, and their human operators.
 
 The implemented JSON/Ed25519 contract is defined precisely in
 [WIRE_PROFILE.md](WIRE_PROFILE.md) and its [portable schema](spec/fasp-wire-v1.schema.json).
-Sections describing other transports, remote grants, encrypted relays or
-physical conformance are design requirements, not claims that this harness
-implements them. The signed ID card lists accepted request kinds; configured
+Sections describing other transports, remote grants, or physical conformance
+are design requirements, not claims that this harness implements them. The
+opt-in encrypted HTTPS mailbox relay is described in the CLI guide. The signed ID card lists accepted request kinds; configured
 capabilities and local policy determine which operations are available.
 
 FASP is a secure coordination protocol for *independent autonomous systems*.
@@ -61,9 +61,9 @@ One implementation may hold more than one role.
 
 The reference deployment groups these roles into a node, a local control
 function, and an optional store-and-forward relay. They may be co-located;
-they are not required to be separate services. Relay confidentiality requires
-the end-to-end encryption specified by this protocol; the current harness does
-not implement that encryption or a production relay. See
+they are not required to be separate services. The harness includes an
+opt-in HTTPS mailbox relay with end-to-end encrypted frames, paired identities,
+bounded storage, and static routes across at most four hubs. See
 [ARCHITECTURE.md](ARCHITECTURE.md) for the deployment model and implementation
 status.
 
@@ -228,7 +228,7 @@ retried with the same signed envelope within its expiry.
 | `session.hello`, `session.ready`, `session.close` | Authenticated session establishment. |
 | `profile.request`, `profile.publish` | Capability/profile exchange. |
 | `intent.propose`, `intent.accept`, `intent.reject` | Request and bounded commitment. |
-| `task.progress`, `task.result`, `task.fail` | Execution lifecycle. |
+| `task.progress`, `task.result`, `task.fail`, `task.unknown` | Execution lifecycle, including an interrupted effect awaiting verification. |
 | `task.cancel`, `task.cancelled`, `task.too_late` | Explicit cancellation race handling. |
 | `receipt.delivered`, `receipt.processed` | Transport versus application acknowledgement. |
 | `presence.update`, `typing.update`, `heartbeat` | Ephemeral liveness only. |
@@ -288,8 +288,9 @@ queued → running → {succeeded | failed | cancelled}
   or the executor cannot stop it, the caller receives `task.too_late` with the
   current outcome. A cancellation request alone does not change a running
   item into a cancelled one.
-- A running intent whose lease expires after a restart becomes `failed`; the
-  executor MUST NOT blindly repeat a possibly completed side effect.
+- A running intent whose lease expires after a restart becomes `unknown` if
+  an external effect may have occurred. It MUST NOT be blindly repeated.
+  A read-only adapter reconciliation can later establish `result` or `fail`.
 
 All executable work, including fleet missions, uses this same lifecycle.
 Mission-specific progress is reported in `phase`; it does not add new
@@ -372,11 +373,13 @@ monitoring for a simple proximity request unless separately granted.
   jitter, capped by `expires_at`; they MUST NOT retry an expired intent.
 - A device that polls MUST persist its cursor only after it has durably handled
   the message and emitted a receipt/result. This prevents lost work on restart.
-- A relay MUST support bounded retention, per-recipient cursors, and dead-letter
-  handling. It MUST NOT claim application processing merely because it stored a
-  message.
-- Every stream and task MUST have a deadline or renewable lease. On expiry, the
-  executor MUST safe-stop, close the stream, and report `lease.expired`.
+- A relay MUST support bounded retention and per-recipient acknowledgement
+  (a cursor or explicit frame ack). It MUST NOT claim application processing
+  merely because it stored a message. Expired frames are removed; the sender's
+  durable outbox records retries and dead letters.
+- Every stream and task MUST have a deadline or renewable lease. On expiry,
+  a live executor MUST safe-stop and close the stream. After an interrupted
+  external task, it MUST report an unknown outcome until verified.
 - Receivers MUST apply size, rate, depth, CPU, memory, and storage limits before
   expensive parsing or model invocation.
 - Clock uncertainty MUST be represented. If clocks differ beyond the configured
@@ -435,12 +438,43 @@ are still required.
 
 `POST /fasp/v1/envelopes` accepts a signed envelope and returns its application
 response (wrapped in `receipt.delivered` for intent/cancel/artifact requests).
-The harness is a direct node, not a relay. A signed `inbox.pull` request
+The node ingress remains direct. The separate HTTPS relay hub carries opaque
+encrypted frames and is configured through the CLI. A signed `inbox.pull` request
 returns a mirror of that peer's own previously submitted messages; there is
 no `GET /fasp/v1/inbox` route or general peer-to-peer mailbox in this build.
 `POST /fasp/v1/receipts` reports delivered/processed states. `GET /profile`
 returns the signed System Profile. HTTPS deployments SHOULD use HTTP/2+ and
 TLS 1.3.
+
+### Encrypted relay profile
+
+The opt-in relay uses outbound HTTPS from each node to a reachable hub.
+`POST /relay/v1/messages` accepts `{ "frame": ..., "path": [...] }`;
+`GET /relay/v1/messages?limit=16` returns `{ "frames": [{ "id": ..., "frame": ... }] }`;
+`POST /relay/v1/ack` accepts `{ "id": ... }` after durable handling.
+Requests carry `Authorization: Bearer <token>` and
+`X-FASP-Relay-Account: <account>`. A client token is bound to exactly one
+system ID; relay-role tokens are provisioned for trusted next hubs.
+
+A frame contains `version=1`, `from`, `to`, `message_id`, `kind` (`request`
+or `response`), `expires_at`, `ephemeral_key`, `nonce`, `ciphertext`, and an
+Ed25519 `signature` over the frame. The recipient X25519 public key is in
+its pinned, signed ID card. Each frame uses a fresh ephemeral X25519 key;
+HKDF-SHA256 derives a 32-byte ChaCha20-Poly1305 key with the UTF-8 string
+`fasp-relay-v1|from|to|message_id|kind|expires_at` as both HKDF `info` and
+AEAD associated data. `nonce` is 12 random bytes. Binary fields are
+unpadded base64url. Request plaintext is `{ "envelope": <signed FASP
+envelope> }`; response plaintext is `{ "receipt": <delivery receipt> }`.
+The recipient verifies the outer signature and authenticated ciphertext,
+then applies normal FASP signature, pairing, replay, and capability checks
+to the inner envelope.
+
+The hub stores at most 128 frames per destination and 4096 total, removes
+expired frames, and never treats storage as execution. Static forwarding
+uses a bounded `path` of at most four hubs to detect loops. Each hop
+authenticates to the next over HTTPS; the ciphertext and its signature do
+not change. The sender's outbox retries unavailable hops until the signed
+envelope expires. Return routes must be configured independently.
 
 ### Pub/sub profile
 
