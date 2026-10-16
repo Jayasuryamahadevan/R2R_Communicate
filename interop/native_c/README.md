@@ -31,3 +31,7 @@ c++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic interop/native_c/api_smoke.cp
 ```
 
 This is a **small native wire signer**, not a complete C/C++ SDK or safety-certified controller. There is no networking, pairing approval, native JSON decoder, arbitrary intent execution, or background agent in the C library.
+
+## Optional real HTTP(S) transport
+
+For hosts that can install `libcurl`, `json-c`, and OpenSSL, [the native HTTP client](HTTP_CLIENT.md) can deliver the existing C signer’s envelopes to a live FASP server and display negotiated wire capabilities. The C signing library does **not** acquire these dependencies. This is a host/gateway example, not a new protocol, universal C runtime, or safety controller.

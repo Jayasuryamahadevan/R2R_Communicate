@@ -60,6 +60,12 @@ node interop/fasp-peer.mjs envelope --state ./peer-identity.json --to 'fasp:syst
 
 This is **not** a general-purpose C SDK or proof of support for bare-metal targets. The fixed ASCII-only templates are canonical RFC 8785 by construction. Arbitrary JSON cannot safely be supported by string concatenation: a complete implementation needs a verified JCS encoder and the full wire, authority, and domain contracts. The C library and CLI emit messages but do not perform network delivery, approve pairing, or actuate devices.
 
+## Native HTTP(S) transport (optional host/gateway integration)
+
+The [native C HTTP transport](interop/native_c/HTTP_CLIENT.md) completes a useful minimal end-to-end path without Python or Node on the client: a C application signs a heartbeat, then a separate C/\`libcurl\` transport sends it to a real FASP server and reports the result. It retrieves the receiver's advertised wire capabilities, refuses non-loopback plaintext HTTP, enforces bounds/timeouts and rejects unexpected peer IDs. For remote HTTPS it requires an independently verified **TLS public-key pin**, in addition to certificate validation.
+
+**This transport does not yet cryptographically verify the server's signed FASP identity card or signed replies.** The verified TLS key is its server-authentication boundary; the FASP system-ID/public-key hash check is additional consistency validation, not standalone proof of key possession. No new wire profile, auto-pairing or robot actuation is introduced. See the guide for the exact security requirements.
+
 ## Legacy devices and gateways
 
 An unsigned legacy device cannot be made cryptographically self-authenticating by assigning it a FASP-looking name. An authorized gateway must validate the device's native input, sign a **new** FASP message as the gateway, and preserve the original device's provenance. The gateway has responsibility for local vendor credentials, rate limits, permitted operations, and effect reconciliation. Only high-level robot goals cross this boundary; safety PLCs, motor loops, and emergency stops remain independently controlled.
