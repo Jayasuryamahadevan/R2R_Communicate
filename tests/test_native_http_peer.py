@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import shutil
 import socket
@@ -12,9 +14,12 @@ import time
 import unittest
 from pathlib import Path
 
+import uvicorn
+from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
 from fasp_harness.core import FaspHarness
 from fasp_harness.transport.http_app import create_app
-import uvicorn
 
 ROOT = Path(__file__).resolve().parents[1]
 C = ROOT / "interop" / "native_c"
@@ -134,10 +139,6 @@ class NativeHTTPPeerTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("openssl"), "OpenSSL CLI required for TLS certificate test")
     def test_https_certificate_and_tls_pin_are_both_enforced(self) -> None:
-        import base64
-        import hashlib
-        from cryptography import x509
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
         cert = self.root / "cert.pem"
         key = self.root / "key.pem"
         subprocess.run(
