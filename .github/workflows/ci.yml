@@ -58,7 +58,9 @@ jobs:
       - name: Lint
         run: uv run --locked --extra test --extra dev ruff check fasp_harness tests benchmarks
       - name: Independent JavaScript peer conformance
-        run: node --test interop/fasp-peer.test.mjs
+        run: |
+          cmp bridge_core/fasp_canonical.mjs interop/fasp-canonical.mjs
+          node --test interop/fasp-peer.test.mjs
       - name: Run test suite
         run: uv run --locked --extra test --extra dev python -m unittest discover -s tests -v
       - name: Persistent TLS and volatile-delivery smoke benchmark

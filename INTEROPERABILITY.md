@@ -26,7 +26,7 @@ Hardware agnosticism is a property of the **protocol**, not a promise that one e
 
 ## A small independent Node client
 
-`interop/fasp-peer.mjs` is a client-only implementation, not a second FASP server. Its two files (`fasp-peer.mjs` and `fasp-canonical.mjs`) require no Python, package manager, WASM engine, or third-party Node dependency. The existing TypeScript bridge re-exports the same canonicalizer to avoid cryptographic implementation drift.
+`interop/fasp-peer.mjs` is a client-only implementation, not a second FASP server. Its two files (`fasp-peer.mjs` and `fasp-canonical.mjs`) require no Python, package manager, WASM engine, or third-party Node dependency. The TypeScript bridge retains its self-contained canonicalizer for isolated deployments. The portable client carries the same small encoder as a second file; CI compares both files byte for byte to prevent implementation drift.
 
 ```sh
 node interop/fasp-peer.mjs init --state ./peer-identity.json
