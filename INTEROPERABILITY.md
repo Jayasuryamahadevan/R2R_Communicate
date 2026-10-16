@@ -1,6 +1,6 @@
 # FASP interoperability: one wire protocol, many runtimes
 
-**Status:** FASP 1.0 JSON/Ed25519 is implemented. The repository includes a dependency-free Node.js client, Python↔Node interoperability tests, and vendor/gateway adapters. This is **not** a claim of arbitrary-device plug-and-play or production safety certification.
+**Status:** FASP 1.0 JSON/Ed25519 is implemented. The repository includes a dependency-free Node.js client, a minimal native C sender, cross-runtime interoperability tests, and vendor/gateway adapters. This is **not** a claim of arbitrary-device plug-and-play or production safety certification.
 
 ## Keep the wire contract, not a Python dependency
 
@@ -18,6 +18,7 @@ The [public JSON Schema](spec/fasp-wire-v1.schema.json) is useful but insufficie
 |---|---|
 | Python host | Existing `fasp_harness` reference node |
 | Node.js 22+ without Python | `interop/fasp-peer.mjs`, using Node built-ins only |
+| POSIX C11 with OpenSSL (no Python) | `interop/native_c/fasp_peer.c`: signed client identity and heartbeat reference |
 | C, C++, Rust, or another host language | Implement the published profile and pass independent conformance tests |
 | Closed vendor controller / industrial PLC | Run a FASP gateway on a separate authorized host; retain its vendor API |
 | MCU / RTOS | Native bounded client where feasible, otherwise use its existing protocol through a gateway |
@@ -53,6 +54,12 @@ node interop/fasp-peer.mjs send --state ./peer-identity.json --url https://robot
 node interop/fasp-peer.mjs envelope --state ./peer-identity.json --to 'fasp:system:<real-ID>' --kind heartbeat --payload '{}'
 ```
 
+## Independent C reference sender
+
+[`interop/native_c/`](interop/native_c/README.md) contains a deliberately small native C11/OpenSSL client that derives a FASP identity, emits a signed ID card, and signs an empty-payload heartbeat. It requires **no Python, Node.js, WASM or JSON library** at runtime. The Python test suite compiles it and verifies its signatures, pairing, and duplicate handling against the real FASP receiver; Node independently verifies its identity card.
+
+This is **not** a general-purpose C SDK or proof of support for bare-metal targets. The fixed ASCII-only templates are canonical RFC 8785 by construction. Arbitrary JSON cannot safely be supported by string concatenation: a complete implementation needs a verified JCS encoder and the full wire, authority, and domain contracts. The C command emits messages but does not perform network delivery, approve pairing, or actuate devices.
+
 ## Legacy devices and gateways
 
 An unsigned legacy device cannot be made cryptographically self-authenticating by assigning it a FASP-looking name. An authorized gateway must validate the device's native input, sign a **new** FASP message as the gateway, and preserve the original device's provenance. The gateway has responsibility for local vendor credentials, rate limits, permitted operations, and effect reconciliation. Only high-level robot goals cross this boundary; safety PLCs, motor loops, and emergency stops remain independently controlled.
@@ -64,9 +71,10 @@ Existing ROS 1/2 observers only expose read-only graph counts. The VDA 5050 and 
 ```sh
 node --test interop/fasp-peer.test.mjs
 python -m unittest tests.test_portable_peer -v
+python -m unittest tests.test_native_c_peer -v
 ```
 
-The cross-runtime test constructs a real Python receiver, verifies a Node-created ID card, accepts and deduplicates a Node-signed request, rejects tampering, and uses Node to verify a Python-signed card. CI exercises these tests. This demonstrates a specific, reproducible Python↔Node wire boundary, **not** fully certified physical-world interoperability or a complete native C/C++/Rust SDK.
+The cross-runtime tests construct real Python receivers, verify Node- and C-created ID cards, accept and deduplicate Node- and C-signed requests, reject tampering, and use Node to verify Python- and C-signed cards. CI exercises these tests. This demonstrates a specific, reproducible Python↔Node wire boundary, **not** fully certified physical-world interoperability or a complete native C/C++/Rust SDK.
 
 Avoid introducing an incompatible language or new envelope for hardware portability. If constrained hardware warrants CBOR/COSE or another binary representation, define a separately versioned, explicitly signed profile and prove it with independent vectors. A transformed payload does not retain the original JSON signature unless the original signed bytes are preserved.
 
