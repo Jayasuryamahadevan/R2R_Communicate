@@ -28,10 +28,12 @@ function head(meta) {
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  ${meta.slug === 'index' ? '<link rel="stylesheet" href="experience.css">' : ''}
   <script>
     (function(){try{var t=localStorage.getItem('fasp-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
   </script>
   <script src="script.js" defer></script>
+  ${meta.slug === 'index' ? '<script src="experience.js" defer></script>' : ''}
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>`;

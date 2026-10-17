@@ -17,10 +17,12 @@
   <meta name="twitter:card" content="summary_large_image">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="experience.css">
   <script>
     (function(){try{var t=localStorage.getItem('fasp-theme');if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}})();
   </script>
   <script src="script.js" defer></script>
+  <script src="experience.js" defer></script>
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
@@ -56,7 +58,7 @@
       <h1>Coordination that <em>refuses to become control.</em></h1>
       <p class="hero-lede">FASP is a signed-envelope layer for coordinating agents, robots and edge devices. Each node keeps its own identity, its own policy and its own authority — and an enforced boundary keeps every peer above hard real-time safety.</p>
       <div class="button-row">
-        <a class="button button-primary" href="architecture.html">Read the architecture <span aria-hidden="true">→</span></a>
+        <a class="button button-primary" href="#playground">Launch interactive lab <span aria-hidden="true">↗</span></a>
         <a class="button button-quiet" href="guide.html">Run a node <span aria-hidden="true">→</span></a>
       </div>
       <p class="hero-meta">
@@ -111,6 +113,86 @@
         <text class="v-safety-title" x="243" y="399">LAYER 1 · safety controller, separate process</text>
       </svg>
     </div>
+  </div>
+</section>
+
+
+<section id="playground" class="r2r-lab" data-nav="Interactive playground" aria-labelledby="lab-title">
+  <div class="shell">
+    <div class="r2r-lab-intro">
+      <div><p class="r2r-eyebrow"><span class="r2r-blink" aria-hidden="true"></span> FIELD LAB / INTERACTIVE 001</p>
+      <h2 id="lab-title">Don't just read the protocol.<br><em>Put it under pressure.</em></h2></div>
+      <div class="r2r-intro-side"><p>A browser-based walkthrough of FASP's decision boundaries. Send a request, change the trust conditions, and watch where the request stops.</p><span class="r2r-intro-note">SIMULATION ONLY · NOT A LIVE FASP NODE</span></div>
+    </div>
+    <div class="r2r-lab-stage" data-fasp-lab>
+      <div class="r2r-stage-bar">
+        <div class="r2r-stage-title"><span class="r2r-stage-icon" aria-hidden="true">✳</span><span><strong>FASP // CONTROL PLANE</strong><small>Interactive request simulator</small></span></div>
+        <div class="r2r-stage-badges"><span><i class="r2r-live-dot" aria-hidden="true"></i> LOCAL SANDBOX</span><span>fasp/1.0 model</span></div>
+      </div>
+      <div class="r2r-stage-content">
+        <div class="r2r-left">
+          <div class="r2r-panel-heading"><span>01 / SELECT A SYSTEM</span><span class="r2r-muted">Scenario changes the request</span></div>
+          <div class="r2r-scenarios" role="group" aria-label="Coordination scenarios">
+            <button type="button" class="r2r-scenario is-selected" data-scenario="fleet" aria-pressed="true"><span class="r2r-scenario-glyph" aria-hidden="true">▦</span>Robot fleet</button>
+            <button type="button" class="r2r-scenario" data-scenario="agents" aria-pressed="false"><span class="r2r-scenario-glyph" aria-hidden="true">◇</span>AI agents</button>
+            <button type="button" class="r2r-scenario" data-scenario="industry" aria-pressed="false"><span class="r2r-scenario-glyph" aria-hidden="true">⌘</span>Industrial edge</button>
+          </div>
+          <div class="r2r-topology" aria-label="Selectable network nodes">
+            <div class="r2r-topo-grid" aria-hidden="true"></div>
+            <div class="r2r-trace r2r-trace-one" aria-hidden="true"></div>
+            <div class="r2r-trace r2r-trace-two" aria-hidden="true"></div>
+            <div class="r2r-topo-heading"><span>TRUST TOPOLOGY</span><span class="r2r-topo-aux">THREE INDEPENDENT BOUNDARIES</span></div>
+            <div class="r2r-topo-nodes">
+              <button class="r2r-node" type="button" data-node="peer"><span class="r2r-node-icon" aria-hidden="true">⬡</span><span class="r2r-node-type">REQUESTING PEER</span><strong data-node-label="peer">Robot B</strong><span class="r2r-node-detail">independent identity</span></button>
+              <div class="r2r-link-line" aria-hidden="true"><span class="r2r-link-packet"></span><span>signed envelope →</span></div>
+              <button class="r2r-node r2r-node-core is-active" type="button" data-node="core"><span class="r2r-node-icon" aria-hidden="true">✳</span><span class="r2r-node-type">FASP RECEIVER</span><strong>Node A</strong><span class="r2r-node-detail">locally enforced policy</span></button>
+              <div class="r2r-link-line" aria-hidden="true"><span class="r2r-link-packet"></span><span>local only →</span></div>
+              <button class="r2r-node" type="button" data-node="adapter"><span class="r2r-node-icon" aria-hidden="true">▤</span><span class="r2r-node-type">LOCAL ADAPTER</span><strong data-node-label="adapter">Fleet adapter</strong><span class="r2r-node-detail">declared capability</span></button>
+            </div>
+            <div class="r2r-boundary"><span class="r2r-boundary-icon" aria-hidden="true">⊘</span><span><strong>LAYER 1 SAFETY</strong> Remains outside network control. Observe only.</span><span class="r2r-boundary-mark">NON-NEGOTIABLE</span></div>
+          </div>
+          <div class="r2r-node-inspector" aria-live="polite"><span class="r2r-inspector-kicker">NODE INSPECTOR</span><span data-node-info>Select a node to inspect its role. The receiver checks authorization before invoking a local adapter.</span></div>
+          <div class="r2r-panel-heading r2r-check-heading"><span>02 / REQUEST GATES</span><span class="r2r-muted">Each gate can deny the request</span></div>
+          <ol class="r2r-gate-list">
+            <li class="r2r-gate" data-gate="signature"><span class="r2r-gate-indicator">01</span><span><strong>Signature</strong><small>Verify envelope integrity</small></span><b class="r2r-gate-status">READY</b></li>
+            <li class="r2r-gate" data-gate="pairing"><span class="r2r-gate-indicator">02</span><span><strong>Peer identity</strong><small>Require authorized pairing</small></span><b class="r2r-gate-status">READY</b></li>
+            <li class="r2r-gate" data-gate="scope"><span class="r2r-gate-indicator">03</span><span><strong>Capability grant</strong><small>Enforce scoped permission</small></span><b class="r2r-gate-status">READY</b></li>
+            <li class="r2r-gate" data-gate="layer"><span class="r2r-gate-indicator">04</span><span><strong>Layer boundary</strong><small>Keep safety control local</small></span><b class="r2r-gate-status">READY</b></li>
+            <li class="r2r-gate" data-gate="journal"><span class="r2r-gate-indicator">05</span><span><strong>Idempotency</strong><small>Reject replayed work</small></span><b class="r2r-gate-status">READY</b></li>
+            <li class="r2r-gate" data-gate="dispatch"><span class="r2r-gate-indicator">06</span><span><strong>Local dispatch</strong><small>Only a configured adapter acts</small></span><b class="r2r-gate-status">READY</b></li>
+          </ol>
+        </div>
+        <aside class="r2r-right" aria-label="Simulator console">
+          <div class="r2r-control-head"><span>REQUEST CONSOLE</span><span class="r2r-console-dot" aria-hidden="true">●</span></div>
+          <p class="r2r-console-heading">Change the conditions.<br><em>See the decision.</em></p>
+          <label class="r2r-form-label" for="r2r-fault">INJECT A CONDITION</label>
+          <select id="r2r-fault" class="r2r-select">
+            <option value="none">Valid authorized request</option>
+            <option value="signature">Invalid envelope signature</option>
+            <option value="pairing">Unknown / unpaired peer</option>
+            <option value="scope">Missing capability grant</option>
+            <option value="layer">Forbidden safety function</option>
+            <option value="journal">Replayed request ID</option>
+          </select>
+          <p class="r2r-fault-explain" data-fault-explain>A permitted capability crosses the coordination boundary and reaches the local adapter.</p>
+          <div class="r2r-run-actions">
+            <button class="r2r-fire" type="button" data-run>Transmit request <span aria-hidden="true">↗</span></button>
+            <button class="r2r-reset" type="button" data-reset aria-label="Reset the simulator" title="Reset the simulator">↺</button>
+          </div>
+          <div class="r2r-verdict" role="status" aria-live="polite" data-verdict><span class="r2r-verdict-icon" aria-hidden="true">◇</span><span><strong>Awaiting transmission</strong><small>Choose a condition and send an envelope.</small></span></div>
+          <div class="r2r-counters" aria-label="Simulator statistics">
+            <div><span>REQUESTS</span><strong data-count="sent">00</strong></div>
+            <div><span>ACCEPTED</span><strong data-count="passed">00</strong></div>
+            <div><span>DENIED</span><strong data-count="denied">00</strong></div>
+          </div>
+          <div class="r2r-event-heading"><span>EVENT STREAM</span><span>LOCAL / DEMO</span></div>
+          <ol class="r2r-event-stream" data-events aria-live="polite" aria-relevant="additions"><li><time>READY</time><span>Simulator initialized. No live packets are sent.</span></li></ol>
+          <details class="r2r-payload"><summary>Inspect illustrative envelope <span aria-hidden="true">↘</span></summary><pre data-payload aria-label="Example protocol envelope"></pre><p>Schema-inspired illustration. The browser does not generate keys, sign messages, or execute FASP.</p></details>
+        </aside>
+      </div>
+      <div class="r2r-stage-footer"><span><i class="r2r-foot-signal" aria-hidden="true"></i> YOUR SYSTEM. YOUR IDENTITY. YOUR AUTHORITY.</span><span>FASP 1.0 REFERENCE CONCEPT <span aria-hidden="true">↗</span></span></div>
+    </div>
+    <div class="r2r-after"><p><span>THE IMPORTANT PART</span> A rejection is not a failure of coordination. It's the protocol enforcing a boundary.</p><a href="protocol.html">Explore the wire contract <span aria-hidden="true">↗</span></a></div>
   </div>
 </section>
 
