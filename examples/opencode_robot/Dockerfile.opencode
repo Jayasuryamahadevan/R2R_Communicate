@@ -1,0 +1,8 @@
+FROM fasp-harness:local
+
+USER root
+RUN pip install --no-cache-dir 'mcp==2.3.0'
+USER fasp
+
+# The OpenCode binary is mounted read-only at runtime so this image contains
+# only the FASP MCP sidecar and never copies host credentials into a layer.
