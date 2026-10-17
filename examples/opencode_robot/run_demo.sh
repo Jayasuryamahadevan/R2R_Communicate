@@ -3,10 +3,23 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-mode="${1:-}"
+mode=""
+skip_build=0
+for arg in "$@"; do
+  case "$arg" in
+    --skip-build) skip_build=1 ;;
+    --probe-only|--human-test) mode="$arg" ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      echo 'Usage: run_demo.sh [--skip-build] [--probe-only | --human-test]' >&2
+      exit 2
+      ;;
+  esac
+done
 opencode_bin="${OPENCODE_BIN:-$(command -v opencode || true)}"
 ollama_bin="${OLLAMA_BIN:-$(command -v ollama || true)}"
 ollama_models="${OLLAMA_MODELS_DIR:-$HOME/.ollama/models}"
+model="${FASP_DEMO_MODEL:-qwen2.5:3b}"
 if [[ ! -f "$opencode_bin" ]]; then
   echo 'Set OPENCODE_BIN to an installed OpenCode Linux binary.' >&2
   exit 1
@@ -16,7 +29,7 @@ if [[ "$mode" != "--probe-only" && ( ! -f "$ollama_bin" || ! -d "$ollama_models"
   exit 1
 fi
 
-if [[ "$mode" != "--skip-build" ]]; then
+if [[ "$skip_build" != 1 ]]; then
   docker build --pull=false -t fasp-harness:local "$root" >/dev/null
   docker build --pull=false -f "$root/examples/opencode_robot/Dockerfile.opencode" -t fasp-opencode:mcp "$root/examples/opencode_robot" >/dev/null
   docker build --pull=false -f "$root/examples/opencode_robot/Dockerfile.robot" -t fasp-robot:mujoco "$root/examples/opencode_robot" >/dev/null
@@ -63,11 +76,11 @@ docker run --rm -v "$robot_volume:/home/fasp/.fasp" fasp-robot:mujoco init --nam
 cat > "$work/opencode.json" <<'JSON'
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "ollama/qwen2.5:3b",
+  "model": "ollama/__MODEL__",
   "providers": {
     "ollama": {
       "models": {
-        "qwen2.5:3b": {"capabilities": {"tools": true}}
+        "__MODEL__": {"capabilities": {"tools": true}}
       }
     }
   },
@@ -109,6 +122,7 @@ cat > "$work/opencode.json" <<'JSON'
   }
 }
 JSON
+sed -i "s|__MODEL__|$model|g" "$work/opencode.json"
 
 docker run -d --name "$robot_container" --network "$network" --network-alias robot \
   -v "$robot_volume:/home/fasp/.fasp" fasp-robot:mujoco \
@@ -254,10 +268,10 @@ if [[ "$mode" == "--probe-only" ]]; then
 elif [[ "$mode" == "--human-test" ]]; then
   docker exec "$opencode_container" opencode debug agents > "$work/opencode-agents.txt"
   if docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode api --server http://127.0.0.1:4096 GET /api/model > "$work/opencode-models.json"; then
-    python3 - "$work/opencode-models.json" <<'PY'
+    python3 - "$work/opencode-models.json" "$model" <<'PY'
 import json, sys
 for model in json.load(open(sys.argv[1])).get("data", []):
-    if model.get("providerID") == "ollama" and model.get("id") == "qwen2.5:3b":
+    if model.get("providerID") == "ollama" and model.get("id") == sys.argv[2]:
         print("OpenCode model tool capability:", model.get("capabilities", {}).get("tools"))
 PY
   fi
@@ -268,16 +282,16 @@ servers = json.load(open(sys.argv[1]))["data"]
 assert any(server.get("name") == "fasp" and server.get("status", {}).get("status") == "connected" for server in servers), servers
 print("OpenCode server MCP: fasp connected")
 PY
-  docker exec -i "$opencode_container" python - > "$work/ollama-tool-probe.json" <<'PY'
-import json, urllib.request
+  docker exec -i -e DEMO_MODEL="$model" "$opencode_container" python - > "$work/ollama-tool-probe.json" <<'PY'
+import json, os, urllib.request
 base = "http://127.0.0.1:11434"
 def post(path, body):
     request = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=120) as response:
         return json.load(response)
-model = post("/api/show", {"model": "qwen2.5:3b"})
+model = post("/api/show", {"model": os.environ["DEMO_MODEL"]})
 chat = post("/api/chat", {
-    "model": "qwen2.5:3b", "stream": False,
+    "model": os.environ["DEMO_MODEL"], "stream": False,
     "messages": [
         {"role": "system", "content": "Use the get_pose tool to answer robot position questions. Do not invent a pose."},
         {"role": "user", "content": "Where is the robot right now?"},
@@ -297,21 +311,21 @@ print("Ollama native tool probe:", "tool_calls" if result["message"].get("tool_c
 PY
   human_failed=0
   echo 'Human: Where is the robot right now? Tell me its position.'
-  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --auto --agent robot --model ollama/qwen2.5:3b --format json \
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --auto --agent robot --model "ollama/$model" --format json \
     'Where is the robot right now? Tell me its position.' > "$work/pose-before.jsonl"
   if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-before.jsonl" observe.robot.pose.v1 fasp_robot_pose; then
     human_failed=1
   fi
 
   echo 'Human: Move the robot 30 centimetres right and 10 centimetres forward.'
-  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --continue --auto --agent robot --model "ollama/$model" --format json \
     'Move the robot 30 centimetres right and 10 centimetres forward.' > "$work/navigate.jsonl"
   if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/navigate.jsonl" robot.navigate.sim.v1 fasp_robot_navigate; then
     human_failed=1
   fi
 
   echo 'Human: Where is the robot now?'
-  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --continue --auto --agent robot --model "ollama/$model" --format json \
     'Where is the robot now?' > "$work/pose-after.jsonl"
   if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-after.jsonl" observe.robot.pose.v1 fasp_robot_pose; then
     human_failed=1
@@ -334,19 +348,19 @@ PY
   fi
 else
 echo 'OpenCode asks for the robot pose:'
-docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model ollama/qwen2.5:3b --format json \
+docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model "ollama/$model" --format json \
   "Use only the fasp_communicate MCP tool. Call it with peer_id $robot_id, capability observe.robot.pose.v1, message read pose. Report the returned pose; do not invent a reading." \
   > "$work/pose-before.jsonl"
 python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-before.jsonl" observe.robot.pose.v1
 
 echo 'OpenCode requests one bounded MuJoCo goal:'
-docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model ollama/qwen2.5:3b --format json \
+docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model "ollama/$model" --format json \
   "Use only the fasp_communicate MCP tool. Call it exactly once with peer_id $robot_id, capability robot.navigate.sim.v1, grant_id $grant_id, message {\"x_m\":0.3,\"y_m\":0.1}. Report the tool result. Do not run shell commands." \
   > "$work/navigate.jsonl"
 python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/navigate.jsonl" robot.navigate.sim.v1
 
 echo 'OpenCode asks for the final robot pose:'
-docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model ollama/qwen2.5:3b --format json \
+docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model "ollama/$model" --format json \
   "Use only the fasp_communicate MCP tool. Call it with peer_id $robot_id, capability observe.robot.pose.v1, message read pose. Report the returned x_m, y_m and goals_completed exactly." \
   > "$work/pose-after.jsonl"
 python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-after.jsonl" observe.robot.pose.v1
