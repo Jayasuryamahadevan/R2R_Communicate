@@ -843,6 +843,7 @@ def cmd_relay_worker(args: argparse.Namespace) -> int:
         while True:
             if time.monotonic() >= next_reconcile:
                 h.tasks.expire_stale_leases(stamp())
+                h.recover_interrupted_intents()
                 if callable(getattr(h.adapter, "reconcile", None)):
                     h.reconcile_unknown_tasks()
                 next_reconcile = time.monotonic() + 10.0

@@ -19,13 +19,14 @@ import hashlib
 import os
 import secrets
 import tempfile
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from ..protocol.errors import FaspError
 from ..storage.db import Database
-from ..timestamps import parse_stamp, stamp
+from ..timestamps import now, parse_stamp, stamp
 
 DEFAULT_MAX_TOTAL_BYTES = 512 * 1024 * 1024
 
@@ -36,6 +37,7 @@ class ArtifactStore:
         self.directory = state_dir / "artifacts"
         self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.max_total_bytes = max_total_bytes
+        self._put_lock = threading.Lock()
 
     def total_bytes(self) -> int:
         row = self.db.read_one("SELECT COALESCE(SUM(size_bytes), 0) AS total FROM artifacts")
@@ -43,7 +45,46 @@ class ArtifactStore:
 
     def put(self, data: bytes, media_type: str, created_by: str, at: str, retention: timedelta | None = None) -> dict[str, Any]:
         """Store `data`, returning its artifact record. Storing the same
-        bytes twice returns the original record (content-addressed dedup)."""
+        bytes twice returns the original record (content-addressed dedup).
+
+        Serialised with `_put_lock`: the dedup lookup and the capacity read
+        are separate statements, so two concurrent puts of the same bytes
+        would both pass them and one would then raise a raw
+        sqlite3.IntegrityError from the UNIQUE digest constraint (and two
+        large puts could both clear the capacity bar).
+        """
+        with self._put_lock:
+            self.purge_expired()
+            return self._put(data, media_type, created_by, at, retention)
+
+    def purge_expired(self, *, at: str | None = None) -> int:
+        """Delete artifacts whose `retention_until` has passed.
+
+        Retention is written into every record, so it is enforced here
+        rather than left as documentation: without a sweep the size cap
+        fills with expired bytes and every later put fails permanently.
+        Bytes are removed best-effort after the metadata commits; a stray
+        file is a leak, not a correctness problem.
+        """
+        cutoff = at or stamp(now())
+        rows = self.db.read(
+            "SELECT artifact_id, storage_path FROM artifacts WHERE retention_until IS NOT NULL AND retention_until <= ?",
+            (cutoff,),
+        )
+        if not rows:
+            return 0
+        with self.db.write() as conn:
+            for row in rows:
+                conn.execute("DELETE FROM artifact_access WHERE artifact_id = ?", (row["artifact_id"],))
+                conn.execute("DELETE FROM artifacts WHERE artifact_id = ?", (row["artifact_id"],))
+        for row in rows:
+            try:
+                Path(row["storage_path"]).unlink(missing_ok=True)
+            except OSError:
+                pass
+        return len(rows)
+
+    def _put(self, data: bytes, media_type: str, created_by: str, at: str, retention: timedelta | None = None) -> dict[str, Any]:
         digest = "sha-256:" + hashlib.sha256(data).hexdigest()
         existing = self.db.read_one("SELECT * FROM artifacts WHERE digest = ?", (digest,))
         if existing is not None:

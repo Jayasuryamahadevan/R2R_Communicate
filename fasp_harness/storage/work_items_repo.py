@@ -236,6 +236,15 @@ class WorkItemsRepo:
         )
         return [_row_to_work_item(row) for row in rows]
 
+    def stale_queued(self, kind: str, before: str, limit: int = 8) -> list[dict[str, Any]]:
+        """Queued work older than `before`, oldest first (recovery sweep)."""
+        rows = self.db.read(
+            "SELECT * FROM work_items WHERE kind = ? AND state = 'queued' AND created_at < ? "
+            "ORDER BY created_at LIMIT ?",
+            (kind, before, limit),
+        )
+        return [_row_to_work_item(row) for row in rows]
+
     def for_assignee(self, kind: str, assigned_to: str, limit: int = 50) -> list[dict[str, Any]]:
         rows = self.db.read(
             "SELECT * FROM work_items WHERE kind = ? AND assigned_to = ? ORDER BY updated_at DESC LIMIT ?",

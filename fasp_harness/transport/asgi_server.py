@@ -241,6 +241,7 @@ def main() -> None:
     def reconcile_loop() -> None:
         while not reconcile_stop.is_set():
             harness.tasks.expire_stale_leases(stamp())
+            harness.recover_interrupted_intents()
             if callable(getattr(harness.adapter, "reconcile", None)):
                 harness.reconcile_unknown_tasks()
             reconcile_stop.wait(10.0)
@@ -259,6 +260,11 @@ def main() -> None:
                     relay_client.process_once()
                 except (FaspError, OSError) as error:
                     print(f"Relay poll failed: {error}")
+                except Exception as error:  # noqa: BLE001 - this worker is never restarted
+                    # A single poisonous frame must not end mailbox delivery
+                    # for the lifetime of the process: the exception is
+                    # reported and the next poll continues.
+                    print(f"Relay poll failed unexpectedly: {error.__class__.__name__}: {error}")
                 relay_stop.wait(args.relay_poll_interval)
 
         relay_thread = threading.Thread(target=poll_relay, name="fasp-relay-worker", daemon=True)

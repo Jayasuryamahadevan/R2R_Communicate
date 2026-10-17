@@ -13,8 +13,9 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
+from ..protocol.contracts import timestamp
 from ..protocol.errors import FaspError
-from ..timestamps import now, parse_stamp
+from ..timestamps import now
 
 
 def _strings(value: Any, field: str, *, nonempty: bool = True) -> frozenset[str]:
@@ -156,10 +157,12 @@ class StreamSharingPolicy:
         expires_at = payload.get("expires_at")
         if not isinstance(expires_at, str):
             raise FaspError("schema.invalid", "Stream requires an absolute expires_at lease deadline.")
-        try:
-            deadline = parse_stamp(expires_at)
-        except (TypeError, ValueError) as exc:
-            raise FaspError("schema.invalid", "Stream expires_at must be a valid UTC timestamp.") from exc
+        # `contracts.timestamp` insists on RFC 3339 with an explicit offset.
+        # `datetime.fromisoformat` also accepts naive forms like
+        # "2030-01-01", and comparing a naive deadline with `now()` raises a
+        # bare TypeError -- a peer-triggerable 500 with the inbox row left
+        # unanswered.
+        deadline = timestamp(expires_at, "Stream expires_at")
         current = now()
         if deadline <= current:
             raise FaspError("lease.expired", "Stream lease has already expired.")

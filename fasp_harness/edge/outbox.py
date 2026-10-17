@@ -46,6 +46,7 @@ DEFAULT_MAX_ATTEMPTS = 12
 DEFAULT_BASE_BACKOFF_S = 0.5
 DEFAULT_MAX_BACKOFF_S = 300.0
 DEFAULT_CAPACITY = 10_000
+SENT_RETENTION_S = 86_400.0
 
 
 @dataclass(frozen=True)
@@ -166,11 +167,20 @@ class Outbox:
         per-destination ordering while letting independent destinations make
         progress in parallel. A destination whose head message is backing
         off contributes nothing to this batch, and does not block others.
+
+        Also ages out delivered messages past their retention, so the
+        `sent` rows (which keep the full envelope and response) stay
+        bounded on a node that runs for months. Every drain path calls
+        this once per round.
         """
         now_ms = now_ms if now_ms is not None else self.now_ms()
         claimed: list[OutboxMessage] = []
         with self._lock, self.db.write() as conn:
             conn.execute("UPDATE outbox SET state = 'dead', last_error = 'expired before delivery', updated_at = ? WHERE state = 'pending' AND expires_at_ms IS NOT NULL AND expires_at_ms <= ?", (stamp(), now_ms))
+            conn.execute(
+                "DELETE FROM outbox WHERE state = 'sent' AND updated_at < ?",
+                (stamp(datetime.now(UTC) - timedelta(seconds=SENT_RETENTION_S)),),
+            )
             rows = conn.execute(
                 "SELECT row_id, message_id, destination, kind, envelope_json, attempts, created_at FROM outbox o WHERE state = 'pending' AND next_attempt_ms <= ? "
                 "AND row_id = (SELECT MIN(row_id) FROM outbox WHERE destination = o.destination AND state IN ('pending', 'inflight')) "
@@ -282,7 +292,7 @@ class Outbox:
                 total += cursor.rowcount
             return total
 
-    def purge_sent(self, older_than_s: float = 86_400.0) -> int:
+    def purge_sent(self, older_than_s: float = SENT_RETENTION_S) -> int:
         """Retention: delivered messages are evidence for a while, not forever."""
         cutoff = stamp(datetime.now(UTC) - timedelta(seconds=older_than_s))
         with self.db.write() as conn:

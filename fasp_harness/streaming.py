@@ -251,12 +251,15 @@ class StreamRegistry:
                 received_text = received_at.isoformat(timespec="microseconds").replace("+00:00", "Z")
                 if memory:
                     self._memory_streams[stream["stream_id"]].update(next_expected=next_expected, last_sequence=last_sequence, last_packet_at=received_text)
-                else:
-                    self.repo.advance(
-                        stream["stream_id"], next_expected, last_sequence,
-                        packet if stream["retention_packets"] else None,
-                        stream["retention_packets"], received_text,
-                    )
+                elif not self.repo.advance(
+                    stream["stream_id"], next_expected, last_sequence,
+                    packet if stream["retention_packets"] else None,
+                    stream["retention_packets"], received_text,
+                ):
+                    # A close (or expiry) committed while this packet was
+                    # being validated. Refuse rather than acknowledge a
+                    # packet that can never be pulled.
+                    raise FaspError("stream.not_open", "Stream is not available.")
                 stream["next_expected"], stream["last_sequence"] = next_expected, last_sequence
                 stream["last_packet_at"] = received_text
             return {"type": "stream.ack", "stream_id": stream["stream_id"], "epoch": 0, "ack_sequence": stream["next_expected"] - 1, "credit": stream["window"], "duplicate": duplicate}
@@ -284,7 +287,11 @@ class StreamRegistry:
                 object_pairs_hook=unique_object,
                 parse_constant=reject_nonfinite,
             )
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+            # RecursionError: the C JSON scanner gives up on absurd nesting
+            # rather than exhausting the stack, and the stack budget varies
+            # by platform and thread. It must become the same clean schema
+            # rejection as any other malformed record, not a 500.
             raise FaspError("stream.invalid_json", "JSON packet must contain one valid UTF-8 JSON object.") from exc
         if not isinstance(record, dict):
             raise FaspError("stream.invalid_json", "JSON packet must contain one top-level object.")

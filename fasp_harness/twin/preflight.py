@@ -139,6 +139,18 @@ def preflight_mission(
             record["error"] = error.code
             result.steps.append(record)
             break
+        except (TypeError, ValueError, OverflowError):
+            # A step parameter the simulation cannot interpret as a number
+            # (e.g. parameters.duration_s = "soon", or a NaN that makes the
+            # millisecond cursor un-representable) makes the mission
+            # infeasible with a reason, exactly like a semantic FaspError.
+            # Letting it escape would 500 the request and leave the mission
+            # ACCEPTED but never dispatched.
+            result.feasible = False
+            result.reasons.append(f"Step {index}: a step parameter is not a usable number.")
+            record["error"] = "schema.invalid"
+            result.steps.append(record)
+            break
 
         low_water = min(low_water, simulation.battery_ratio)
         record["battery_after"] = round(simulation.battery_ratio, 4)

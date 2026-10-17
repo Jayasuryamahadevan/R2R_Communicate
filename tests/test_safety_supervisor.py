@@ -88,6 +88,32 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(cleared["cleared_by"], "engineer")
         self.assertFalse(self.supervisor.latched)
 
+    def test_a_demand_arriving_during_the_clear_check_is_not_discarded(self) -> None:
+        """Condition 3 of the clear contract: a network halt can arrive
+        between the controller poll and the latch reset. Discarding it
+        would let dispatch resume despite a live demand."""
+        supervisor = SafetySupervisor(None, stale_after_s=60.0)
+        supervisor.poll()
+        original_poll = supervisor.poll
+
+        def poll_during_which_a_peer_demands_a_halt():
+            status = original_poll()
+            supervisor.demand_halt("wms", "network halt during the reset", origin="peer")
+            return status
+
+        supervisor.poll = poll_during_which_a_peer_demands_a_halt  # type: ignore[method-assign]
+        try:
+            with self.assertRaises(FaspError) as raised:
+                supervisor.clear(origin=LOCAL_OPERATOR, operator="engineer")
+        finally:
+            supervisor.poll = original_poll  # type: ignore[method-assign]
+        self.assertEqual(raised.exception.code, "safety.precondition_failed")
+        self.assertTrue(supervisor.latched, "The demand must survive the failed clear.")
+
+        cleared = supervisor.clear(origin=LOCAL_OPERATOR, operator="engineer", note="area checked")
+        self.assertEqual(cleared["cleared_by"], "engineer")
+        self.assertFalse(supervisor.latched)
+
     def test_an_unreachable_controller_withdraws_permission(self) -> None:
         self.controller.set_unreachable(True)
         self.supervisor.poll()

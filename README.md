@@ -778,7 +778,7 @@ controllers and emergency stops for every physical actuator.**
 ---
 
 <p align="center">
-  <sub><b>16k lines of Python · 559 tests · 5 runtime dependencies · Apache 2.0</b></sub>
+  <sub><b>21k lines of Python · 739 tests · 5 runtime dependencies · Apache 2.0</b></sub>
 </p>
 
 <p align="center">

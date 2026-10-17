@@ -50,14 +50,22 @@ class StreamsRepo:
         retained_packet: dict[str, Any] | None,
         retention_packets: int,
         received_at: str,
-    ) -> None:
+    ) -> bool:
         """Advance a stream's sequence state and, if retention is enabled,
-        append + prune the retained-packet window in the same transaction."""
+        append + prune the retained-packet window in the same transaction.
+
+        Returns False, writing nothing, if the stream is no longer open: a
+        `close` (or expiry) that committed while the packet was being
+        validated wins the race. The alternative is acknowledging a packet
+        that can never be pulled, which is worse than refusing it.
+        """
         with self.db.write() as conn:
-            conn.execute(
-                "UPDATE streams SET next_expected = ?, last_sequence = ?, last_packet_at = ? WHERE stream_id = ?",
+            cursor = conn.execute(
+                "UPDATE streams SET next_expected = ?, last_sequence = ?, last_packet_at = ? WHERE stream_id = ? AND state = 'open'",
                 (next_expected, last_sequence, received_at, stream_id),
             )
+            if cursor.rowcount != 1:
+                return False
             if retained_packet is not None and retention_packets:
                 conn.execute(
                     "INSERT INTO stream_packets (stream_id, sequence, packet_json) VALUES (?, ?, ?)",
@@ -70,17 +78,26 @@ class StreamsRepo:
                     "(SELECT sequence FROM stream_packets WHERE stream_id = ? ORDER BY sequence DESC LIMIT ?)",
                     (stream_id, stream_id, retention_packets),
                 )
+        return True
 
     def packets_after(self, stream_id: str, after_sequence: int) -> list[dict[str, Any]]:
         rows = self.db.read("SELECT packet_json FROM stream_packets WHERE stream_id = ? AND sequence > ? ORDER BY sequence", (stream_id, after_sequence))
         return [json.loads(row["packet_json"]) for row in rows]
 
     def close(self, stream_id: str, reason: str) -> None:
+        """End a stream and release its retained packets.
+
+        The `streams` row stays -- it is the idempotency guard against
+        reopening a closed ID -- but once the state is `closed` the packets
+        are unreachable (`pull` requires an open stream), so they are
+        deleted in the same transaction rather than accumulating forever.
+        """
         with self.db.write() as conn:
             conn.execute(
                 "UPDATE streams SET state = 'closed', closed_reason = ?, closed_at_monotonic_ns = ? WHERE stream_id = ?",
                 (reason, time.monotonic_ns(), stream_id),
             )
+            conn.execute("DELETE FROM stream_packets WHERE stream_id = ?", (stream_id,))
 
 
 def _row_to_stream(row: Any) -> dict[str, Any]:

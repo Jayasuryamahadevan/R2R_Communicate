@@ -86,5 +86,10 @@ class RelayKey:
             if not isinstance(body, dict):
                 raise ValueError("non-object plaintext")
             return body
-        except (InvalidTag, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        except (InvalidTag, ValueError, TypeError, KeyError, json.JSONDecodeError, RecursionError) as exc:
+            # RecursionError: a hand-crafted plaintext can nest deeper than
+            # the C scanner's budget while still fitting the 64 KiB cap. It
+            # must become this same authenticated-decryption rejection, not
+            # an exception that escapes `process_once` and ends the relay
+            # worker thread for good.
             raise FaspError("auth.invalid_relay_frame", "Relay frame failed authenticated decryption.") from exc

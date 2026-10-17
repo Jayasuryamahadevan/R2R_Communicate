@@ -15,6 +15,7 @@ import secrets
 import tempfile
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime, timedelta
@@ -71,6 +72,15 @@ ARTIFACT_INLINE_THRESHOLD_BYTES = 8 * 1024
 ARTIFACT_RETENTION = timedelta(days=7)
 DEFAULT_ADAPTER_CONCURRENCY = 8
 DEFAULT_MAX_INFLIGHT_TASKS = 256
+# Bound on receipts.json. The durable record of a receipt is its own
+# envelope in `envelopes_inbox`; this file is a convenience index, and an
+# unbounded rewrite-everything map is write amplification on a long-lived
+# node (it is rewritten in full on every receipt).
+MAX_RECEIPT_RECORDS = 4096
+# Grace period before a `queued` intent row is presumed stranded (see
+# `FaspHarness.recover_interrupted_intents`). Admission-to-start is a
+# millisecond window; this is only a safety net for rows nobody retried.
+STALE_INTENT_AGE_SECONDS = 120.0
 
 __all__ = [
     "FaspError",
@@ -168,6 +178,22 @@ class JsonState:
     def put(self, name: str, value: Any) -> None:
         with self.lock:
             atomic_json(self.directory / name, value)
+
+    def update(self, name: str, default: Any, mutate: Callable[[Any], None]) -> Any:
+        """Atomic read-modify-write of one state file.
+
+        A bare `get()` followed by `put()` is two separate lock
+        acquisitions: two concurrent handlers can both read the old value
+        and the second write silently loses the first one's change. This
+        holds the lock across the whole sequence instead. `mutate` edits
+        the value in place and its return value is ignored; the updated
+        value is returned.
+        """
+        with self.lock:
+            value = self.get(name, default)
+            mutate(value)
+            self.put(name, value)
+            return value
 
     def append_jsonl(self, name: str, value: dict[str, Any]) -> None:
         path = self.directory / name
@@ -284,6 +310,12 @@ class FaspHarness:
         # optimization layered on the durable queue above, never a
         # replacement for it.
         self.channels = ConnectionRegistry(authorize_peer=self._peer)
+        # Message IDs this process is dispatching right now: a concurrent
+        # re-delivery of the same envelope is told "still processing", while
+        # a re-delivery of a message admission left unanswered by a crashed
+        # process is re-driven instead of wedged forever (see `accept`).
+        self._inflight_messages: set[str] = set()
+        self._inflight_lock = threading.Lock()
         admin_path = state_dir / "admin_token"
         try:
             descriptor = os.open(admin_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -530,6 +562,15 @@ class FaspHarness:
         `reservation.request` with the same `message_id` returns the
         original recorded response instead of re-applying its effect a
         second time.
+
+        Crash recovery: if admission was recorded but the process died
+        before a response was written, a later delivery re-runs the
+        handler rather than wedging the message behind
+        `transport.response_unavailable` forever. This is safe because
+        every handler's durable effect is guarded by its own idempotency
+        key -- the task store, the reservation id, the stream sequence
+        number, the message-id dedup row itself -- so the second attempt
+        settles on the same state instead of duplicating an effect.
         """
         peer, content, expires = self._verify_envelope(envelope)
         kind = envelope["kind"]
@@ -554,24 +595,52 @@ class FaspHarness:
             if not self.inbox.insert_if_new(envelope, stamp(), response=response):
                 return True, self.inbox.get_response(envelope["message_id"])
             return False, response
-        if not self.inbox.insert_if_new(envelope, stamp()):
-            return True, self.inbox.get_response(envelope["message_id"])
+        message_id = envelope["message_id"]
+        if not self._claim_message(message_id):
+            # Another connection is already dispatching this exact message.
+            # If it finished in the meantime the recorded response is here;
+            # otherwise the caller gets a retryable "in progress" answer
+            # (the transport maps a missing response to 503 + Retry-After).
+            return True, self.inbox.get_response(message_id)
         try:
-            response = getattr(self, handler_name)(envelope, peer)
-        except AdmissionRejected:
-            # No work item or effect was admitted. Preserve the sender's
-            # ability to retry this exact envelope once capacity is free.
-            self.inbox.discard_unprocessed(envelope["message_id"])
-            raise
-        except FaspError as error:
-            # Recorded (not just raised) so a replay of this exact envelope
-            # returns the same rejection deterministically instead of
-            # re-running the check -- see the ss7.1 idempotent-handling note
-            # in _handle_intent for why this matters at the task level too.
-            self.inbox.set_response(envelope["message_id"], {"type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
-            raise
-        self.inbox.set_response(envelope["message_id"], response)
-        return False, response
+            inserted = self.inbox.insert_if_new(envelope, stamp())
+            if not inserted:
+                recorded = self.inbox.get_response(message_id)
+                if recorded is not None:
+                    return True, recorded
+                # Admitted by a process that died before recording a
+                # response: fall through and re-dispatch (see docstring).
+            try:
+                response = getattr(self, handler_name)(envelope, peer)
+            except AdmissionRejected:
+                # No work item or effect was admitted. Preserve the sender's
+                # ability to retry this exact envelope once capacity is free.
+                self.inbox.discard_unprocessed(message_id)
+                raise
+            except FaspError as error:
+                # Recorded (not just raised) so a replay of this exact envelope
+                # returns the same rejection deterministically instead of
+                # re-running the check -- see the ss7.1 idempotent-handling note
+                # in _handle_intent for why this matters at the task level too.
+                self.inbox.set_response(message_id, {"type": "protocol.error", "error": {"code": error.code, "detail": error.detail}})
+                raise
+            self.inbox.set_response(message_id, response)
+            return not inserted, response
+        finally:
+            self._release_message(message_id)
+
+    def _claim_message(self, message_id: str) -> bool:
+        """Take the in-process dispatch claim for `message_id`, if free."""
+        with self._inflight_lock:
+            if message_id in self._inflight_messages:
+                return False
+            self._inflight_messages.add(message_id)
+            return True
+
+    def _release_message(self, message_id: str) -> None:
+        with self._inflight_lock:
+            self._inflight_messages.discard(message_id)
+
 
     def _handle_intent(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         intent = envelope["payload"]
@@ -602,10 +671,36 @@ class FaspHarness:
             if existing["state"] == "REJECTED":
                 error = existing["error"] or {}
                 raise FaspError(error.get("code", "policy.requires_confirmation"), error.get("detail", "Intent was previously rejected."))
-            if existing is not None and existing["state"] in TERMINAL_STATES:
+            if existing["state"] in TERMINAL_STATES:
                 return _task_response(existing)
-            raise FaspError("schema.invalid", "idempotency_key is already in use by a request still being processed.")
+            if existing["state"] == "PROPOSED":
+                # A queued row with no adapter call behind it is either a
+                # concurrent proposal still inside its admission window or
+                # work stranded by a crash between propose() and
+                # start_running(). Re-driving it is safe either way:
+                # start_running() is the compare-and-swap that admits
+                # exactly one executor, so this can never double-run the
+                # adapter -- the original thread simply finds the row
+                # already moving when it tries.
+                payload = existing["payload"] if isinstance(existing["payload"], dict) else intent
+                return self._execute_admitted_intent(key, payload, envelope["from"], peer["allowed_capability_prefixes"])
+            # RUNNING / CANCEL_PENDING: genuinely in flight. A duplicate is
+            # told to poll (same shape task.status would return), never
+            # treated as a schema error.
+            return _task_response(existing)
+        return self._execute_admitted_intent(key, intent, envelope["from"], peer["allowed_capability_prefixes"])
 
+    def _execute_admitted_intent(self, key: str, intent: dict[str, Any], from_peer: str, allowed_prefixes: list[str]) -> dict[str, Any]:
+        """Validate and execute one already-admitted (queued) intent.
+
+        Shared by the live `intent.propose` path and recovery, so a task
+        stranded by a crash is re-validated against current policy (grants,
+        capability availability, layer boundary) rather than trusted
+        because it was admitted once.
+        """
+        capability = intent.get("capability") if isinstance(intent.get("capability"), str) else ""
+        if not capability or not capability_allowed(capability, allowed_prefixes):
+            self._reject_task(key, "auth.not_authorized", "Paired peer is not granted this capability prefix.")
         capabilities = {item["id"]: item for item in self.adapter.capabilities()}
         if capability not in capabilities:
             self._reject_task(key, "capability.unavailable", "Capability is unavailable at this runtime.")
@@ -623,18 +718,18 @@ class FaspHarness:
             self._reject_task(key, "policy.requires_confirmation", "This harness requires explicit local approval for this risk class.")
         grant_id = intent.get("grant", {}).get("id") if isinstance(intent.get("grant"), dict) else None
         try:
-            validate_grant_if_required(self.grants, envelope["from"], capability, grant_id, capability_policy.requires_grant(risk))
+            validate_grant_if_required(self.grants, from_peer, capability, grant_id, capability_policy.requires_grant(risk))
         except FaspError as error:
             self._reject_task(key, error.code, error.detail)
 
         max_runtime_s = capabilities[capability].get("max_runtime_s")
         lease_seconds = float(max_runtime_s) if isinstance(max_runtime_s, (int, float)) and max_runtime_s > 0 else DEFAULT_TASK_LEASE.total_seconds()
         if not self.tasks.start_running(key, stamp(now() + timedelta(seconds=lease_seconds)), stamp()):
-            # Lost a race to a concurrent task.cancel; report the stored
-            # outcome rather than starting the adapter call.
+            # Lost a race to a concurrent task.cancel or to recovery; report
+            # the stored outcome rather than starting the adapter call.
             return _task_response(self.tasks.get(key))
 
-        return self._run_adapter_bounded(key, intent, envelope["from"], lease_seconds)
+        return self._run_adapter_bounded(key, intent, from_peer, lease_seconds)
 
     def _run_adapter_bounded(self, key: str, intent: dict[str, Any], from_peer: str, lease_seconds: float) -> dict[str, Any]:
         """Run `adapter.handle()` on the bounded pool, capped at the
@@ -684,13 +779,31 @@ class FaspHarness:
             self._apply_task_outcome(key, from_peer, intent_id, error={"code": "internal.adapter_error", "detail": "Adapter raised an unexpected error."})
 
     def _apply_task_outcome(self, key: str, from_peer: str, intent_id: str | None, *, output: Any = None, error: dict[str, Any] | None = None, push: bool = True) -> dict[str, Any]:
-        if error is not None:
-            result = {"type": "task.fail", "intent_id": intent_id, "idempotency_key": key, "status": "failed", "error": error, "completed_at": stamp()}
-            committed = self.tasks.fail(key, error, stamp())
-        else:
-            result = {"type": "task.result", "intent_id": intent_id, "idempotency_key": key, "status": "completed", "completed_at": stamp()}
-            result.update(self._materialize_output(output, from_peer))
-            committed = self.tasks.complete(key, result, stamp())
+        if error is None:
+            # Materialising the output runs BEFORE the commit, deliberately:
+            # if it fails, the task fails rather than recording a result that
+            # could never be delivered. A NaN, an oversize artifact-store
+            # overflow, or an adapter returning a set must fail the task like
+            # any other adapter bug -- escaping here would leak a raw
+            # traceback (ss12) and leave the row RUNNING until its lease
+            # expires to UNKNOWN.
+            try:
+                materialized = self._materialize_output(output, from_peer)
+            except FaspError as failure:
+                error = {"code": failure.code, "detail": failure.detail}
+            except (TypeError, ValueError):
+                error = {"code": "internal.adapter_error", "detail": "Adapter returned a value that is not valid JSON."}
+            else:
+                result = {"type": "task.result", "intent_id": intent_id, "idempotency_key": key, "status": "completed", "completed_at": stamp()}
+                result.update(materialized)
+                committed = self.tasks.complete(key, result, stamp())
+                if not committed:
+                    return _task_response(self.tasks.get(key))
+                if push:
+                    self.channels.push(from_peer, {"fasp": PROTOCOL, "type": "task.push", "response": result})
+                return result
+        result = {"type": "task.fail", "intent_id": intent_id, "idempotency_key": key, "status": "failed", "error": error, "completed_at": stamp()}
+        committed = self.tasks.fail(key, error, stamp())
         if not committed:
             # A concurrent task.cancel already moved the row to its
             # authoritative final state; report that, not the outcome just
@@ -750,7 +863,16 @@ class FaspHarness:
         task = self.tasks.get(key)
         if task["state"] == "RUNNING" and self.tasks.request_cancel(key, stamp()):
             cancel_hook = getattr(self.adapter, "cancel", None)
-            accepted = bool(cancel_hook(key)) if callable(cancel_hook) else False
+            accepted = False
+            if callable(cancel_hook):
+                try:
+                    accepted = bool(cancel_hook(key))
+                except Exception:
+                    # A broken adapter cancel hook declines the request, the
+                    # same way a broken handle() fails its task instead of
+                    # leaking a traceback (ss12). Declining also guarantees
+                    # the `resume_running` below clears cancel_requested.
+                    accepted = False
             if accepted and self.tasks.cancel_immediately(key, stamp()):
                 return {"type": "task.cancelled", "idempotency_key": key}
             self.tasks.resume_running(key, stamp())
@@ -817,6 +939,56 @@ class FaspHarness:
         resolved = sum(self.reconcile_task(key).get("status") in {"completed", "failed"} for key in keys)
         return {"checked": len(keys), "resolved": resolved, "remaining": len(self.tasks.unknown(limit))}
 
+    def recover_interrupted_intents(self, *, older_than_seconds: float = STALE_INTENT_AGE_SECONDS, limit: int = 8) -> dict[str, int]:
+        """Re-drive intent proposals a crashed process admitted but never started.
+
+        `intent.propose` commits the queued work item before capability,
+        risk, and grant validation, so a crash between admission and
+        `start_running` leaves a `queued` row nothing will ever execute: it
+        counts against durable admission capacity forever and a duplicate
+        proposal finds it stuck "queued". No adapter call can have happened
+        for such a row, so recovery re-drives it through the exact
+        validation-and-execution path a live request uses
+        (`_execute_admitted_intent`) -- a since-revoked grant, a
+        since-unpaired peer, or an unavailable capability rejects it, as it
+        should.
+
+        `older_than_seconds` keeps the sweep away from a proposal that is
+        genuinely inside its (millisecond-scale) admission window in this
+        process; `start_running`'s compare-and-swap makes even that race
+        harmless by admitting exactly one executor. Called by the server's
+        reconciler loop.
+        """
+        cutoff = stamp(now() - timedelta(seconds=older_than_seconds))
+        stale = self.work_items.stale_queued("intent", cutoff, limit)
+        recovered = 0
+        for item in stale:
+            key = item["idempotency_key"]
+            intent = item["payload"]
+            owner = item["owner"]
+            if not isinstance(intent, dict):
+                self.tasks.reject(key, {"code": "task.interrupted", "detail": "Work was interrupted before it began; resend with a new idempotency key."}, stamp())
+                continue
+            try:
+                peer = self._peer(owner)
+                self._execute_admitted_intent(key, intent, owner, peer["allowed_capability_prefixes"])
+                recovered += 1
+            except FaspError as error:
+                # Validation rejections inside _execute_admitted_intent are
+                # already recorded on the row; auth failures (revoked,
+                # unpaired, expired pairing) are not, so record them and
+                # fail closed.
+                task = self.tasks.get(key)
+                if task is not None and task["state"] == "PROPOSED":
+                    self.tasks.reject(key, {"code": error.code, "detail": error.detail}, stamp())
+            except Exception:
+                # Same rule as a broken adapter: recovery must never take
+                # the reconciler thread down with it.
+                task = self.tasks.get(key)
+                if task is not None and task["state"] == "PROPOSED":
+                    self.tasks.reject(key, {"code": "internal.recovery_error", "detail": "Recovery failed before execution; resend with a new idempotency key."}, stamp())
+        return {"checked": len(stale), "recovered": recovered}
+
     def pull_inbox(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="inbox.pull")
         return response
@@ -836,9 +1008,23 @@ class FaspHarness:
         payload = envelope["payload"]
         if not isinstance(payload.get("message_id"), str):
             raise FaspError("schema.invalid", "Receipt requires message_id.")
-        receipts = self.state.get("receipts.json", {})
-        receipts[payload["message_id"]] = {"from": envelope["from"], "processed_at": stamp()}
-        self.state.put("receipts.json", receipts)
+        message_id = payload["message_id"]
+
+        def record(receipts: dict[str, Any]) -> None:
+            receipts[message_id] = {"from": envelope["from"], "processed_at": stamp()}
+            if len(receipts) > MAX_RECEIPT_RECORDS:
+                # Bounded bookkeeping: keep the newest entries by
+                # processed_at. The receipt's own envelope remains durably
+                # recorded in `envelopes_inbox`; this file is a convenience
+                # index, and an unbounded rewrite-the-whole-map file is write
+                # amplification on a long-lived node.
+                stale = sorted(receipts, key=lambda item: receipts[item].get("processed_at", ""))[: len(receipts) - MAX_RECEIPT_RECORDS]
+                for key in stale:
+                    del receipts[key]
+
+        # Atomic read-modify-write: two concurrent receipt handlers must not
+        # lose one another's entries (a get() then put() pair is not atomic).
+        self.state.update("receipts.json", {}, record)
         return {"ok": True}
 
     def _authorize_stream(self, envelope: dict[str, Any], peer: dict[str, Any]) -> None:
@@ -1043,7 +1229,10 @@ class FaspHarness:
         self._authorize_stream(envelope, peer)
         payload = envelope["payload"]
         self._authorize_existing_stream(envelope, peer, payload.get("stream_id"))
-        return self.streams.subscribe(envelope["from"], payload["stream_id"], payload["grant"])
+        grant = payload.get("grant")
+        if grant is None:
+            raise FaspError("schema.invalid", "stream.subscribe requires the grant reference used for the stream.")
+        return self.streams.subscribe(envelope["from"], payload["stream_id"], grant)
 
     def stream_unsubscribe(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="stream.unsubscribe")
@@ -1074,7 +1263,16 @@ class FaspHarness:
     def _handle_reservation_request(self, envelope: dict[str, Any], peer: dict[str, Any]) -> dict[str, Any]:
         if not capability_allowed("fleet.reserve.v1", peer["allowed_capability_prefixes"]):
             raise FaspError("auth.not_authorized", "Peer is not authorized for fleet reservations.")
-        return self.reservations.request(envelope["from"], envelope["payload"])
+        payload = envelope["payload"]
+        if not payload.get("reservation_id"):
+            # Deterministic fallback ID: a re-dispatch of this same envelope
+            # (crash recovery in `accept`) must resolve to the SAME
+            # reservation instead of minting a second one under a fresh
+            # random UUID. Derived from the message id, so a genuinely new
+            # request still gets a distinct id.
+            payload = dict(payload)
+            payload["reservation_id"] = "auto-" + hashlib.sha256(envelope["message_id"].encode("utf-8")).hexdigest()[:40]
+        return self.reservations.request(envelope["from"], payload)
 
     def reservation_release(self, envelope: dict[str, Any]) -> dict[str, Any]:
         _, response = self.accept(envelope, expected_kind="reservation.release")

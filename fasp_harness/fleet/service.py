@@ -103,6 +103,17 @@ class MissionService:
             self._release_reservation(mission.mission_id)
             self._audit("mission.rejected", mission.requested_by, {"mission_id": mission.mission_id, "code": error.code})
             raise
+        except Exception as error:
+            # The pipeline's contract is that a mission never stays silently
+            # ACCEPTED: whatever a vendor adapter or an unguarded conversion
+            # does, the mission ends REJECTED with the reason attached, and
+            # the caller gets a protocol error rather than a raw 500. (The
+            # exception is chained, so the traceback is still in the log.)
+            failure = FaspError("internal.adapter_error", "The vendor adapter failed while dispatching this mission.")
+            self.missions.finish(mission.mission_id, MissionState.REJECTED.value, error={"code": failure.code, "detail": failure.detail})
+            self._release_reservation(mission.mission_id)
+            self._audit("mission.rejected", mission.requested_by, {"mission_id": mission.mission_id, "code": failure.code})
+            raise failure from error
 
     def _dispatch(self, mission: Mission) -> dict[str, Any]:
         # 2. Safety first, and once. Everything downstream may assume it.

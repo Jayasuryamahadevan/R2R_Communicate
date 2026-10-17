@@ -101,6 +101,18 @@ class StreamPushWiringTests(StreamFixture, unittest.TestCase):
             self.bob.stream_subscribe(self._subscribe(self.alice, stream_id))
         self.assertEqual(raised.exception.code, "auth.not_authorized")
 
+    def test_subscribing_without_a_grant_reference_is_refused_cleanly(self) -> None:
+        """The grant field is required; a missing key used to escape as a bare
+        KeyError (500, unanswered inbox row) instead of a schema refusal."""
+        stream_id = self._open_stream()
+        envelope = self.alice.make_envelope("stream.subscribe", self.bob.identity.system_id, {
+            "capability": "observe.stream.v1",
+            "stream_id": stream_id,
+        })
+        with self.assertRaises(FaspError) as raised:
+            self.bob.stream_subscribe(envelope)
+        self.assertEqual(raised.exception.code, "schema.invalid")
+
     def test_only_source_named_and_locally_allowed_recipient_can_subscribe(self) -> None:
         stream_id = self._open_stream()
         subscribe = self.bob.stream_subscribe(self._subscribe(self.carol, stream_id))

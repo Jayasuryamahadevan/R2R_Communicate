@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fasp_harness.core import FaspHarness
@@ -91,6 +93,34 @@ class RelayTransportTests(unittest.TestCase):
         self.assertEqual(reply["response"]["output"]["summary"], "private instruction")
         self.assertEqual(pong["type"], "heartbeat")
         self.assertEqual(self.hubs["hub-a"].poll(self.alice.identity.system_id), [])
+
+    def test_a_deeply_nested_plaintext_is_rejected_instead_of_killing_the_relay_worker(self) -> None:
+        """A paired peer can hand-craft a frame whose plaintext is 60k nested
+        brackets: under the 64 KiB cap, over the JSON scanner's budget. That
+        must be auth.invalid_relay_frame, not an uncaught RecursionError that
+        escapes `process_once` and ends the relay poll loop."""
+        import fasp_harness.crypto.relay as relay_module
+
+        card = self.bob.id_card()
+        frame = self.alice.relay_key.seal(
+            self.alice.identity,
+            self.bob.identity.system_id,
+            card["relay_public_key"],
+            "relay-deep-1",
+            "request",
+            {"envelope": {"message_id": "relay-deep-1"}},
+            stamp(now() + timedelta(seconds=60)),
+        )
+        deep_plaintext = b"[" * 60_000
+        real_loads = json.loads
+
+        def loads_the_attack_payload(_plaintext, *args, **kwargs):
+            return real_loads(deep_plaintext, *args, **kwargs)
+
+        with patch.object(relay_module, "json", SimpleNamespace(dumps=json.dumps, loads=loads_the_attack_payload, JSONDecodeError=json.JSONDecodeError)):
+            with self.assertRaises(FaspError) as raised:
+                self.bob.relay_key.open(frame, self.alice.id_card(), self.bob.identity.system_id)
+        self.assertEqual(raised.exception.code, "auth.invalid_relay_frame")
 
     def test_tampering_and_unprovisioned_sender_fail_closed(self) -> None:
         card = self.bob.id_card()

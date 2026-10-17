@@ -6,11 +6,14 @@ from __future__ import annotations
 import base64
 import json
 import tempfile
+import threading
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from fasp_harness.core import ARTIFACT_INLINE_THRESHOLD_BYTES, DefaultSafeAdapter, FaspError, FaspHarness
+from fasp_harness.timestamps import now, stamp
 
 
 class _LargeOutputAdapter(DefaultSafeAdapter):
@@ -102,6 +105,47 @@ class ArtifactTests(unittest.TestCase):
         first = self.bob.artifacts.put(b"same bytes", "application/octet-stream", self.alice.identity.system_id, "2026-01-01T00:00:00.000Z")
         second = self.bob.artifacts.put(b"same bytes", "application/octet-stream", self.alice.identity.system_id, "2026-01-01T00:00:01.000Z")
         self.assertEqual(first["artifact_id"], second["artifact_id"])
+
+    def test_expired_retention_is_reclaimed_before_the_size_cap_bites(self) -> None:
+        """`retention_until` is enforced, not just recorded: otherwise the
+        store fills with expired bytes and every later put fails forever."""
+        store = self.bob.artifacts
+        store.max_total_bytes = 64
+        expired = store.put(b"A" * 48, "application/octet-stream", self.alice.identity.system_id, stamp(now()), retention=timedelta(seconds=-1))
+        fresh = store.put(b"B" * 48, "application/octet-stream", self.alice.identity.system_id, stamp(now()), retention=timedelta(days=1))
+        self.assertIsNone(store.get(expired["artifact_id"]))
+        self.assertFalse(Path(expired["storage_path"]).exists())
+        self.assertEqual(store.total_bytes(), 48)
+        self.assertIsNotNone(store.get(fresh["artifact_id"]))
+
+        # An artifact with no retention date is never reclaimed for age.
+        keep = store.put(b"C" * 8, "application/octet-stream", self.alice.identity.system_id, stamp(now()))
+        self.assertEqual(store.purge_expired(), 0)
+        self.assertIsNotNone(store.get(keep["artifact_id"]))
+
+    def test_concurrent_identical_puts_do_not_race_the_unique_digest(self) -> None:
+        store = self.bob.artifacts
+        pool = 8
+        barrier = threading.Barrier(pool)
+        results: list[dict[str, Any]] = []
+        failures: list[BaseException] = []
+
+        def store_same_bytes() -> None:
+            barrier.wait()
+            try:
+                results.append(store.put(b"identical", "application/octet-stream", self.alice.identity.system_id, stamp(now())))
+            except BaseException as exc:  # noqa: BLE001 - collected for the assertion below
+                failures.append(exc)
+
+        threads = [threading.Thread(target=store_same_bytes) for _ in range(pool)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(failures, [])
+        self.assertEqual(len(results), pool)
+        self.assertEqual({result["artifact_id"] for result in results}, {results[0]["artifact_id"]})
+        self.assertEqual(store.total_bytes(), len(b"identical"))
 
 
 if __name__ == "__main__":

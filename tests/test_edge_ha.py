@@ -217,6 +217,17 @@ class OutboxTests(unittest.TestCase):
         self.assertEqual(self.outbox.purge_sent(older_than_s=-1.0), 1)
         self.assertEqual(self.outbox.depth()["sent"], 0)
 
+    def test_a_drain_sweeps_delivered_messages_past_their_retention(self) -> None:
+        """Every drain round ages out `sent` rows, so a long-running node's
+        outbox does not grow with the full envelope and response of every
+        message it ever delivered."""
+        self.outbox.enqueue("peer-1", self.envelope("m1"))
+        self.outbox.flush(lambda message: True, now_ms=0)
+        with self.db.write() as conn:
+            conn.execute("UPDATE outbox SET updated_at = ? WHERE message_id = ?", ("2000-01-01T00:00:00.000000Z", "m1"))
+        self.outbox.claim_ready(now_ms=0)
+        self.assertEqual(self.outbox.depth()["sent"], 0)
+
 
 class HealthTests(unittest.TestCase):
     def test_a_standby_is_alive_but_not_ready(self) -> None:

@@ -111,9 +111,17 @@ class Pose:
         if not isinstance(value, dict):
             raise FaspError("schema.invalid", "A pose must be an object.")
         try:
-            return cls(float(value["x"]), float(value["y"]), float(value.get("theta", 0.0)), str(value.get("map_id", "default")))
+            x, y, theta = float(value["x"]), float(value["y"]), float(value.get("theta", 0.0))
         except (KeyError, TypeError, ValueError) as exc:
             raise FaspError("schema.invalid", "A pose requires numeric x and y.") from exc
+        # JSON cannot carry a NaN/Infinity literal, but the *strings* "NaN"
+        # and "Infinity" coerce through float(). A non-finite pose would
+        # then poison every distance and occupancy computation downstream
+        # (all comparisons with NaN are False, so reachability checks would
+        # silently pass), so it is refused here at the single parse point.
+        if not all(math.isfinite(item) for item in (x, y, theta)):
+            raise FaspError("schema.invalid", "A pose requires finite x, y, and theta.")
+        return cls(x, y, theta, str(value.get("map_id", "default")))
 
 
 @dataclass(frozen=True)
@@ -150,12 +158,17 @@ class MissionStep:
         if kind is StepKind.MOVE and node_id is None and pose is None:
             raise FaspError("schema.invalid", "A move step requires a node_id or a pose.")
         timeout = value.get("timeout_s", 300.0)
+        raw_parameters = value.get("parameters") or {}
+        if not isinstance(raw_parameters, dict):
+            # `dict("abc")`/`dict([1, 2])` would raise a bare ValueError or
+            # TypeError out of an accept() that only expects FaspError.
+            raise FaspError("schema.invalid", "Mission step parameters must be an object.")
         return cls(
             step_id=str(value.get("step_id") or uuid.uuid4()),
             kind=kind,
             node_id=str(node_id) if node_id is not None else None,
             pose=pose,
-            parameters=dict(value.get("parameters") or {}),
+            parameters=dict(raw_parameters),
             timeout_s=float(timeout) if isinstance(timeout, (int, float)) and 0 < timeout <= 86_400 else 300.0,
             blocking=bool(value.get("blocking", True)),
         )
@@ -199,6 +212,11 @@ class Mission:
         if not isinstance(raw_steps, list) or not 1 <= len(raw_steps) <= MAX_MISSION_STEPS:
             raise FaspError("schema.invalid", f"A mission needs between 1 and {MAX_MISSION_STEPS} steps.")
         priority = value.get("priority", 0)
+        raw_constraints = value.get("constraints") or {}
+        if not isinstance(raw_constraints, dict):
+            # Same rule as step parameters: opaque objects are fine, a
+            # string or list would explode in the `dict(...)` coercion.
+            raise FaspError("schema.invalid", "Mission constraints must be an object.")
         return cls(
             mission_id=str(value.get("mission_id") or f"mission-{uuid.uuid4()}")[:128],
             requested_by=requested_by,
@@ -207,7 +225,7 @@ class Mission:
             fleet=str(value["fleet"])[:64] if value.get("fleet") else None,
             vehicle_id=str(value["vehicle_id"])[:128] if value.get("vehicle_id") else None,
             deadline_at=str(value["deadline_at"]) if value.get("deadline_at") else None,
-            constraints=dict(value.get("constraints") or {}),
+            constraints=dict(raw_constraints),
         )
 
     @property

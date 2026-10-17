@@ -81,6 +81,26 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(FaspError):
             model_from_mapping({"kind": "teleportation"})
 
+    def test_a_non_object_motion_model_is_refused(self) -> None:
+        with self.assertRaises(FaspError):
+            model_from_mapping(["aerial"])  # type: ignore[arg-type]
+
+    def test_a_non_numeric_motion_parameter_is_refused(self) -> None:
+        """Otherwise the string surfaces as a TypeError only at propagation
+        time, far from the message that carried it."""
+        with self.assertRaises(FaspError):
+            model_from_mapping({"kind": "aerial", "gust_psd": "banana"})
+
+    def test_a_negative_noise_term_is_refused(self) -> None:
+        """A negative PSD would *subtract* from the uncertainty the guard
+        band exists to bound, rather than crash anything."""
+        with self.assertRaises(FaspError):
+            model_from_mapping({"kind": "ground_vehicle", "along_track_psd": -1.0})
+
+    def test_a_fraction_outside_zero_to_one_is_refused(self) -> None:
+        with self.assertRaises(FaspError):
+            model_from_mapping({"kind": "aerial", "climb_fraction": 5.0})
+
 
 class PropagationTests(unittest.TestCase):
     def test_uncertainty_grows_with_the_delay(self) -> None:

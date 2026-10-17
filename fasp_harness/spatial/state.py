@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from dataclasses import fields as dataclass_fields
 from typing import Any, Protocol
 
 from ..protocol.errors import FaspError
@@ -276,15 +277,36 @@ _MODEL_TYPES: dict[str, Any] = {"constant_velocity": ConstantVelocity, "ground_v
 
 
 def model_from_mapping(payload: dict[str, Any]) -> MotionModel:
+    if not isinstance(payload, dict):
+        raise FaspError("schema.invalid", "A motion model must be an object.")
     kind = payload.get("kind")
     factory = _MODEL_TYPES.get(kind) if isinstance(kind, str) else None
     if factory is None:
         raise FaspError("schema.invalid", "Unknown motion model kind.")
     fields = {key: value for key, value in payload.items() if key != "kind"}
     try:
-        return factory(**fields)
+        model = factory(**fields)
     except TypeError as error:
         raise FaspError("schema.invalid", "Motion model parameters are malformed.") from error
+    # The dataclass constructors coerce and check nothing. A wrong-typed or
+    # negative noise term is worse than a crash: it would surface as a
+    # TypeError only at propagation time, or silently *subtract* from the
+    # uncertainty the guard band exists to bound.
+    for descriptor in dataclass_fields(model):
+        if descriptor.name == "kind":
+            continue
+        value = getattr(model, descriptor.name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise FaspError("schema.invalid", f"Motion model field {descriptor.name!r} must be a finite number.")
+        if descriptor.name == "model_horizon_s":
+            if not 0.0 < value <= 86_400.0:
+                raise FaspError("schema.invalid", "A motion model horizon must be between 0 and 86400 seconds.")
+        elif descriptor.name.endswith("_fraction"):
+            if not 0.0 <= value <= 1.0:
+                raise FaspError("schema.invalid", f"Motion model field {descriptor.name!r} must be a fraction between 0 and 1.")
+        elif value < 0.0:
+            raise FaspError("schema.invalid", f"Motion model field {descriptor.name!r} must be non-negative.")
+    return model
 
 
 @dataclass(frozen=True)

@@ -215,12 +215,21 @@ class SafetySupervisor:
         """
         if origin != LOCAL_OPERATOR or origin in NETWORK_ORIGINS:
             raise LayerViolation("A safety halt can only be cleared by a local operator at the machine, never over the network.")
+        # Capture the demand sequence before the controller poll: the poll
+        # itself can latch (a stale or unsafe sample), and a network halt
+        # can arrive concurrently. Condition 3 is the re-check under the
+        # lock below -- without it, a halt latched between the poll and
+        # the clear would be silently discarded by `self._latched = False`.
+        with self._lock:
+            sequence_before_poll = self._sequence
         status = self.poll()
         if self.driver is not None and not status.reachable:
             raise FaspError("safety.precondition_failed", "Cannot clear a halt while the safety controller is unreachable.")
         if self.driver is not None and not status.safe_to_move:
             raise FaspError("safety.precondition_failed", "The safety controller still reports a demand; perform the local reset at the machine first.")
         with self._lock:
+            if self._sequence != sequence_before_poll:
+                raise FaspError("safety.precondition_failed", "A halt demand arrived while the clear was being checked; perform the local reset again.")
             self._latched = False
             cleared = {
                 "type": "safety.cleared",

@@ -77,6 +77,55 @@ class StreamingTests(unittest.TestCase):
         duplicate = self.bob.stream_packet(self.alice.make_envelope("stream.packet", self.bob.identity.system_id, packet))
         self.assertTrue(duplicate["duplicate"])
 
+    def test_a_packet_losing_the_race_with_close_is_refused_not_retained(self) -> None:
+        opened = self.bob.stream_open(self.alice.make_envelope("stream.open", self.bob.identity.system_id, self._open_payload("application/octet-stream", 8, 4)))
+        packet = next(packetize(opened["stream_id"], 0, 0, b"hello", "application/octet-stream", 8))
+        packet["capability"] = "observe.stream.v1"
+        repo = self.bob.streams.repo
+        real_advance = repo.advance
+
+        def advance_after_a_concurrent_close(*args: object, **kwargs: object) -> bool:
+            # The close thread committed after the packet was validated but
+            # before its sequence state was written.
+            repo.close(opened["stream_id"], "closed concurrently")
+            return real_advance(*args, **kwargs)
+
+        repo.advance = advance_after_a_concurrent_close  # type: ignore[method-assign]
+        try:
+            with self.assertRaises(FaspError) as raised:
+                self.bob.stream_packet(self.alice.make_envelope("stream.packet", self.bob.identity.system_id, packet))
+        finally:
+            repo.advance = real_advance  # type: ignore[method-assign]
+        self.assertEqual(raised.exception.code, "stream.not_open")
+        self.assertEqual(repo.get(opened["stream_id"])["next_expected"], 0)
+        self.assertEqual(repo.packets_after(opened["stream_id"], -1), [])
+
+    def test_closing_a_stream_releases_its_retained_packets(self) -> None:
+        payload = self._open_payload("application/octet-stream", 8, 4)
+        payload["max_rate_hz"] = 10_000
+        opened = self.bob.stream_open(self.alice.make_envelope("stream.open", self.bob.identity.system_id, payload))
+        for sequence in range(2):
+            packet = next(packetize(opened["stream_id"], 0, sequence, f"p{sequence}".encode(), "application/octet-stream", 8))
+            packet["capability"] = "observe.stream.v1"
+            self.bob.stream_packet(self.alice.make_envelope("stream.packet", self.bob.identity.system_id, packet))
+        repo = self.bob.streams.repo
+        self.assertEqual(len(repo.packets_after(opened["stream_id"], -1)), 2)
+
+        repo.close(opened["stream_id"], "done")
+        self.assertEqual(repo.packets_after(opened["stream_id"], -1), [])
+
+    def test_a_naive_expires_at_is_refused_with_a_clean_schema_error(self) -> None:
+        """`datetime.fromisoformat` accepts "2030-01-01"; comparing that naive
+        deadline with an aware `now()` raises a bare TypeError. A paired peer
+        sending it must get a schema refusal (and nothing opened), not a 500
+        with the inbox row left unanswered."""
+        payload = self._open_payload("application/json", 32, 2)
+        payload["expires_at"] = "2030-01-01"
+        with self.assertRaises(FaspError) as raised:
+            self.bob.stream_open(self.alice.make_envelope("stream.open", self.bob.identity.system_id, payload))
+        self.assertEqual(raised.exception.code, "schema.invalid")
+        self.assertEqual(self.bob.db.read("SELECT COUNT(*) AS n FROM streams")[0]["n"], 0)
+
     def test_reliable_stream_rejects_gap(self) -> None:
         opened = self.bob.stream_open(self.alice.make_envelope("stream.open", self.bob.identity.system_id, self._open_payload("application/json", 32, 2)))
         packet = next(packetize(opened["stream_id"], 0, 1, b"{}", "application/json", 32))
