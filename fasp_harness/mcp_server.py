@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import sys
 import uuid
@@ -57,6 +58,38 @@ def build_server(args: argparse.Namespace) -> Any:
         if task_path is not None:
             result["task_path"] = task_path
         return result
+
+    def send_once(peer_id: str, message: str, capability: str, idempotency_key: str | None = None, grant_id: str | None = None) -> dict[str, Any]:
+        with _agent(args) as h:
+            queued = enqueue_intent(h, peer_id, message, capability, idempotency_key, grant_id)
+            _deliver(h, args)
+            record = Outbox(h.db).get(queued["message_id"])
+            if record is None:
+                raise ToolError("Queued intent disappeared from the outbox.")
+            return {**queued, "state": record["state"], "response": record["response"], "last_error": record["last_error"]}
+
+    if getattr(args, "robot_peer_id", None):
+        @server.tool()
+        async def robot_pose() -> dict[str, Any]:
+            """Read the live MuJoCo robot pose through signed FASP delivery."""
+            try:
+                return await asyncio.to_thread(send_once, args.robot_peer_id, "read pose", "observe.robot.pose.v1")
+            except FaspError as exc:
+                raise ToolError(f"{exc.code}: {exc.detail}") from exc
+
+        @server.tool()
+        async def robot_navigate(x_m: float, y_m: float) -> dict[str, Any]:
+            """Move to absolute x/y coordinates in metres: right is +x, forward is +y. The robot enforces the motion bounds."""
+            if not math.isfinite(x_m) or not math.isfinite(y_m):
+                raise ToolError("Robot coordinates must be finite metres.")
+            try:
+                message = json.dumps({"x_m": x_m, "y_m": y_m})
+                key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"fasp-robot:{args.robot_peer_id}:{args.robot_grant_id}:{x_m:.6f}:{y_m:.6f}"))
+                return await asyncio.to_thread(send_once, args.robot_peer_id, message, "robot.navigate.sim.v1", key, args.robot_grant_id)
+            except FaspError as exc:
+                raise ToolError(f"{exc.code}: {exc.detail}") from exc
+
+        return server
 
     @server.tool()
     async def identity() -> dict[str, Any]:
@@ -198,21 +231,8 @@ def build_server(args: argparse.Namespace) -> Any:
     @server.tool()
     async def communicate(peer_id: str, message: str, capability: str = "coordinate.chat.v1", idempotency_key: str | None = None, grant_id: str | None = None) -> dict[str, Any]:
         """Queue a signed intent, attempt delivery once, and report its saved delivery state."""
-        def send_once() -> dict[str, Any]:
-            with _agent(args) as h:
-                queued = enqueue_intent(h, peer_id, message, capability, idempotency_key, grant_id)
-                _deliver(h, args)
-                record = Outbox(h.db).get(queued["message_id"])
-                if record is None:
-                    raise ToolError("Queued intent disappeared from the outbox.")
-                return {
-                    **queued,
-                    "state": record["state"],
-                    "response": record["response"],
-                    "last_error": record["last_error"],
-                }
         try:
-            return await asyncio.to_thread(send_once)
+            return await asyncio.to_thread(send_once, peer_id, message, capability, idempotency_key, grant_id)
         except FaspError as exc:
             raise ToolError(f"{exc.code}: {exc.detail}") from exc
 
@@ -257,9 +277,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--client-cert", help="mTLS client certificate.")
     parser.add_argument("--client-key", help="mTLS client key.")
     parser.add_argument("--insecure-http", action="store_true", help="Allow remote HTTP only on an isolated development network.")
+    parser.add_argument("--robot-peer-id", help="Expose only robot pose/navigation tools for this already paired peer.")
+    parser.add_argument("--robot-grant-id", help="Navigation grant for the scoped robot tools; requires --robot-peer-id.")
     args = parser.parse_args(argv)
     if args.client_key and not args.client_cert:
         parser.error("--client-key requires --client-cert")
+    if bool(args.robot_peer_id) != bool(args.robot_grant_id):
+        parser.error("--robot-peer-id and --robot-grant-id must be supplied together")
     args.state_dir = str(Path(args.state_dir).expanduser().resolve())
     if not (Path(args.state_dir) / "identity.json").is_file():
         parser.error("State is not initialized. Run: fasp init --name NAME --state-dir PATH")

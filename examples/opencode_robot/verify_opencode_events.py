@@ -8,6 +8,7 @@ from pathlib import Path
 
 events = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
 capability = sys.argv[2]
+expected_tool = sys.argv[3] if len(sys.argv) > 3 else "fasp_communicate"
 matched = []
 for event in events:
     part = event.get("part", {})
@@ -16,10 +17,10 @@ for event in events:
     name = part.get("tool", "")
     state = part.get("state", {})
     arguments = state.get("input", {}) if isinstance(state, dict) else {}
-    if "fasp" in name and "communicate" in name and isinstance(arguments, dict) and arguments.get("capability") == capability:
+    if name == expected_tool and isinstance(arguments, dict) and (expected_tool != "fasp_communicate" or arguments.get("capability") == capability):
         matched.append((name, state))
 
-assert matched, f"No FASP MCP communicate event for {capability}; event types: {[event.get('type') for event in events]}"
+assert matched, f"No FASP MCP {expected_tool} event for {capability}; event types: {[event.get('type') for event in events]}"
 completed = [(name, state) for name, state in matched if state.get("status") == "completed"]
 assert completed, f"FASP MCP tool did not complete: {matched}"
 name, state = completed[-1]

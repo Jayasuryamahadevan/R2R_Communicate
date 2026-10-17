@@ -31,6 +31,13 @@ robot_volume="fasp-robot-state-$suffix"
 work="$(mktemp -d)"
 chmod 755 "$work"
 cp "$root/examples/opencode_robot/probe_mcp.py" "$work/probe_mcp.py"
+if [[ "$mode" == "--human-test" ]]; then
+  cp "$root/examples/opencode_robot/ollama_proxy.py" "$work/ollama_proxy.py"
+  touch "$work/ollama-http.jsonl"
+  touch "$work/opencode-server.log"
+  chmod 666 "$work/ollama-http.jsonl"
+  chmod 666 "$work/opencode-server.log"
+fi
 cleanup() {
   if [[ "${demo_ok:-0}" != 1 ]]; then
     docker logs "$robot_container" 2>&1 | tail -35 >&2 || true
@@ -128,7 +135,11 @@ docker run -d --name "$opencode_container" --network "$network" --network-alias 
   --entrypoint sleep fasp-opencode:mcp infinity >/dev/null
 docker exec "$opencode_container" mkdir -p /tmp/fasp-home
 if [[ "$mode" != "--probe-only" ]]; then
-  docker exec -d "$opencode_container" ollama serve
+  if [[ "$mode" == "--human-test" ]]; then
+    docker exec -d -e OLLAMA_HOST=127.0.0.1:11436 "$opencode_container" ollama serve
+  else
+    docker exec -d "$opencode_container" ollama serve
+  fi
 fi
 
 ready=0
@@ -143,13 +154,27 @@ done
 if [[ "$mode" != "--probe-only" ]]; then
   ollama_ready=0
   for attempt in {1..100}; do
-    if docker exec "$opencode_container" python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=1)' >/dev/null 2>&1; then
+    ollama_port=11434
+    if [[ "$mode" == "--human-test" ]]; then ollama_port=11436; fi
+    if docker exec "$opencode_container" python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$ollama_port/api/tags', timeout=1)" >/dev/null 2>&1; then
       ollama_ready=1
       break
     fi
     sleep 0.2
   done
   [[ "$ollama_ready" == 1 ]] || { echo 'Local Ollama did not become reachable.' >&2; exit 1; }
+fi
+if [[ "$mode" == "--human-test" ]]; then
+  docker exec -d "$opencode_container" python /work/ollama_proxy.py
+  proxy_ready=0
+  for attempt in {1..50}; do
+    if docker exec "$opencode_container" python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=1)' >/dev/null 2>&1; then
+      proxy_ready=1
+      break
+    fi
+    sleep 0.2
+  done
+  [[ "$proxy_ready" == 1 ]] || { echo 'Ollama diagnostic proxy did not become reachable.' >&2; exit 1; }
 fi
 
 docker exec "$opencode_container" python -m fasp_harness register http://robot:8766 --state-dir /home/fasp/.fasp --insecure-http > "$work/pair.json"
@@ -163,7 +188,7 @@ docker exec "$robot_container" python -m fasp_harness approve "$opencode_id" --c
 docker exec "$robot_container" python -c '
 import json, pathlib, sys, urllib.request
 token = pathlib.Path("/home/fasp/.fasp/admin_token").read_text().strip()
-body = json.dumps({"subject_peer":sys.argv[1],"capability_prefixes":["robot.navigate.sim.v1"],"duration_seconds":300,"purpose":"mujoco-demo"}).encode()
+body = json.dumps({"subject_peer":sys.argv[1],"capability_prefixes":["robot.navigate.sim.v1"],"duration_seconds":1800,"purpose":"mujoco-demo"}).encode()
 request = urllib.request.Request("http://127.0.0.1:8766/grants/issue",data=body,headers={"Content-Type":"application/json","X-FASP-Admin-Token":token})
 with urllib.request.urlopen(request,timeout=5) as response:
     print(response.read().decode())
@@ -175,21 +200,42 @@ if [[ "$mode" == "--human-test" ]]; then
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 config = json.loads(path.read_text())
+config["permissions"] = [rule for rule in config["permissions"] if rule["action"] != "fasp_communicate"]
+config["permissions"].append({"action": "fasp_robot_*", "resource": "*", "effect": "allow"})
+config["mcp"]["servers"]["fasp"]["command"].extend([
+    "--robot-peer-id", sys.argv[2], "--robot-grant-id", sys.argv[3],
+])
 config["agents"]["robot"]["system"] = (
-    "You are the operator interface to one paired MuJoCo robot. "
-    f"Its FASP peer_id is {sys.argv[2]}. "
-    "For a position request, call fasp_communicate with capability "
-    "observe.robot.pose.v1 and message 'read pose'. "
-    "For a movement request, call fasp_communicate with capability "
-    f"robot.navigate.sim.v1, grant_id {sys.argv[3]}, and a JSON message "
-    "containing x_m and y_m in metres. Right means +x and forward means +y. "
-    "For relative movement, read the current pose first and add the offsets. "
-    "The maximum single move is 0.5 m. "
-    "Report only results returned by the tool. Never invent a position or say "
-    "a command ran unless a tool call completed."
+    "You control one paired MuJoCo robot through two FASP MCP tools: "
+    "fasp_robot_pose and fasp_robot_navigate. Use fasp_robot_pose for every "
+    "position request. For a relative move, use the most recently reported "
+    "pose in this conversation. The robot starts at (0, 0) metres. Add "
+    "the requested offsets to x_m and y_m, then call fasp_robot_navigate "
+    "with the absolute goal coordinates in metres. Do not reread the pose "
+    "when the previous user turn already asked for it. Right is +x; forward is +y. "
+    "The maximum single move is 0.5 m. Report only completed tool results. "
+    "Never invent a pose or claim a move succeeded without a tool result."
 )
+config["agents"]["robot"]["steps"] = 4
 path.write_text(json.dumps(config, indent=2) + "\n")
 PY
+  server_password="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  docker exec -d -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" sh -c 'opencode serve --hostname 127.0.0.1 --port 4096 > /work/opencode-server.log 2>&1'
+  server_ready=0
+  for attempt in {1..100}; do
+    if docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" python -c '
+import base64, os, urllib.request
+password=os.environ["OPENCODE_SERVER_PASSWORD"]
+token=base64.b64encode(("opencode:"+password).encode()).decode()
+request=urllib.request.Request("http://127.0.0.1:4096/api/mcp", headers={"Authorization":"Basic "+token})
+urllib.request.urlopen(request, timeout=1)
+' >/dev/null 2>&1; then
+      server_ready=1
+      break
+    fi
+    sleep 0.2
+  done
+  [[ "$server_ready" == 1 ]] || { echo 'OpenCode server did not become reachable.' >&2; exit 1; }
 fi
 
 echo 'OpenCode MCP connection:'
@@ -206,25 +252,68 @@ if [[ "$mode" == "--probe-only" ]]; then
   echo 'Direct MCP protocol probe from inside the OpenCode container:'
   docker exec "$opencode_container" python /work/probe_mcp.py "$robot_id" "$grant_id"
 elif [[ "$mode" == "--human-test" ]]; then
+  docker exec "$opencode_container" opencode debug agents > "$work/opencode-agents.txt"
+  if docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode api --server http://127.0.0.1:4096 GET /api/model > "$work/opencode-models.json"; then
+    python3 - "$work/opencode-models.json" <<'PY'
+import json, sys
+for model in json.load(open(sys.argv[1])).get("data", []):
+    if model.get("providerID") == "ollama" and model.get("id") == "qwen2.5:3b":
+        print("OpenCode model tool capability:", model.get("capabilities", {}).get("tools"))
+PY
+  fi
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode api --server http://127.0.0.1:4096 GET /api/mcp > "$work/opencode-mcp.json"
+  python3 - "$work/opencode-mcp.json" <<'PY'
+import json, sys
+servers = json.load(open(sys.argv[1]))["data"]
+assert any(server.get("name") == "fasp" and server.get("status", {}).get("status") == "connected" for server in servers), servers
+print("OpenCode server MCP: fasp connected")
+PY
+  docker exec -i "$opencode_container" python - > "$work/ollama-tool-probe.json" <<'PY'
+import json, urllib.request
+base = "http://127.0.0.1:11434"
+def post(path, body):
+    request = urllib.request.Request(base + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(request, timeout=120) as response:
+        return json.load(response)
+model = post("/api/show", {"model": "qwen2.5:3b"})
+chat = post("/api/chat", {
+    "model": "qwen2.5:3b", "stream": False,
+    "messages": [
+        {"role": "system", "content": "Use the get_pose tool to answer robot position questions. Do not invent a pose."},
+        {"role": "user", "content": "Where is the robot right now?"},
+    ],
+    "tools": [{"type": "function", "function": {
+        "name": "get_pose", "description": "Read the current robot pose",
+        "parameters": {"type": "object", "properties": {}},
+    }}],
+    "options": {"num_ctx": 16384},
+})
+print(json.dumps({"model_capabilities": model.get("capabilities"), "message": chat.get("message")}, sort_keys=True))
+PY
+  python3 - "$work/ollama-tool-probe.json" <<'PY'
+import json, sys
+result = json.load(open(sys.argv[1]))
+print("Ollama native tool probe:", "tool_calls" if result["message"].get("tool_calls") else "text_only")
+PY
   human_failed=0
   echo 'Human: Where is the robot right now? Tell me its position.'
-  docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model ollama/qwen2.5:3b --format json \
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --auto --agent robot --model ollama/qwen2.5:3b --format json \
     'Where is the robot right now? Tell me its position.' > "$work/pose-before.jsonl"
-  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-before.jsonl" observe.robot.pose.v1; then
+  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-before.jsonl" observe.robot.pose.v1 fasp_robot_pose; then
     human_failed=1
   fi
 
   echo 'Human: Move the robot 30 centimetres right and 10 centimetres forward.'
-  docker exec "$opencode_container" opencode run --standalone --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
     'Move the robot 30 centimetres right and 10 centimetres forward.' > "$work/navigate.jsonl"
-  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/navigate.jsonl" robot.navigate.sim.v1; then
+  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/navigate.jsonl" robot.navigate.sim.v1 fasp_robot_navigate; then
     human_failed=1
   fi
 
   echo 'Human: Where is the robot now?'
-  docker exec "$opencode_container" opencode run --standalone --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
+  docker exec -e OPENCODE_SERVER_PASSWORD="$server_password" "$opencode_container" opencode run --server http://127.0.0.1:4096 --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
     'Where is the robot now?' > "$work/pose-after.jsonl"
-  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-after.jsonl" observe.robot.pose.v1; then
+  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-after.jsonl" observe.robot.pose.v1 fasp_robot_pose; then
     human_failed=1
   fi
   docker exec "$robot_container" python -c '
@@ -232,6 +321,13 @@ import pathlib
 p=pathlib.Path("/home/fasp/.fasp/robot_actions.jsonl")
 print("Robot action journal entries:", len(p.read_text().splitlines()) if p.exists() else 0)
 '
+  python3 - "$work/ollama-http.jsonl" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+for row in (json.loads(line) for line in path.read_text().splitlines() if line.strip()):
+    if row["path"].startswith("/v1/chat/completions") or row["path"].startswith("/api/chat"):
+        print("OpenCode model request tools:", row["tools"])
+PY
   if [[ "$human_failed" == 1 ]]; then
     echo 'FAIL one or more plain-language OpenCode prompts had no verified FASP MCP result.' >&2
     exit 1

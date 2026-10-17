@@ -69,6 +69,16 @@ class McpTests(unittest.TestCase):
 
         self.assertEqual(asyncio.run(run())["system_id"], self.alice.identity.system_id)
 
+    def test_scoped_robot_mcp_exposes_only_motion_tools(self) -> None:
+        scoped = argparse.Namespace(**{**vars(self.args), "robot_peer_id": self.bob.identity.system_id,
+                                       "robot_grant_id": "test-grant"})
+
+        async def run() -> set[str]:
+            async with Client(build_server(scoped), raise_exceptions=True) as client:
+                return {tool.name for tool in (await client.list_tools()).tools}
+
+        self.assertEqual(asyncio.run(run()), {"robot_pose", "robot_navigate"})
+
     def test_concurrent_clients_queue_distinct_signed_messages(self) -> None:
         pending = self.alice.hello(self.bob.id_card())
         self.alice.confirm_peer(self.bob.identity.system_id, pending["pair_code"])
