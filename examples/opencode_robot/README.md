@@ -9,10 +9,13 @@
 | MCP call → FASP → MuJoCo → result | **Pass, using a deterministic MCP client inside the OpenCode container.** Three `communicate` calls read the initial pose, navigated, then read the final pose. A fourth call tested rejection. |
 | Robot movement | **Pass.** MuJoCo 3.16.0 changed `(x_m, y_m)` from `(0.0, 0.0)` to `(0.2858, 0.0953)` for goal `(0.3, 0.1)`. The robot journal recorded exactly one completed goal. |
 | Bounds enforcement | **Pass.** Goal `(2.0, 0.0)` returned `task.fail` / `policy.out_of_bounds`; it produced no second journal entry. |
-| OpenCode model-initiated MCP call | **Fail.** OpenCode connected to MCP, but the locally installed `qwen2.5:3b` model produced text describing a call. The OpenCode JSON event stream contained `step_start` and `text`, with **no** `fasp_communicate` `tool_use` event. No navigation was attempted by the OpenCode agent. The model-driven script exits nonzero on this condition. |
+| OpenCode model-initiated MCP call | **Fail.** OpenCode connected to MCP, but the locally installed `qwen2.5:3b` model produced text describing a call. The OpenCode JSON event stream contained `step_start` and `text`, with **no** `fasp_communicate` tool event. No navigation was attempted by the OpenCode agent. The model-driven script exits nonzero on this condition. |
+| Plain-language OpenCode user flow | **Fail.** On the current `main` checkout (`23d4ae1`), three prompts in one OpenCode session asked for the pose, a 30 cm right / 10 cm forward move, and the final pose. All three produced only `step_start` and `text` events, with no native MCP tool event. The robot received no `/fasp/v1/envelopes` request and its action journal had **0** entries. The move did not happen. |
 | Live laptop telemetry packets | **Pass in a separate two-FASP-container test.** `tests/container_live_stream.sh` sent laptop `/proc` CPU/memory/uptime readings as 5 HTTP and 5 WebSocket reliable packets, plus 2 latest packets. This test does **not** include OpenCode or MuJoCo. |
 
 These results establish the MCP/FASP/robot transport and simulation behavior. They do **not** establish a successful natural-language OpenCode agent controlling the robot, nor a continuous MuJoCo pose stream through OpenCode.
+
+The plain-language run used OpenCode 2.0.1 with local Ollama `qwen2.5:3b`. Its move response asked the user to provide `x_m` and `y_m` in metres instead of using the supplied 30 cm and 10 cm instruction or calling the tool. The pose responses were just `read pose`. In an earlier first-prompt attempt, the model printed a pose containing `theta_rad` and `angular_velocity_rad_per_s` without a tool call; those fields are absent from this adapter's real pose output. That pose was fabricated. The direct MCP control run on the same current code passed separately, moving the robot from `(0, 0)` to `(0.2858, 0.0953)` and rejecting `(2.0, 0.0)` as `policy.out_of_bounds`.
 
 ## How the containers communicate
 
@@ -60,6 +63,17 @@ OPENCODE_BIN=/absolute/path/to/opencode \
 ```
 
 The script's `verify_opencode_events.py` requires a completed native `fasp_communicate` tool event and a delivered MuJoCo result for each requested step. On this machine the first step failed that check. It is intentionally a failing integration test until a tool-capable local model actually invokes the tool.
+
+To run the ordinary user prompts through the same two containers:
+
+```bash
+OPENCODE_BIN=/absolute/path/to/opencode \
+  OLLAMA_BIN=/absolute/path/to/ollama \
+  OLLAMA_MODELS_DIR=/absolute/path/to/ollama/models \
+  bash examples/opencode_robot/run_demo.sh --human-test
+```
+
+This sends all three prompts in one OpenCode session even when one step fails, checks each OpenCode JSON event stream for a completed MCP call, and prints the robot action journal count. It exits nonzero if any step lacks a verified result. On 2026-10-17 it exited 1 and printed `Robot action journal entries: 0`. The failed run keeps its JSONL evidence in the temporary directory printed on stderr; containers and state volumes are removed.
 
 Run the separate laptop live-data packet test with:
 

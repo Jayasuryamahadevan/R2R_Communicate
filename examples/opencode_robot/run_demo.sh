@@ -170,6 +170,28 @@ with urllib.request.urlopen(request,timeout=5) as response:
 ' "$opencode_id" > "$work/grant.json"
 grant_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["grant_id"])' "$work/grant.json")"
 
+if [[ "$mode" == "--human-test" ]]; then
+  python3 - "$work/opencode.json" "$robot_id" "$grant_id" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text())
+config["agents"]["robot"]["system"] = (
+    "You are the operator interface to one paired MuJoCo robot. "
+    f"Its FASP peer_id is {sys.argv[2]}. "
+    "For a position request, call fasp_communicate with capability "
+    "observe.robot.pose.v1 and message 'read pose'. "
+    "For a movement request, call fasp_communicate with capability "
+    f"robot.navigate.sim.v1, grant_id {sys.argv[3]}, and a JSON message "
+    "containing x_m and y_m in metres. Right means +x and forward means +y. "
+    "For relative movement, read the current pose first and add the offsets. "
+    "The maximum single move is 0.5 m. "
+    "Report only results returned by the tool. Never invent a position or say "
+    "a command ran unless a tool call completed."
+)
+path.write_text(json.dumps(config, indent=2) + "\n")
+PY
+fi
+
 echo 'OpenCode MCP connection:'
 mcp_status=''
 for attempt in {1..20}; do
@@ -183,6 +205,37 @@ echo "$mcp_status"
 if [[ "$mode" == "--probe-only" ]]; then
   echo 'Direct MCP protocol probe from inside the OpenCode container:'
   docker exec "$opencode_container" python /work/probe_mcp.py "$robot_id" "$grant_id"
+elif [[ "$mode" == "--human-test" ]]; then
+  human_failed=0
+  echo 'Human: Where is the robot right now? Tell me its position.'
+  docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model ollama/qwen2.5:3b --format json \
+    'Where is the robot right now? Tell me its position.' > "$work/pose-before.jsonl"
+  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-before.jsonl" observe.robot.pose.v1; then
+    human_failed=1
+  fi
+
+  echo 'Human: Move the robot 30 centimetres right and 10 centimetres forward.'
+  docker exec "$opencode_container" opencode run --standalone --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
+    'Move the robot 30 centimetres right and 10 centimetres forward.' > "$work/navigate.jsonl"
+  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/navigate.jsonl" robot.navigate.sim.v1; then
+    human_failed=1
+  fi
+
+  echo 'Human: Where is the robot now?'
+  docker exec "$opencode_container" opencode run --standalone --continue --auto --agent robot --model ollama/qwen2.5:3b --format json \
+    'Where is the robot now?' > "$work/pose-after.jsonl"
+  if ! python3 "$root/examples/opencode_robot/verify_opencode_events.py" "$work/pose-after.jsonl" observe.robot.pose.v1; then
+    human_failed=1
+  fi
+  docker exec "$robot_container" python -c '
+import pathlib
+p=pathlib.Path("/home/fasp/.fasp/robot_actions.jsonl")
+print("Robot action journal entries:", len(p.read_text().splitlines()) if p.exists() else 0)
+'
+  if [[ "$human_failed" == 1 ]]; then
+    echo 'FAIL one or more plain-language OpenCode prompts had no verified FASP MCP result.' >&2
+    exit 1
+  fi
 else
 echo 'OpenCode asks for the robot pose:'
 docker exec "$opencode_container" opencode run --standalone --auto --agent robot --model ollama/qwen2.5:3b --format json \
@@ -215,6 +268,8 @@ print("PASS robot action journal:", json.dumps(row, separators=(",",":")))
 demo_ok=1
 if [[ "$mode" == "--probe-only" ]]; then
   echo 'PASS MCP stdio -> signed FASP HTTP -> MuJoCo robot -> FASP receipt -> MCP client inside OpenCode container.'
+elif [[ "$mode" == "--human-test" ]]; then
+  echo 'PASS human prompt -> OpenCode -> FASP MCP -> MuJoCo robot -> actual pose.'
 else
   echo 'PASS OpenCode -> MCP stdio -> signed FASP HTTP -> MuJoCo robot -> FASP receipt -> MCP -> OpenCode.'
 fi
