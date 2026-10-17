@@ -73,6 +73,8 @@
     addLog('Loaded '+name+' scenario. '+cases[name].cap+'.');
   }
   function finish(result){
+    state.timers.forEach(clearTimeout);state.timers=[];
+    root.classList.remove('is-transmitting');
     state.busy=false;elements.run.disabled=false;elements.fault.disabled=false;
     qa('[data-scenario]').forEach((b)=>b.disabled=false);
     if(result==='none'){state.passed++;verdict('passed',faults.none.title,faults.none.detail);addLog('ACCEPTED → '+cases[state.scenario].adapter,'ok')}
@@ -80,7 +82,7 @@
     counters();
   }
   function send(){
-    if(state.busy)return;state.busy=true;state.sent++;counters();
+    if(state.busy)return;state.busy=true;root.classList.add('is-transmitting');state.sent++;counters();
     elements.run.disabled=true;elements.fault.disabled=true;
     qa('[data-scenario]').forEach((b)=>b.disabled=true);
     clearGates();
@@ -96,7 +98,7 @@
     });
   }
   function reset(){
-    state.timers.forEach(clearTimeout);state.timers=[];state.busy=false;state.sent=0;state.passed=0;state.denied=0;state.sequence=0;
+    state.timers.forEach(clearTimeout);state.timers=[];root.classList.remove('is-transmitting');state.busy=false;state.sent=0;state.passed=0;state.denied=0;state.sequence=0;
     elements.run.disabled=false;elements.fault.disabled=false;qa('[data-scenario]').forEach((b)=>b.disabled=false);
     elements.fault.value='none';clearGates();counters();payload();
     elements.log.replaceChildren();verdict(null,'Awaiting transmission','Choose a condition and send an envelope.');
